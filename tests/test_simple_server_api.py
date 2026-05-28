@@ -624,3 +624,33 @@ def test_batch_cancel_unknown_batch_id() -> None:
 
     result = _batch_cancel_payload({"batch_id": "nonexistent"})
     assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Server error path coverage tests
+# ---------------------------------------------------------------------------
+
+
+def test_export_bad_format_raises() -> None:
+    from photo_calibrator.backend.simple_server import _export_payload
+
+    with pytest.raises(ValueError, match="Unsupported export format"):
+        _export_payload({
+            "image_data": sample_data_url(),
+            "output_path": "/tmp/test.xyz",
+            "format": "badformat",
+        })
+
+
+def test_calibrate_session_expired_or_missing() -> None:
+    from photo_calibrator.backend.simple_server import _calibrate_session_payload
+
+    with pytest.raises(ValueError, match="expired"):
+        _calibrate_session_payload({"session_id": "__dead__"})
+
+
+def test_analyze_missing_data_url_key() -> None:
+    from photo_calibrator.backend.simple_server import _handle_analyze
+
+    with pytest.raises(KeyError):
+        _handle_analyze({})
