@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photo-calibrator"
+version = "0.1.0"
+description = "Color cast analysis and calibration core for photo workflows"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "opencv-python",
+]
+
+[project.scripts]
+photo-calibrator-accelerator-benchmark = "photo_calibrator.backend.accelerator_benchmark:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+raw = [
+  "rawpy",
+]
+gpu = [
+  "torch",
+]
+all = [
+  "rawpy",
+  "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

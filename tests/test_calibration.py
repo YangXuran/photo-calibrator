@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+import cv2
+import numpy as np
+
+from photo_calibrator.core.calibration import (
+    CalibrationMode,
+    CalibrationParams,
+    apply_3d_lut,
+    apply_color_matrix,
+    build_auto_lut,
+    calibrate_film,
+    calibrate_image,
+    calibrate_rgb_curves,
+    calibrate_selective,
+    calibrate_tone_zone,
+    estimate_color_matrix,
+    make_comparison,
+    preserve_luminance,
+)
+from photo_calibrator.core.cast_detection import analyze_image_array, rgb_to_lab_float
+
+
+def lab_patch(l_value: int = 160, a_value: int = 145, b_value: int = 150) -> np.ndarray:
+    lab = np.zeros((96, 96, 3), dtype=np.uint8)
+    lab[:, :, 0] = l_value
+    lab[:, :, 1] = a_value
+    lab[:, :, 2] = b_value
+    return cv2.cvtColor(lab, cv2.COLOR_Lab2RGB)
+
+
+def test_global_auto_calibration_reduces_lab_cast_strength() -> None:
+    img = lab_patch(a_value=146, b_value=151)
+    before = analyze_image_array(img).lab.cast_strength
+    result = calibrate_image(img, CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8))
+
+    assert result.image.shape == img.shape
+    assert result.pre_report.lab.cast_strength == before
+    assert result.post_report.lab.cast_strength < before
+    assert result.reduction_pct > 30
+
+
+def test_manual_shift_is_preserved_in_result() -> None:
+    img = lab_patch(a_value=140, b_value=128)
+    result = calibrate_image(
+        img,
+        CalibrationParams(
+            mode=CalibrationMode.GLOBAL,
+            a_shift=-5.0,
+            b_shift=0.0,
+            strength=1.0,
+        ),
+    )
+
+    assert result.a_shift == -5.0
+    assert result.b_shift == 0.0
+    assert result.params.a_shift == -5.0
+
+
+def test_all_phase1_calibration_modes_return_same_shape() -> None:
+    img = lab_patch(a_value=142, b_value=148)
+    for mode in CalibrationMode:
+        result = calibrate_image(img, CalibrationParams(mode=mode, strength=0.5))
+        assert result.image.shape == img.shape
+        assert result.image.dtype == np.uint8
+
+
+def test_make_comparison_places_images_side_by_side() -> None:
+    img = lab_patch()
+    result = calibrate_image(img, CalibrationParams())
+    comparison = make_comparison(img, result.image)
+    assert comparison.shape[0] == img.shape[0]
+    assert comparison.shape[1] == img.shape[1] * 2
+
+
+def test_auto_calibration_uses_neutral_region_when_scene_content_is_color_biased() -> None:
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :] = (170, 30, 30)
+    img[25:75, 25:75] = (128, 128, 128)
+
+    result = calibrate_image(img, CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8))
+
+    assert str(result.metadata["auto_cast_source"]).startswith("neutral")
+    assert abs(result.a_shift) < 2.0
+    assert abs(result.b_shift) < 2.0
+
+
+def test_auto_calibration_skips_tiny_automatic_shift() -> None:
+    img = np.zeros((80, 80, 3), dtype=np.uint8)
+    img[:, :] = (128, 128, 128)
+
+    result = calibrate_image(img, CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8))
+
+    assert result.a_shift == 0.0
+    assert result.b_shift == 0.0
+    assert "skipped-low-magnitude" in result.metadata["auto_cast_source"]
+    assert np.array_equal(result.image, img)
+
+
+def gradient_image() -> np.ndarray:
+    x = np.linspace(20, 235, 96, dtype=np.uint8)
+    y = np.linspace(30, 220, 96, dtype=np.uint8)
+    xx, yy = np.meshgrid(x, y)
+    img = np.stack([xx, yy, ((xx.astype(int) + yy.astype(int)) // 2).astype(np.uint8)], axis=2)
+    img[20:60, 20:60] = (178, 132, 104)
+    return img
+
+
+def assert_valid_changed(output: np.ndarray, source: np.ndarray) -> None:
+    assert output.shape == source.shape
+    assert output.dtype == np.uint8
+    assert not np.array_equal(output, source)
+
+
+def test_rgb_curves_layer_changes_channel_response() -> None:
+    img = gradient_image()
+    out = calibrate_rgb_curves(img, strength=0.8)
+    assert_valid_changed(out, img)
+
+
+def test_tone_zone_layer_changes_luminance_dependent_color() -> None:
+    img = lab_patch(a_value=145, b_value=150)
+    out = calibrate_tone_zone(img, strength=0.8)
+    assert_valid_changed(out, img)
+
+
+def test_matrix_layer_estimates_and_applies_3x3_transform() -> None:
+    img = gradient_image()
+    matrix = estimate_color_matrix(img)
+    out = apply_color_matrix(img, matrix=matrix, strength=0.8)
+    assert matrix.shape == (3, 3)
+    assert_valid_changed(out, img)
+
+
+def test_lut3d_layer_builds_and_applies_lut() -> None:
+    img = gradient_image()
+    lut = build_auto_lut(img, size=9)
+    out = apply_3d_lut(img, lut=lut, strength=0.8)
+    assert lut.shape == (9, 9, 9, 3)
+    assert_valid_changed(out, img)
+
+
+def test_selective_layer_changes_subject_regions() -> None:
+    img = gradient_image()
+    out = calibrate_selective(img, strength=0.8)
+    assert_valid_changed(out, img)
+
+
+def test_film_mode_combines_multiple_correction_layers() -> None:
+    img = gradient_image()
+    out = calibrate_film(img, strength=0.8)
+    assert_valid_changed(out, img)
+
+
+def test_preserve_luminance_restores_original_lightness() -> None:
+    img = gradient_image()
+    darkened = np.clip(img.astype(np.float32) * 0.55, 0, 255).astype(np.uint8)
+
+    restored = preserve_luminance(img, darkened, amount=0.9)
+
+    source_l = float(rgb_to_lab_float(img)[:, :, 0].mean())
+    dark_l = float(rgb_to_lab_float(darkened)[:, :, 0].mean())
+    restored_l = float(rgb_to_lab_float(restored)[:, :, 0].mean())
+    assert abs(restored_l - source_l) < abs(dark_l - source_l)
+
+
+def test_film_mode_keeps_average_luminance_stable() -> None:
+    img = gradient_image()
+    out = calibrate_film(img, strength=0.8)
+
+    source_l = float(rgb_to_lab_float(img)[:, :, 0].mean())
+    out_l = float(rgb_to_lab_float(out)[:, :, 0].mean())
+    assert abs(out_l - source_l) < 6.0
+
+
+def test_new_calibration_modes_are_available_through_calibrate_image() -> None:
+    img = gradient_image()
+    for mode in [
+        CalibrationMode.RGB_CURVES,
+        CalibrationMode.TONE_ZONE,
+        CalibrationMode.MATRIX,
+        CalibrationMode.LUT3D,
+        CalibrationMode.SELECTIVE,
+        CalibrationMode.FILM,
+    ]:
+        result = calibrate_image(img, CalibrationParams(mode=mode, strength=0.6, lut_size=9))
+        assert result.image.shape == img.shape

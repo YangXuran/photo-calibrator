@@ -1,0 +1,11 @@
+{
+  "name": "photo-calibrator-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test:ui": "playwright test tests/ui/photo_calibrator_ui.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}
