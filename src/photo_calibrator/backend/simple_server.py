@@ -6,11 +6,9 @@ import hashlib
 import json
 import mimetypes
 import os
-import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -27,6 +25,7 @@ from photo_calibrator.core.calibration import (
     calibrate_image_from_analysis,
 )
 from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, rgb_to_lab_float
+from photo_calibrator.backend.schemas import AnalysisEntry, PreparedImage
 
 ROOT = Path(__file__).resolve().parents[3]
 WEB_ROOT = ROOT / "web"
@@ -40,28 +39,6 @@ try:
     cv2.setNumThreads(max(1, (os.cpu_count() or 2) - 1))
 except Exception:
     pass
-
-
-@dataclass(frozen=True)
-class PreparedImage:
-    image: np.ndarray
-    original_width: int
-    original_height: int
-    analysis_width: int
-    analysis_height: int
-    downsample_ratio: float
-    source_dtype: str
-    preview_source: str
-
-
-@dataclass(frozen=True)
-class AnalysisEntry:
-    prepared: PreparedImage
-    input_report: object
-    zones: dict
-    static_charts: dict
-    cache_key: str
-    created_at: float
 
 
 _ANALYSIS_CACHE: OrderedDict[str, AnalysisEntry] = OrderedDict()
