@@ -858,6 +858,71 @@ def _sidecar_load_payload(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Export-path: calibrate from local file path
+# ---------------------------------------------------------------------------
+
+
+def _export_path_payload(body: dict) -> dict:
+    """POST /api/export-path — calibrate and export from local file path."""
+    start = time.perf_counter()
+    input_path = body["input_path"]
+    output_path = Path(body["output_path"]).resolve()
+    fmt = body.get("format", "jpeg")
+    max_side = int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE))
+
+    entry = _prepare_file_analysis(input_path, max_side=max_side)
+    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
+    params = CalibrationParams(
+        mode=mode,
+        strength=float(body.get("strength", 0.8)),
+    )
+    result = calibrate_image_from_analysis(
+        entry.prepared.image, params, entry.input_report, entry.zones
+    )
+
+    from photo_calibrator.core.image_model import ImageBuffer
+    from photo_calibrator.io.writers import write_image
+
+    buf = ImageBuffer(data=result.image)
+    write_image(buf, output_path, quality=int(body.get("quality", 92)))
+
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return {
+        "ok": True,
+        "path": str(output_path),
+        "format": fmt,
+        "size": output_path.stat().st_size,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Batch progress tracking
+# ---------------------------------------------------------------------------
+
+_BATCH_STATUS: dict[str, dict] = {}
+_BATCH_STATUS_LOCK = Lock()
+
+
+def _batch_status_payload(query: dict) -> dict:
+    batch_id = query.get("batch_id", [""])[0]
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(batch_id)
+        if status is None:
+            return {"error": "unknown batch_id"}
+        return dict(status)
+
+
+def _batch_cancel_payload(body: dict) -> dict:
+    batch_id = body["batch_id"]
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(batch_id)
+        if status:
+            status["cancelled"] = True
+    return {"ok": True, "batch_id": batch_id}
+
+
+# ---------------------------------------------------------------------------
 # Named handler functions for route dispatch (module-level)
 # ---------------------------------------------------------------------------
 
@@ -895,8 +960,10 @@ _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/calibrate-path": _calibrate_path_payload,
     "/api/calibrate-paths": _calibrate_paths_payload,
     "/api/export": _export_payload,
+    "/api/export-path": _export_path_payload,
     "/api/cache/clear": lambda _body: _cache_clear_payload(),
     "/api/sidecar/save": _sidecar_save_payload,
+    "/api/batch/cancel": _batch_cancel_payload,
 }
 
 _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
@@ -905,6 +972,7 @@ _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/accelerator-benchmark": _get_benchmark_route,
     "/api/cache/stats": lambda _query: _cache_stats_payload(),
     "/api/sidecar/load": lambda query: _sidecar_load_payload({"path": query["path"][0]}),
+    "/api/batch/status": _batch_status_payload,
 }
 
 

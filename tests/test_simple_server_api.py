@@ -581,3 +581,46 @@ def test_sidecar_save_and_load_api(tmp_path) -> None:
     assert loaded["calibration"]["mode"] == "midtones-only"
     assert loaded["calibration"]["a_shift"] == -1.2
     assert loaded["algorithm_version"] == "0.3.0"
+
+
+# ---------------------------------------------------------------------------
+# Export-path and batch status tests (Agent D)
+# ---------------------------------------------------------------------------
+
+
+def test_export_path_writes_calibrated_file(tmp_path) -> None:
+    import cv2
+    from photo_calibrator.backend.simple_server import _export_path_payload
+
+    src = tmp_path / "src.tif"
+    dst = tmp_path / "out.jpg"
+    img = np.zeros((60, 80, 3), dtype=np.uint8)
+    img[:, :] = (100, 120, 150)
+    cv2.imwrite(str(src), img)
+
+    result = _export_path_payload({
+        "input_path": str(src),
+        "output_path": str(dst),
+        "mode": "global",
+        "format": "jpeg",
+        "analysis_max_side": 80,
+    })
+    assert result["ok"] is True
+    assert result["path"] == str(dst)
+    assert dst.exists()
+    assert dst.stat().st_size > 0
+    assert result["elapsed_ms"] > 0
+
+
+def test_batch_status_unknown_batch_id() -> None:
+    from photo_calibrator.backend.simple_server import _batch_status_payload
+
+    result = _batch_status_payload({"batch_id": ["nonexistent"]})
+    assert "error" in result
+
+
+def test_batch_cancel_unknown_batch_id() -> None:
+    from photo_calibrator.backend.simple_server import _batch_cancel_payload
+
+    result = _batch_cancel_payload({"batch_id": "nonexistent"})
+    assert result["ok"] is True
