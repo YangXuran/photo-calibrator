@@ -30,6 +30,9 @@ io = [
 gpu = [
   "torch",
 ]
+# OpenImageIO and OpenColorIO must be installed via system package manager:
+#   sudo dnf install python3-openimageio OpenColorIO OpenImageIO-utils
+color = []
 all = [
   "rawpy",
   "torch",
