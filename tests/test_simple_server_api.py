@@ -500,3 +500,84 @@ def test_export_payload_writes_cube_lut(tmp_path) -> None:
     assert payload["ok"] is True
     assert out.exists()
     assert "LUT_3D_SIZE" in out.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Session TTL / Cache API / Sidecar API tests (Agent D)
+# ---------------------------------------------------------------------------
+
+
+def test_session_expires_after_zero_ttl(monkeypatch) -> None:
+    """When TTL=0, a session should expire immediately."""
+    from photo_calibrator.backend import simple_server
+
+    simple_server._ANALYSIS_CACHE.clear()
+    monkeypatch.setattr(simple_server, "SESSION_TTL_SECONDS", 0)
+
+    payload = simple_server._calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "ttl-test.png",
+    })
+    session_id = payload["session_id"]
+
+    with pytest.raises(ValueError, match="expired"):
+        simple_server._calibrate_session_payload({
+            "session_id": session_id,
+            "mode": "global",
+        })
+
+
+def test_cache_stats_reports_items() -> None:
+    from photo_calibrator.backend import simple_server
+
+    simple_server._ANALYSIS_CACHE.clear()
+
+    simple_server._calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "stats-a.png",
+    })
+    simple_server._calibrate_payload({
+        "image_data": sample_tiff_data_url(),
+        "file_name": "stats-b.tif",
+    })
+
+    stats = simple_server._cache_stats_payload()
+    assert stats["items"] >= 1
+    assert stats["limit"] == simple_server.MEMORY_CACHE_LIMIT
+    assert "ttl_seconds" in stats
+    assert "oldest_age_seconds" in stats
+
+
+def test_cache_clear_empties_cache() -> None:
+    from photo_calibrator.backend import simple_server
+
+    simple_server._calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "clear-test.png",
+    })
+    assert len(simple_server._ANALYSIS_CACHE) >= 1
+
+    result = simple_server._cache_clear_payload()
+    assert result["ok"] is True
+    assert result["cleared"] >= 1
+    assert len(simple_server._ANALYSIS_CACHE) == 0
+
+
+def test_sidecar_save_and_load_api(tmp_path) -> None:
+    from photo_calibrator.backend.simple_server import _sidecar_save_payload, _sidecar_load_payload
+
+    sidecar_path = tmp_path / "test.calib.json"
+
+    result = _sidecar_save_payload({
+        "path": str(sidecar_path),
+        "calibration": {"mode": "midtones-only", "a_shift": -1.2, "b_shift": 3.4, "strength": 0.7},
+        "algorithm_version": "0.3.0",
+    })
+    assert result["ok"] is True
+    assert result["path"] == str(sidecar_path)
+    assert sidecar_path.exists()
+
+    loaded = _sidecar_load_payload({"path": str(sidecar_path)})
+    assert loaded["calibration"]["mode"] == "midtones-only"
+    assert loaded["calibration"]["a_shift"] == -1.2
+    assert loaded["algorithm_version"] == "0.3.0"

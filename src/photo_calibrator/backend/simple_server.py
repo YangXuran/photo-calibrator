@@ -44,6 +44,7 @@ except Exception:
 _ANALYSIS_CACHE: OrderedDict[str, AnalysisEntry] = OrderedDict()
 _CACHE_LOCK = Lock()
 _ANALYSIS_KEY_LOCKS: dict[str, Lock] = {}
+SESSION_TTL_SECONDS = 3600  # 1 hour
 
 
 def _remember_analysis(entry: AnalysisEntry) -> AnalysisEntry:
@@ -59,8 +60,13 @@ def _remember_analysis(entry: AnalysisEntry) -> AnalysisEntry:
 def _get_analysis(cache_key: str) -> AnalysisEntry | None:
     with _CACHE_LOCK:
         entry = _ANALYSIS_CACHE.get(cache_key)
-        if entry is not None:
-            _ANALYSIS_CACHE.move_to_end(cache_key)
+        if entry is None:
+            return None
+        if time.time() - entry.created_at > SESSION_TTL_SECONDS:
+            _ANALYSIS_CACHE.pop(cache_key, None)
+            _ANALYSIS_KEY_LOCKS.pop(cache_key, None)
+            return None
+        _ANALYSIS_CACHE.move_to_end(cache_key)
         return entry
 
 
@@ -806,6 +812,51 @@ def _export_payload(body: dict) -> dict:
     }
 
 
+def _cache_stats_payload() -> dict:
+    """GET /api/cache/stats — cache statistics."""
+    with _CACHE_LOCK:
+        now = time.time()
+        oldest = 0.0
+        for entry in _ANALYSIS_CACHE.values():
+            age = now - entry.created_at
+            if oldest == 0.0 or age > oldest:
+                oldest = age
+        return {
+            "items": len(_ANALYSIS_CACHE),
+            "limit": MEMORY_CACHE_LIMIT,
+            "ttl_seconds": SESSION_TTL_SECONDS,
+            "oldest_age_seconds": oldest,
+        }
+
+
+def _cache_clear_payload() -> dict:
+    """POST /api/cache/clear — clear all cached analysis entries."""
+    with _CACHE_LOCK:
+        count = len(_ANALYSIS_CACHE)
+        _ANALYSIS_CACHE.clear()
+        _ANALYSIS_KEY_LOCKS.clear()
+    return {"ok": True, "cleared": count}
+
+
+def _sidecar_save_payload(body: dict) -> dict:
+    """POST /api/sidecar/save — write calibration sidecar JSON."""
+    from photo_calibrator.io.sidecar import write_sidecar_json
+
+    path = Path(body["path"])
+    calib = body.get("calibration", {})
+    version = body.get("algorithm_version", "0.2.0")
+    metadata = body.get("input_metadata")
+    write_sidecar_json(path, calib, algorithm_version=version, input_metadata=metadata)
+    return {"ok": True, "path": str(path), "size": path.stat().st_size}
+
+
+def _sidecar_load_payload(body: dict) -> dict:
+    """GET /api/sidecar/load?path=... — read calibration sidecar JSON."""
+    from photo_calibrator.io.sidecar import read_sidecar_json
+
+    return read_sidecar_json(body["path"])
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoCalibratorUI/0.1"
 
@@ -858,6 +909,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/export":
                 self._send_json(_export_payload(body))
                 return
+            if self.path == "/api/cache/clear":
+                self._send_json(_cache_clear_payload())
+                return
+            if self.path == "/api/sidecar/save":
+                self._send_json(_sidecar_save_payload(body))
+                return
             self.send_error(404)
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
@@ -887,6 +944,13 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 }
             )
+            return
+        if parsed.path == "/api/cache/stats":
+            self._send_json(_cache_stats_payload())
+            return
+        if parsed.path == "/api/sidecar/load":
+            query = parse_qs(parsed.query)
+            self._send_json(_sidecar_load_payload({"path": query["path"][0]}))
             return
         rel = "index.html" if parsed.path in {"/", ""} else parsed.path.lstrip("/")
         candidate = (WEB_ROOT / rel).resolve()
