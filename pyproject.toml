@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photo-calibrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Color cast analysis and calibration core for photo workflows"
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
   "opencv-python",
+  "pillow",
 ]
 
 [project.scripts]
@@ -22,12 +23,18 @@ dev = [
 raw = [
   "rawpy",
 ]
+io = [
+  "imageio",
+  "tifffile",
+]
 gpu = [
   "torch",
 ]
 all = [
   "rawpy",
   "torch",
+  "imageio",
+  "tifffile",
 ]
 
 [tool.setuptools.packages.find]
