@@ -23,8 +23,10 @@ def test_image_buffer_validates_shape_and_dtype() -> None:
     with pytest.raises(ValueError):
         ImageBuffer(np.zeros((64, 64), dtype=np.uint8))
 
-    with pytest.raises(ValueError):
-        ImageBuffer(np.zeros((64, 64, 3), dtype=np.float32))
+    # float32 is now accepted (Phase 2 upgrade)
+    buf32 = ImageBuffer(np.zeros((64, 64, 3), dtype=np.float32))
+    assert buf32.dtype == np.float32
+    assert buf32.bit_depth == 32
 
 
 def test_neutral_gray_reports_low_cast() -> None:
