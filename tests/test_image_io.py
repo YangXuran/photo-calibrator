@@ -201,10 +201,28 @@ def test_exr_magic_bytes_detected() -> None:
 def test_hdr_file_raises_clear_error(tmp_path) -> None:
     from photo_calibrator.io.readers import read_image
 
+    # Truncated/invalid EXR: OIIO tries but returns None → ValueError
     path = tmp_path / "test.exr"
     path.write_bytes(b"\x76\x2f\x31\x01" + b"\x00" * 100)
-    with pytest.raises(ValueError, match="HDR.*EXR.*not yet supported"):
+    with pytest.raises(ValueError, match="could not be read"):
         read_image(str(path))
+
+
+def test_read_exr_via_oiio(tmp_path) -> None:
+    """OIIO reads a real EXR file through read_image()."""
+    import numpy as np
+    from photo_calibrator.io.oiio import oiio_write
+    from photo_calibrator.io.readers import read_image
+
+    path = tmp_path / "real.exr"
+    data = np.random.rand(16, 16, 3).astype(np.float32)
+    oiio_write(data, str(path))
+
+    buf = read_image(str(path))
+    assert buf.dtype == np.float32
+    assert buf.width == 16
+    assert buf.height == 16
+    assert buf.metadata["reader"] == "oiio"
 
 
 # ---------------------------------------------------------------------------

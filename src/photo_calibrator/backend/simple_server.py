@@ -6,11 +6,9 @@ import hashlib
 import json
 import mimetypes
 import os
-import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -27,6 +25,7 @@ from photo_calibrator.core.calibration import (
     calibrate_image_from_analysis,
 )
 from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, rgb_to_lab_float
+from photo_calibrator.backend.schemas import AnalysisEntry, PreparedImage
 
 ROOT = Path(__file__).resolve().parents[3]
 WEB_ROOT = ROOT / "web"
@@ -42,31 +41,10 @@ except Exception:
     pass
 
 
-@dataclass(frozen=True)
-class PreparedImage:
-    image: np.ndarray
-    original_width: int
-    original_height: int
-    analysis_width: int
-    analysis_height: int
-    downsample_ratio: float
-    source_dtype: str
-    preview_source: str
-
-
-@dataclass(frozen=True)
-class AnalysisEntry:
-    prepared: PreparedImage
-    input_report: object
-    zones: dict
-    static_charts: dict
-    cache_key: str
-    created_at: float
-
-
 _ANALYSIS_CACHE: OrderedDict[str, AnalysisEntry] = OrderedDict()
 _CACHE_LOCK = Lock()
 _ANALYSIS_KEY_LOCKS: dict[str, Lock] = {}
+SESSION_TTL_SECONDS = 3600  # 1 hour
 
 
 def _remember_analysis(entry: AnalysisEntry) -> AnalysisEntry:
@@ -82,8 +60,13 @@ def _remember_analysis(entry: AnalysisEntry) -> AnalysisEntry:
 def _get_analysis(cache_key: str) -> AnalysisEntry | None:
     with _CACHE_LOCK:
         entry = _ANALYSIS_CACHE.get(cache_key)
-        if entry is not None:
-            _ANALYSIS_CACHE.move_to_end(cache_key)
+        if entry is None:
+            return None
+        if time.time() - entry.created_at > SESSION_TTL_SECONDS:
+            _ANALYSIS_CACHE.pop(cache_key, None)
+            _ANALYSIS_KEY_LOCKS.pop(cache_key, None)
+            return None
+        _ANALYSIS_CACHE.move_to_end(cache_key)
         return entry
 
 
@@ -829,6 +812,170 @@ def _export_payload(body: dict) -> dict:
     }
 
 
+def _cache_stats_payload() -> dict:
+    """GET /api/cache/stats — cache statistics."""
+    with _CACHE_LOCK:
+        now = time.time()
+        oldest = 0.0
+        for entry in _ANALYSIS_CACHE.values():
+            age = now - entry.created_at
+            if oldest == 0.0 or age > oldest:
+                oldest = age
+        return {
+            "items": len(_ANALYSIS_CACHE),
+            "limit": MEMORY_CACHE_LIMIT,
+            "ttl_seconds": SESSION_TTL_SECONDS,
+            "oldest_age_seconds": oldest,
+        }
+
+
+def _cache_clear_payload() -> dict:
+    """POST /api/cache/clear — clear all cached analysis entries."""
+    with _CACHE_LOCK:
+        count = len(_ANALYSIS_CACHE)
+        _ANALYSIS_CACHE.clear()
+        _ANALYSIS_KEY_LOCKS.clear()
+    return {"ok": True, "cleared": count}
+
+
+def _sidecar_save_payload(body: dict) -> dict:
+    """POST /api/sidecar/save — write calibration sidecar JSON."""
+    from photo_calibrator.io.sidecar import write_sidecar_json
+
+    path = Path(body["path"])
+    calib = body.get("calibration", {})
+    version = body.get("algorithm_version", "0.2.0")
+    metadata = body.get("input_metadata")
+    write_sidecar_json(path, calib, algorithm_version=version, input_metadata=metadata)
+    return {"ok": True, "path": str(path), "size": path.stat().st_size}
+
+
+def _sidecar_load_payload(body: dict) -> dict:
+    """GET /api/sidecar/load?path=... — read calibration sidecar JSON."""
+    from photo_calibrator.io.sidecar import read_sidecar_json
+
+    return read_sidecar_json(body["path"])
+
+
+# ---------------------------------------------------------------------------
+# Export-path: calibrate from local file path
+# ---------------------------------------------------------------------------
+
+
+def _export_path_payload(body: dict) -> dict:
+    """POST /api/export-path — calibrate and export from local file path."""
+    start = time.perf_counter()
+    input_path = body["input_path"]
+    output_path = Path(body["output_path"]).resolve()
+    fmt = body.get("format", "jpeg")
+    max_side = int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE))
+
+    entry = _prepare_file_analysis(input_path, max_side=max_side)
+    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
+    params = CalibrationParams(
+        mode=mode,
+        strength=float(body.get("strength", 0.8)),
+    )
+    result = calibrate_image_from_analysis(
+        entry.prepared.image, params, entry.input_report, entry.zones
+    )
+
+    from photo_calibrator.core.image_model import ImageBuffer
+    from photo_calibrator.io.writers import write_image
+
+    buf = ImageBuffer(data=result.image)
+    write_image(buf, output_path, quality=int(body.get("quality", 92)))
+
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return {
+        "ok": True,
+        "path": str(output_path),
+        "format": fmt,
+        "size": output_path.stat().st_size,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Batch progress tracking
+# ---------------------------------------------------------------------------
+
+_BATCH_STATUS: dict[str, dict] = {}
+_BATCH_STATUS_LOCK = Lock()
+
+
+def _batch_status_payload(query: dict) -> dict:
+    batch_id = query.get("batch_id", [""])[0]
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(batch_id)
+        if status is None:
+            return {"error": "unknown batch_id"}
+        return dict(status)
+
+
+def _batch_cancel_payload(body: dict) -> dict:
+    batch_id = body["batch_id"]
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(batch_id)
+        if status:
+            status["cancelled"] = True
+    return {"ok": True, "batch_id": batch_id}
+
+
+# ---------------------------------------------------------------------------
+# Named handler functions for route dispatch (module-level)
+# ---------------------------------------------------------------------------
+
+
+def _handle_analyze(body: dict) -> dict:
+    report = analyze_image_array(_decode_data_url(body["image_data"]))
+    return {"input": _report_payload(report)}
+
+
+def _get_capabilities_route(query: dict) -> dict:
+    if "backend" in query:
+        return {"accelerator": _set_accelerator_payload(query["backend"][0])}
+    return {"accelerator": _accelerator_payload()}
+
+
+def _get_benchmark_route(query: dict) -> dict:
+    if "backend" in query:
+        _set_accelerator_payload(query["backend"][0])
+    return {"benchmark": _accelerator_benchmark_payload(
+        image_side=int(query.get("image_side", ["256"])[0]),
+        lut_size=int(query.get("lut_size", ["17"])[0]),
+        iterations=int(query.get("iterations", ["3"])[0]),
+    )}
+
+
+# ---------------------------------------------------------------------------
+# Route dispatch tables
+# ---------------------------------------------------------------------------
+
+_POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
+    "/api/analyze": _handle_analyze,
+    "/api/calibrate": _calibrate_payload,
+    "/api/calibrate-session": _calibrate_session_payload,
+    "/api/calibrate-batch": _calibrate_batch_payload,
+    "/api/calibrate-path": _calibrate_path_payload,
+    "/api/calibrate-paths": _calibrate_paths_payload,
+    "/api/export": _export_payload,
+    "/api/export-path": _export_path_payload,
+    "/api/cache/clear": lambda _body: _cache_clear_payload(),
+    "/api/sidecar/save": _sidecar_save_payload,
+    "/api/batch/cancel": _batch_cancel_payload,
+}
+
+_GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
+    "/api/health": lambda _query: {"ok": True},
+    "/api/capabilities": _get_capabilities_route,
+    "/api/accelerator-benchmark": _get_benchmark_route,
+    "/api/cache/stats": lambda _query: _cache_stats_payload(),
+    "/api/sidecar/load": lambda query: _sidecar_load_payload({"path": query["path"][0]}),
+    "/api/batch/status": _batch_status_payload,
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoCalibratorUI/0.1"
 
@@ -859,57 +1006,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length).decode("utf-8"))
-            if self.path == "/api/analyze":
-                report = analyze_image_array(_decode_data_url(body["image_data"]))
-                self._send_json({"input": _report_payload(report)})
+            handler = _POST_ROUTES.get(self.path)
+            if handler is None:
+                self.send_error(404)
                 return
-            if self.path == "/api/calibrate":
-                self._send_json(_calibrate_payload(body))
-                return
-            if self.path == "/api/calibrate-session":
-                self._send_json(_calibrate_session_payload(body))
-                return
-            if self.path == "/api/calibrate-batch":
-                self._send_json(_calibrate_batch_payload(body))
-                return
-            if self.path == "/api/calibrate-path":
-                self._send_json(_calibrate_path_payload(body))
-                return
-            if self.path == "/api/calibrate-paths":
-                self._send_json(_calibrate_paths_payload(body))
-                return
-            if self.path == "/api/export":
-                self._send_json(_export_payload(body))
-                return
-            self.send_error(404)
+            self._send_json(handler(body))
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/health":
-            self._send_json({"ok": True})
-            return
-        if parsed.path == "/api/capabilities":
+        handler = _GET_ROUTES.get(parsed.path)
+        if handler is not None:
             query = parse_qs(parsed.query)
-            if "backend" in query:
-                self._send_json({"accelerator": _set_accelerator_payload(query["backend"][0])})
-            else:
-                self._send_json({"accelerator": _accelerator_payload()})
-            return
-        if parsed.path == "/api/accelerator-benchmark":
-            query = parse_qs(parsed.query)
-            if "backend" in query:
-                _set_accelerator_payload(query["backend"][0])
-            self._send_json(
-                {
-                    "benchmark": _accelerator_benchmark_payload(
-                        image_side=int(query.get("image_side", ["256"])[0]),
-                        lut_size=int(query.get("lut_size", ["17"])[0]),
-                        iterations=int(query.get("iterations", ["3"])[0]),
-                    )
-                }
-            )
+            self._send_json(handler(query))
             return
         rel = "index.html" if parsed.path in {"/", ""} else parsed.path.lstrip("/")
         candidate = (WEB_ROOT / rel).resolve()

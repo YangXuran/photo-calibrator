@@ -53,12 +53,20 @@ def read_image(path: str | Path) -> ImageBuffer:
     source = str(path)
     suffix = path.suffix.lower()
 
-    # Reject HDR/EXR early with a clear message
+    # Try OIIO for HDR/EXR formats
     if suffix in _HDR_EXTENSIONS:
+        from photo_calibrator.io.oiio import oiio_read
+
+        data = oiio_read(path)
+        if data is not None:
+            # oiio_read returns float32 [0,1] or HDR values
+            return ImageBuffer(
+                data=data,
+                metadata={"source": source, "reader": "oiio"},
+            )
         raise ValueError(
-            f"HDR/EXR files ({suffix}) are not yet supported in Phase 2. "
-            f"Full HDR pipeline (OpenEXR, Radiance HDR) is planned for Phase 3+. "
-            f"File: {path}"
+            f"HDR/EXR file ({suffix}) could not be read. "
+            f"OpenImageIO is available but returned no data. File: {path}"
         )
 
     # Try imageio first (handles float TIFF, uint16 PNG, etc.)
