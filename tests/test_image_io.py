@@ -117,3 +117,169 @@ def test_read_uint8_jpeg_returns_image_buffer(tmp_path) -> None:
     assert buf.dtype == np.uint8
     assert buf.data_range == (0, 255)
     assert buf.is_hdr is False
+
+
+# ---------------------------------------------------------------------------
+# Dtype-aware writer / export tests
+# ---------------------------------------------------------------------------
+
+
+def test_export_jpeg_writes_file(tmp_path) -> None:
+    from photo_calibrator.io.writers import export_jpeg
+
+    data = np.zeros((16, 16, 3), dtype=np.uint8)
+    data[:, :] = 128
+    buf = ImageBuffer(data=data)
+    out = tmp_path / "out.jpg"
+    export_jpeg(buf, out, quality=90)
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_export_tiff16_writes_16bit_file(tmp_path) -> None:
+    import tifffile
+
+    from photo_calibrator.io.writers import export_tiff16
+
+    data = np.zeros((16, 16, 3), dtype=np.uint16)
+    data[:, :] = 32768
+    buf = ImageBuffer(data=data)
+    out = tmp_path / "out.tif"
+    export_tiff16(buf, out)
+    assert out.exists()
+    reloaded = tifffile.imread(str(out))
+    assert reloaded.dtype == np.uint16
+
+
+def test_export_from_float32_to_tiff16(tmp_path) -> None:
+    """Float32 [0,1] should be scaled to uint16 0-65535."""
+    import tifffile
+
+    from photo_calibrator.io.writers import export_tiff16
+
+    data = np.random.rand(16, 16, 3).astype(np.float32)
+    buf = ImageBuffer(data=data)
+    out = tmp_path / "out.tif"
+    export_tiff16(buf, out)
+    reloaded = tifffile.imread(str(out))
+    assert reloaded.dtype == np.uint16
+    assert reloaded.max() > 60000
+
+
+def test_legacy_save_rgb_image_still_works(tmp_path) -> None:
+    from photo_calibrator.io import save_rgb_image
+
+    data = np.zeros((16, 16, 3), dtype=np.uint8)
+    data[:, :] = 128
+    out = tmp_path / "legacy.jpg"
+    save_rgb_image(out, data)
+    assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# HDR/EXR detection tests
+# ---------------------------------------------------------------------------
+
+
+def test_hdr_exr_extension_is_detected() -> None:
+    from photo_calibrator.io.readers import _is_hdr_extension
+
+    assert _is_hdr_extension("test.exr")
+    assert _is_hdr_extension("test.hdr")
+    assert _is_hdr_extension("test.rgbe")
+    assert not _is_hdr_extension("test.jpg")
+    assert not _is_hdr_extension("test.tif")
+
+
+def test_exr_magic_bytes_detected() -> None:
+    from photo_calibrator.io.readers import _is_exr_magic
+
+    assert _is_exr_magic(b"\x76\x2f\x31\x01" + b"\x00" * 16)
+    assert not _is_exr_magic(b"\xff\xd8\xff\xe0")  # JPEG magic
+
+
+def test_hdr_file_raises_clear_error(tmp_path) -> None:
+    from photo_calibrator.io.readers import read_image
+
+    path = tmp_path / "test.exr"
+    path.write_bytes(b"\x76\x2f\x31\x01" + b"\x00" * 100)
+    with pytest.raises(ValueError, match="HDR.*EXR.*not yet supported"):
+        read_image(str(path))
+
+
+# ---------------------------------------------------------------------------
+# ICC / EXIF metadata tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_icc_from_synthetic_jpeg_returns_none(tmp_path) -> None:
+    from photo_calibrator.io.metadata import extract_icc_profile
+
+    import imageio.v3 as iio
+
+    path = tmp_path / "test.jpg"
+    data = np.zeros((16, 16, 3), dtype=np.uint8)
+    data[:, :] = 128
+    iio.imwrite(str(path), data)
+    icc = extract_icc_profile(str(path))
+    assert icc is None
+
+
+def test_extract_exif_does_not_crash(tmp_path) -> None:
+    from photo_calibrator.io.metadata import extract_exif_basic
+
+    import imageio.v3 as iio
+
+    path = tmp_path / "test.jpg"
+    data = np.zeros((16, 16, 3), dtype=np.uint8)
+    data[:, :] = 128
+    iio.imwrite(str(path), data)
+    exif = extract_exif_basic(str(path))
+    assert isinstance(exif, dict)
+    assert "source" in exif
+
+
+# ---------------------------------------------------------------------------
+# Sidecar JSON tests
+# ---------------------------------------------------------------------------
+
+
+def test_sidecar_roundtrip(tmp_path) -> None:
+    from photo_calibrator.io.sidecar import read_sidecar_json, write_sidecar_json
+
+    params = {
+        "mode": "global",
+        "a_shift": -2.5,
+        "b_shift": 1.8,
+        "strength": 0.8,
+    }
+    path = tmp_path / "test.calib.json"
+    write_sidecar_json(path, params, algorithm_version="0.2.0")
+    assert path.exists()
+
+    loaded = read_sidecar_json(path)
+    assert loaded["calibration"]["mode"] == "global"
+    assert loaded["calibration"]["a_shift"] == -2.5
+    assert loaded["algorithm_version"] == "0.2.0"
+
+
+# ---------------------------------------------------------------------------
+# .cube 3D LUT tests
+# ---------------------------------------------------------------------------
+
+
+def test_cube_lut_identity_is_valid_format(tmp_path) -> None:
+    from photo_calibrator.io.lut_export import write_cube_lut
+
+    out = tmp_path / "test.cube"
+    write_cube_lut(out, size=17)
+    assert out.exists()
+    content = out.read_text()
+    assert "LUT_3D_SIZE 17" in content
+    assert "TITLE" in content
+    # Count data lines (17^3 = 4913)
+    data_lines = [
+        ln for ln in content.split("\n")
+        if ln.strip() and not ln.startswith(("#", "TITLE", "LUT_3D_SIZE", "DOMAIN"))
+    ]
+    assert len(data_lines) == 17**3

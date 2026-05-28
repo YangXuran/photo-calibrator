@@ -414,34 +414,11 @@ def _choose_tiff_preview_page(pages: list[np.ndarray], max_side: int) -> np.ndar
 
 
 def _try_decode_raw_preview(raw: bytes, file_name: str) -> tuple[np.ndarray, str] | None:
-    raw_exts = (".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw")
-    if not file_name.lower().endswith(raw_exts):
-        return None
-    try:
-        import rawpy  # type: ignore
-    except ImportError as exc:
-        raise ValueError("RAW support requires optional dependency rawpy") from exc
+    from photo_calibrator.io.raw import RAW_EXTENSIONS, decode_raw_preview
 
-    suffix = Path(file_name).suffix or ".raw"
-    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-        tmp.write(raw)
-        tmp.flush()
-        with rawpy.imread(tmp.name) as raw_image:
-            try:
-                thumb = raw_image.extract_thumb()
-                if thumb.format == rawpy.ThumbFormat.JPEG:
-                    arr = np.frombuffer(thumb.data, dtype=np.uint8)
-                    bgr = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
-                    if bgr is not None:
-                        return bgr, "raw-embedded-jpeg"
-                if thumb.format == rawpy.ThumbFormat.BITMAP:
-                    rgb = np.asarray(thumb.data)
-                    bgr = cv2.cvtColor(_to_uint8_preview(rgb), cv2.COLOR_RGB2BGR)
-                    return bgr, "raw-embedded-bitmap"
-            except Exception:
-                pass
-            rgb = raw_image.postprocess(half_size=True, no_auto_bright=True, output_bps=8)
-            return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), "raw-half-postprocess"
+    if not file_name.lower().endswith(RAW_EXTENSIONS):
+        return None
+    return decode_raw_preview(raw, file_name)
 
 
 def _normalize_bgr(bgr: np.ndarray) -> np.ndarray:
@@ -795,6 +772,63 @@ def _calibration_response(
     }
 
 
+def _export_payload(body: dict) -> dict:
+    """Export calibrated image to disk file."""
+    start = time.perf_counter()
+
+    output_path = Path(body["output_path"]).resolve()
+    fmt = body.get("format", "jpeg")
+
+    entry = _prepare_uploaded_analysis(
+        body["image_data"],
+        file_name=str(body.get("file_name", "")),
+    )
+    img = entry.prepared.image
+    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
+    params = CalibrationParams(
+        mode=mode,
+        strength=float(body.get("strength", 0.8)),
+        highlight_pct=float(body.get("highlight_pct", 55.0)),
+        sat_pct=float(body.get("sat_pct", 25.0)),
+    )
+    result = calibrate_image_from_analysis(img, params, entry.input_report, entry.zones)
+
+    from photo_calibrator.core.image_model import ImageBuffer
+    from photo_calibrator.io.writers import write_image
+
+    buf = ImageBuffer(data=result.image)
+
+    if fmt in {"jpeg", "jpg", "png", "tiff16", "tif16"}:
+        if fmt == "tiff16" or fmt == "tif16":
+            output_path = output_path.with_suffix(".tif")
+        write_image(buf, output_path, quality=int(body.get("quality", 92)))
+    elif fmt == "sidecar":
+        from photo_calibrator.io.sidecar import write_sidecar_json
+
+        calib_params = {
+            "mode": result.mode.value,
+            "a_shift": result.a_shift,
+            "b_shift": result.b_shift,
+            "strength": result.params.strength,
+        }
+        write_sidecar_json(output_path, calib_params)
+    elif fmt == "cube":
+        from photo_calibrator.io.lut_export import write_cube_lut
+
+        write_cube_lut(output_path, size=17)
+    else:
+        raise ValueError(f"Unsupported export format: {fmt}")
+
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return {
+        "ok": True,
+        "path": str(output_path),
+        "format": fmt,
+        "size": output_path.stat().st_size if output_path.exists() else 0,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoCalibratorUI/0.1"
 
@@ -843,6 +877,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/calibrate-paths":
                 self._send_json(_calibrate_paths_payload(body))
+                return
+            if self.path == "/api/export":
+                self._send_json(_export_payload(body))
                 return
             self.send_error(404)
         except Exception as exc:

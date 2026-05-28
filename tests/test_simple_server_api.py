@@ -440,3 +440,63 @@ def test_raw_decoder_prefers_embedded_jpeg_thumbnail(monkeypatch) -> None:
     assert prepared.original_width == 16
     assert prepared.original_height == 12
     assert calls == {"extract_thumb": 1, "postprocess": 0}
+
+
+# ---------------------------------------------------------------------------
+# Export endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_export_payload_writes_jpeg_to_disk(tmp_path) -> None:
+    from photo_calibrator.backend.simple_server import _export_payload
+
+    out = tmp_path / "exported.jpg"
+    payload = _export_payload(
+        {
+            "image_data": sample_data_url(),
+            "mode": "global",
+            "strength": 0.8,
+            "output_path": str(out),
+            "format": "jpeg",
+            "quality": 90,
+        }
+    )
+    assert payload["ok"] is True
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_export_payload_writes_sidecar_json(tmp_path) -> None:
+    from photo_calibrator.backend.simple_server import _export_payload
+
+    out = tmp_path / "test.calib.json"
+    payload = _export_payload(
+        {
+            "image_data": sample_data_url(),
+            "mode": "global",
+            "strength": 0.8,
+            "output_path": str(out),
+            "format": "sidecar",
+        }
+    )
+    assert payload["ok"] is True
+    assert out.exists()
+    import json
+    data = json.loads(out.read_text())
+    assert data["calibration"]["mode"] == "global"
+
+
+def test_export_payload_writes_cube_lut(tmp_path) -> None:
+    from photo_calibrator.backend.simple_server import _export_payload
+
+    out = tmp_path / "test.cube"
+    payload = _export_payload(
+        {
+            "image_data": sample_data_url(),
+            "output_path": str(out),
+            "format": "cube",
+        }
+    )
+    assert payload["ok"] is True
+    assert out.exists()
+    assert "LUT_3D_SIZE" in out.read_text()
