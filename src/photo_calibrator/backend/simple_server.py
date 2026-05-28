@@ -857,6 +857,57 @@ def _sidecar_load_payload(body: dict) -> dict:
     return read_sidecar_json(body["path"])
 
 
+# ---------------------------------------------------------------------------
+# Named handler functions for route dispatch (module-level)
+# ---------------------------------------------------------------------------
+
+
+def _handle_analyze(body: dict) -> dict:
+    report = analyze_image_array(_decode_data_url(body["image_data"]))
+    return {"input": _report_payload(report)}
+
+
+def _get_capabilities_route(query: dict) -> dict:
+    if "backend" in query:
+        return {"accelerator": _set_accelerator_payload(query["backend"][0])}
+    return {"accelerator": _accelerator_payload()}
+
+
+def _get_benchmark_route(query: dict) -> dict:
+    if "backend" in query:
+        _set_accelerator_payload(query["backend"][0])
+    return {"benchmark": _accelerator_benchmark_payload(
+        image_side=int(query.get("image_side", ["256"])[0]),
+        lut_size=int(query.get("lut_size", ["17"])[0]),
+        iterations=int(query.get("iterations", ["3"])[0]),
+    )}
+
+
+# ---------------------------------------------------------------------------
+# Route dispatch tables
+# ---------------------------------------------------------------------------
+
+_POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
+    "/api/analyze": _handle_analyze,
+    "/api/calibrate": _calibrate_payload,
+    "/api/calibrate-session": _calibrate_session_payload,
+    "/api/calibrate-batch": _calibrate_batch_payload,
+    "/api/calibrate-path": _calibrate_path_payload,
+    "/api/calibrate-paths": _calibrate_paths_payload,
+    "/api/export": _export_payload,
+    "/api/cache/clear": lambda _body: _cache_clear_payload(),
+    "/api/sidecar/save": _sidecar_save_payload,
+}
+
+_GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
+    "/api/health": lambda _query: {"ok": True},
+    "/api/capabilities": _get_capabilities_route,
+    "/api/accelerator-benchmark": _get_benchmark_route,
+    "/api/cache/stats": lambda _query: _cache_stats_payload(),
+    "/api/sidecar/load": lambda query: _sidecar_load_payload({"path": query["path"][0]}),
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoCalibratorUI/0.1"
 
@@ -887,70 +938,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length).decode("utf-8"))
-            if self.path == "/api/analyze":
-                report = analyze_image_array(_decode_data_url(body["image_data"]))
-                self._send_json({"input": _report_payload(report)})
+            handler = _POST_ROUTES.get(self.path)
+            if handler is None:
+                self.send_error(404)
                 return
-            if self.path == "/api/calibrate":
-                self._send_json(_calibrate_payload(body))
-                return
-            if self.path == "/api/calibrate-session":
-                self._send_json(_calibrate_session_payload(body))
-                return
-            if self.path == "/api/calibrate-batch":
-                self._send_json(_calibrate_batch_payload(body))
-                return
-            if self.path == "/api/calibrate-path":
-                self._send_json(_calibrate_path_payload(body))
-                return
-            if self.path == "/api/calibrate-paths":
-                self._send_json(_calibrate_paths_payload(body))
-                return
-            if self.path == "/api/export":
-                self._send_json(_export_payload(body))
-                return
-            if self.path == "/api/cache/clear":
-                self._send_json(_cache_clear_payload())
-                return
-            if self.path == "/api/sidecar/save":
-                self._send_json(_sidecar_save_payload(body))
-                return
-            self.send_error(404)
+            self._send_json(handler(body))
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/health":
-            self._send_json({"ok": True})
-            return
-        if parsed.path == "/api/capabilities":
+        handler = _GET_ROUTES.get(parsed.path)
+        if handler is not None:
             query = parse_qs(parsed.query)
-            if "backend" in query:
-                self._send_json({"accelerator": _set_accelerator_payload(query["backend"][0])})
-            else:
-                self._send_json({"accelerator": _accelerator_payload()})
-            return
-        if parsed.path == "/api/accelerator-benchmark":
-            query = parse_qs(parsed.query)
-            if "backend" in query:
-                _set_accelerator_payload(query["backend"][0])
-            self._send_json(
-                {
-                    "benchmark": _accelerator_benchmark_payload(
-                        image_side=int(query.get("image_side", ["256"])[0]),
-                        lut_size=int(query.get("lut_size", ["17"])[0]),
-                        iterations=int(query.get("iterations", ["3"])[0]),
-                    )
-                }
-            )
-            return
-        if parsed.path == "/api/cache/stats":
-            self._send_json(_cache_stats_payload())
-            return
-        if parsed.path == "/api/sidecar/load":
-            query = parse_qs(parsed.query)
-            self._send_json(_sidecar_load_payload({"path": query["path"][0]}))
+            self._send_json(handler(query))
             return
         rel = "index.html" if parsed.path in {"/", ""} else parsed.path.lstrip("/")
         candidate = (WEB_ROOT / rel).resolve()
