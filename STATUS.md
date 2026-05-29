@@ -79,6 +79,11 @@
   - `MockProvider`: deterministic mock for testing/offline use
   - `ProviderConfig`: base_url, api_key, model, max_tokens, temperature
   - 9 provider tests
+- **i18n**: `web/i18n.js`
+  - en/zh translation layer with `t("key")` API
+  - `data-i18n` / `data-i18n-aria` / `data-i18n-alt` HTML attributes
+  - `translateDOM()` auto-replaces static text on load / locale switch
+  - All ~120 UI strings migrated to i18n keys
 
 ---
 

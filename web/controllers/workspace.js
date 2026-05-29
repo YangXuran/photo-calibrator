@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+
 export function createWorkspaceController({
   els,
   state,
@@ -15,13 +17,13 @@ export function createWorkspaceController({
   onSelectForCalibration,
 }) {
   function applyWorkspaceMetadata() {
-    const currentFolderName = state.files.length ? folderName(state.files) : "No folder loaded";
+    const currentFolderName = state.files.length ? folderName(state.files) : t("workspace.noFolderLoaded");
     els.folderLabel.textContent = currentFolderName;
-    els.countLabel.textContent = `${state.files.length} photos`;
+    els.countLabel.textContent = `${state.files.length} ${t("filmstrip.photos")}`;
     els.librarySource.textContent = currentFolderName;
     els.libraryCount.textContent = String(state.files.length);
     els.viewerFolderLabel.textContent = currentFolderName;
-    els.sessionStatus.textContent = state.files.length ? "Ready" : "Idle";
+    els.sessionStatus.textContent = state.files.length ? t("workspace.ready") : t("workspace.idle");
   }
 
   function renderFilmstrip() {

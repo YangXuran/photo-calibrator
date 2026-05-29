@@ -1,4 +1,4 @@
-import { INSPECTOR_PANELS, TOOL_DEFINITIONS } from "../ui-config.js";
+import { INSPECTOR_PANELS, TOOL_DEFINITIONS, toolLabel, panelLabel } from "../ui-config.js";
 
 export function renderToolButtons(els, state, onSelectTool) {
   els.toolGrid.innerHTML = "";
@@ -7,7 +7,7 @@ export function renderToolButtons(els, state, onSelectTool) {
     button.className = `tool-button${state.activeTool === tool.id ? " active" : ""}`;
     button.type = "button";
     button.dataset.tool = tool.id;
-    button.textContent = tool.label;
+    button.textContent = toolLabel(tool);
     button.addEventListener("click", () => onSelectTool(tool.id));
     els.toolGrid.append(button);
   });
@@ -21,7 +21,7 @@ export function renderInspectorTabs(els, state, onSelectPanel) {
     button.type = "button";
     button.dataset.panel = panel.id;
     button.dataset.testid = `inspector-tab-${panel.id}`;
-    button.textContent = panel.label;
+    button.textContent = panelLabel(panel);
     button.addEventListener("click", () => onSelectPanel(panel.id));
     els.inspectorTabsRoot.append(button);
   });
@@ -48,7 +48,7 @@ export function renderZones(els, zones, fmt) {
 export function renderSkin(els, report, fmt) {
   const skin = report.skin;
   if (!skin) {
-    els.skinStatus.textContent = "No stable skin region detected";
+    els.skinStatus.textContent = t("skin.noStableRegion");
     els.skinStatus.classList.remove("detected");
     els.skinPixels.textContent = "-";
     els.skinA.textContent = "-";
@@ -58,7 +58,7 @@ export function renderSkin(els, report, fmt) {
   }
   const da = skin.a - report.lab.a;
   const db = skin.b - report.lab.b;
-  els.skinStatus.textContent = "Detected";
+  els.skinStatus.textContent = t("skin.detected");
   els.skinStatus.classList.add("detected");
   els.skinPixels.textContent = String(skin.pixels);
   els.skinA.textContent = fmt(skin.a);
@@ -66,8 +66,10 @@ export function renderSkin(els, report, fmt) {
   els.skinDelta.textContent = `${da >= 0 ? "+" : ""}${fmt(da)}/${db >= 0 ? "+" : ""}${fmt(db)}`;
 }
 
+import { t } from "../i18n.js";
+
 export function setBusyMetrics(els) {
-  els.sessionStatus.textContent = "Processing...";
+  els.sessionStatus.textContent = t("processing");
   els.afterStrength.textContent = "...";
   els.reduction.textContent = "...";
   els.direction.textContent = "...";
@@ -90,14 +92,14 @@ export function renderAccelerator(els, processing) {
   const gpu = processing.gpu_ops || [];
   els.acceleratorBackend.textContent = processing.accelerator_backend || "-";
   els.acceleratorRequested.textContent = processing.accelerator_requested || "-";
-  els.acceleratedOps.textContent = gpu.length ? gpu.join(", ") : "None";
+  els.acceleratedOps.textContent = gpu.length ? gpu.join(", ") : t("accelerator.none");
   els.fallbackOps.textContent = fallback.length ? fallback.join(", ") : "-";
-  els.fallbackReason.textContent = processing.fallback_reason || "None";
+  els.fallbackReason.textContent = processing.fallback_reason || t("accelerator.none");
   els.openclStatus.textContent = processing.opencl_available
     ? processing.opencl_enabled
-      ? "Enabled"
-      : "Available"
-    : "Unavailable";
+      ? t("accelerator.enabled")
+      : t("accelerator.available")
+    : t("accelerator.unavailable");
   els.lutPath.textContent = gpu.includes("3d-lut") ? "GPU" : "CPU";
 }
 

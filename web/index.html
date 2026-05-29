@@ -16,101 +16,101 @@
         <div class="toolbar">
           <label class="button">
             <input id="folderInput" data-testid="folder-input" type="file" accept="image/*,.tif,.tiff,.dng,.cr2,.cr3,.nef,.arw,.raf,.rw2,.orf,.pef,.srw" multiple webkitdirectory />
-            Open Folder
+            <span data-i18n="toolbar.openFolder">Open Folder</span>
           </label>
           <label class="button secondary">
             <input id="fileInput" data-testid="file-input" type="file" accept="image/*,.tif,.tiff,.dng,.cr2,.cr3,.nef,.arw,.raf,.rw2,.orf,.pef,.srw" multiple />
-            Add Photos
+            <span data-i18n="toolbar.addPhotos">Add Photos</span>
           </label>
         </div>
       </header>
 
       <main class="workspace">
-        <aside class="library-panel" aria-label="Resources &amp; Presets">
+        <aside class="library-panel" data-i18n-aria="library.ariaLabel">
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>Resources</span>
+              <span data-i18n="library.resources">Resources</span>
             </div>
             <div class="library-section">
               <div class="library-meta-row">
-                <span>Source</span>
-                <strong id="librarySource" data-testid="library-source">Not loaded</strong>
+                <span data-i18n="library.source">Source</span>
+                <strong id="librarySource" data-testid="library-source" data-i18n="library.notLoaded">Not loaded</strong>
               </div>
               <div class="library-meta-row">
-                <span>Photo Count</span>
+                <span data-i18n="library.photoCount">Photo Count</span>
                 <strong id="libraryCount" data-testid="library-count">0</strong>
               </div>
             </div>
           </section>
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>Quick Tools</span>
+              <span data-i18n="library.quickTools">Quick Tools</span>
             </div>
             <div id="toolGrid" class="tool-grid" data-testid="tool-grid"></div>
           </section>
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>Session</span>
+              <span data-i18n="library.session">Session</span>
             </div>
             <div class="library-section">
               <div class="session-card" data-testid="session-card">
-                <span>Current Document</span>
-                <strong id="sessionStatus" data-testid="session-status">Idle</strong>
-                <small>Parameter changes use session preview to avoid re-decoding the original.</small>
+                <span data-i18n="library.currentDocument">Current Document</span>
+                <strong id="sessionStatus" data-testid="session-status" data-i18n="library.idle">Idle</strong>
+                <small data-i18n="library.sessionHint">Parameter changes use session preview to avoid re-decoding the original.</small>
               </div>
             </div>
           </section>
         </aside>
 
-        <section class="viewer" aria-label="Photo Preview">
+        <section class="viewer" data-i18n-aria="viewer.ariaLabel">
           <div class="viewer-toolbar">
             <div class="viewer-toolbar-group">
               <div class="viewer-breadcrumb">
-                <span id="viewerFolderLabel" data-testid="viewer-folder-label">No project loaded</span>
-                <strong id="viewerFileLabel" data-testid="viewer-file-label">Select a photo to start</strong>
+                <span id="viewerFolderLabel" data-testid="viewer-folder-label" data-i18n="viewer.noProject">No project loaded</span>
+                <strong id="viewerFileLabel" data-testid="viewer-file-label" data-i18n="viewer.selectPhoto">Select a photo to start</strong>
               </div>
             </div>
             <div class="segmented-control" data-testid="compare-mode">
-              <button id="compareSideBySide" class="segment active" type="button" data-mode="side-by-side" data-testid="compare-side-by-side">Side by Side</button>
-              <button id="compareSplit" class="segment" type="button" data-mode="split" data-testid="compare-split">Split</button>
-              <button id="compareCalibrated" class="segment" type="button" data-mode="calibrated-only" data-testid="compare-calibrated">Calibrated</button>
+              <button id="compareSideBySide" class="segment active" type="button" data-mode="side-by-side" data-testid="compare-side-by-side" data-i18n="compare.sideBySide">Side by Side</button>
+              <button id="compareSplit" class="segment" type="button" data-mode="split" data-testid="compare-split" data-i18n="compare.split">Split</button>
+              <button id="compareCalibrated" class="segment" type="button" data-mode="calibrated-only" data-testid="compare-calibrated" data-i18n="compare.calibrated">Calibrated</button>
             </div>
             <label id="splitControl" class="split-control hidden" data-testid="split-control">
-              Split Position
+              <span data-i18n="compare.splitPosition">Split Position</span>
               <input id="splitPositionInput" data-testid="split-position-input" type="range" min="10" max="90" step="1" value="50" />
             </label>
           </div>
           <div id="emptyState" class="empty-state" data-testid="empty-state">
-            <strong>Load a photo to inspect calibration</strong>
-            <span>After selecting a folder, thumbnails appear in the filmstrip below.</span>
+            <strong data-i18n="viewer.loadHint">Load a photo to inspect calibration</strong>
+            <span data-i18n="viewer.loadHintDetail">After selecting a folder, thumbnails appear in the filmstrip below.</span>
           </div>
           <div id="imageGrid" class="image-grid hidden" data-testid="image-grid">
             <figure id="originalFigure" data-testid="original-figure">
-              <figcaption>Original</figcaption>
+              <figcaption data-i18n="image.original">Original</figcaption>
               <div class="image-stage">
-                <img id="originalImage" data-testid="original-image" alt="Original preview" />
+                <img id="originalImage" data-testid="original-image" data-i18n-alt="image.originalAlt" alt="Original preview" />
                 <div id="cropOverlay" class="crop-overlay hidden" data-testid="crop-overlay">
                   <div id="cropBox" class="crop-box" data-testid="crop-box">
-                    <button class="crop-handle crop-handle-nw" type="button" data-handle="nw" aria-label="NW crop handle"></button>
-                    <button class="crop-handle crop-handle-ne" type="button" data-handle="ne" aria-label="NE crop handle"></button>
-                    <button class="crop-handle crop-handle-sw" type="button" data-handle="sw" aria-label="SW crop handle"></button>
-                    <button class="crop-handle crop-handle-se" type="button" data-handle="se" aria-label="SE crop handle"></button>
+                    <button class="crop-handle crop-handle-nw" type="button" data-handle="nw" data-i18n-aria="image.cropNW"></button>
+                    <button class="crop-handle crop-handle-ne" type="button" data-handle="ne" data-i18n-aria="image.cropNE"></button>
+                    <button class="crop-handle crop-handle-sw" type="button" data-handle="sw" data-i18n-aria="image.cropSW"></button>
+                    <button class="crop-handle crop-handle-se" type="button" data-handle="se" data-i18n-aria="image.cropSE"></button>
                   </div>
                 </div>
               </div>
             </figure>
             <figure id="calibratedFigure" data-testid="calibrated-figure">
-              <figcaption>Calibrated Preview</figcaption>
+              <figcaption data-i18n="image.calibratedPreview">Calibrated Preview</figcaption>
               <div class="image-stage">
-                <img id="calibratedImage" data-testid="calibrated-image" alt="Calibrated preview" />
+                <img id="calibratedImage" data-testid="calibrated-image" data-i18n-alt="image.calibratedAlt" alt="Calibrated preview" />
               </div>
             </figure>
             <figure id="splitCompare" class="split-compare hidden" data-testid="split-compare">
-              <figcaption>Original / Calibrated Split View</figcaption>
+              <figcaption data-i18n="image.splitCaption">Original / Calibrated Split View</figcaption>
               <div class="compare-stage">
-                <img id="splitOriginalImage" class="compare-image compare-image-base" alt="Original split" />
+                <img id="splitOriginalImage" class="compare-image compare-image-base" data-i18n-alt="image.splitOriginalAlt" alt="Original split" />
                 <div id="splitClip" class="compare-clip" data-testid="split-clip">
-                  <img id="splitCalibratedImage" class="compare-image compare-image-top" alt="Calibrated split" />
+                  <img id="splitCalibratedImage" class="compare-image compare-image-top" data-i18n-alt="image.splitCalibratedAlt" alt="Calibrated split" />
                 </div>
                 <div id="splitDivider" class="compare-divider" data-testid="split-divider"></div>
               </div>
@@ -118,48 +118,48 @@
           </div>
         </section>
 
-        <aside class="inspector" aria-label="Inspector">
+        <aside class="inspector" data-i18n-aria="inspector.ariaLabel">
           <div class="inspector-header">
-            <div class="file-title" id="fileTitle" data-testid="file-title">No photo selected</div>
+            <div class="file-title" id="fileTitle" data-testid="file-title" data-i18n="inspector.noPhoto">No photo selected</div>
             <div id="inspectorTabs" class="inspector-tabs" data-testid="inspector-tabs"></div>
           </div>
 
           <section id="panelAdjust" class="panel-stack" data-panel="adjust">
             <div class="dock-panel">
               <div class="dock-panel-header">
-                <span>Main Calibration</span>
+                <span data-i18n="calibration.mainTitle">Main Calibration</span>
               </div>
               <div class="controls">
                 <label>
-                  Mode
+                  <span data-i18n="calibration.mode">Mode</span>
                   <select id="modeSelect" data-testid="mode-select">
-                    <option value="global">Global</option>
-                    <option value="midtones-only">Midtones</option>
-                    <option value="skin-priority">Skin Priority</option>
-                    <option value="highlights-only">Highlights</option>
-                    <option value="preserve-split-tone">Preserve Split Tone</option>
-                    <option value="rgb-curves">RGB Curves</option>
-                    <option value="tone-zone">Zone Correction</option>
-                    <option value="matrix">3x3 Matrix</option>
-                    <option value="lut3d">3D LUT</option>
-                    <option value="selective">Selective Color</option>
-                    <option value="film">Film Calibration</option>
+                    <option value="global" data-i18n="calibration.mode.global">Global</option>
+                    <option value="midtones-only" data-i18n="calibration.mode.midtones">Midtones</option>
+                    <option value="skin-priority" data-i18n="calibration.mode.skinPriority">Skin Priority</option>
+                    <option value="highlights-only" data-i18n="calibration.mode.highlights">Highlights</option>
+                    <option value="preserve-split-tone" data-i18n="calibration.mode.preserveSplitTone">Preserve Split Tone</option>
+                    <option value="rgb-curves" data-i18n="calibration.mode.rgbCurves">RGB Curves</option>
+                    <option value="tone-zone" data-i18n="calibration.mode.zoneCorrection">Zone Correction</option>
+                    <option value="matrix" data-i18n="calibration.mode.matrix">3x3 Matrix</option>
+                    <option value="lut3d" data-i18n="calibration.mode.lut3d">3D LUT</option>
+                    <option value="selective" data-i18n="calibration.mode.selectiveColor">Selective Color</option>
+                    <option value="film" data-i18n="calibration.mode.film">Film Calibration</option>
                   </select>
                 </label>
                 <label>
-                  Strength <span id="strengthValue">0.80</span>
+                  <span data-i18n="calibration.strength">Strength</span> <span id="strengthValue">0.80</span>
                   <input id="strengthInput" data-testid="strength-input" type="range" min="0" max="1.2" step="0.05" value="0.8" />
                 </label>
                 <label>
-                  Accelerator
+                  <span data-i18n="calibration.accelerator">Accelerator</span>
                   <select id="acceleratorSelect" data-testid="accelerator-select">
-                    <option value="auto">Auto</option>
-                    <option value="cpu-opencv">CPU OpenCV</option>
-                    <option value="opencl-umat">OpenCL UMat</option>
-                    <option value="torch">Torch Auto</option>
-                    <option value="torch-cuda">Torch CUDA</option>
-                    <option value="torch-mps">Torch MPS</option>
-                    <option value="metal-mps">Metal MPS</option>
+                    <option value="auto" data-i18n="calibration.acceleratorAuto">Auto</option>
+                    <option value="cpu-opencv" data-i18n="calibration.acceleratorCpu">CPU OpenCV</option>
+                    <option value="opencl-umat" data-i18n="calibration.acceleratorOpencl">OpenCL UMat</option>
+                    <option value="torch" data-i18n="calibration.acceleratorTorch">Torch Auto</option>
+                    <option value="torch-cuda" data-i18n="calibration.acceleratorTorchCuda">Torch CUDA</option>
+                    <option value="torch-mps" data-i18n="calibration.acceleratorTorchMps">Torch MPS</option>
+                    <option value="metal-mps" data-i18n="calibration.acceleratorMetal">Metal MPS</option>
                   </select>
                 </label>
               </div>
@@ -167,39 +167,39 @@
 
             <div class="metric-grid">
               <div class="metric">
-                <span>Original |dE|</span>
+                <span data-i18n="metrics.originalStrength">Original |dE|</span>
                 <strong id="beforeStrength" data-testid="before-strength">-</strong>
               </div>
               <div class="metric">
-                <span>Calibrated |dE|</span>
+                <span data-i18n="metrics.calibratedStrength">Calibrated |dE|</span>
                 <strong id="afterStrength" data-testid="after-strength">-</strong>
               </div>
               <div class="metric">
-                <span>Reduction</span>
+                <span data-i18n="metrics.reduction">Reduction</span>
                 <strong id="reduction" data-testid="reduction">-</strong>
               </div>
               <div class="metric">
-                <span>Direction</span>
+                <span data-i18n="metrics.direction">Direction</span>
                 <strong id="direction" data-testid="direction">-</strong>
               </div>
               <div class="metric">
-                <span>Analysis Size</span>
+                <span data-i18n="metrics.analysisSize">Analysis Size</span>
                 <strong id="analysisSize" data-testid="analysis-size">-</strong>
               </div>
               <div class="metric">
-                <span>Est. Source</span>
+                <span data-i18n="metrics.estSource">Est. Source</span>
                 <strong id="castSource" data-testid="cast-source">-</strong>
               </div>
               <div class="metric">
-                <span>Preview Source</span>
+                <span data-i18n="metrics.previewSource">Preview Source</span>
                 <strong id="previewSource" data-testid="preview-source">-</strong>
               </div>
               <div class="metric">
-                <span>Accelerator</span>
+                <span data-i18n="metrics.acceleratorBackend">Accelerator</span>
                 <strong id="acceleratorBackend" data-testid="accelerator-backend">-</strong>
               </div>
               <div class="metric">
-                <span>3D LUT Path</span>
+                <span data-i18n="metrics.lutPath">3D LUT Path</span>
                 <strong id="lutPath" data-testid="lut-path">-</strong>
               </div>
               <div class="metric">
@@ -214,19 +214,19 @@
 
             <div class="accelerator-card" data-testid="accelerator-card">
               <div class="accelerator-card-header">
-                <span>Accelerator Status</span>
-                <button id="benchmarkButton" class="mini-button" type="button" data-testid="benchmark-button">Benchmark</button>
+                <span data-i18n="accelerator.status">Accelerator Status</span>
+                <button id="benchmarkButton" class="mini-button" type="button" data-testid="benchmark-button" data-i18n="accelerator.benchmark">Benchmark</button>
               </div>
               <div class="accelerator-grid">
-                <div><span>Requested</span><strong id="acceleratorRequested" data-testid="accelerator-requested">-</strong></div>
-                <div><span>OpenCL</span><strong id="openclStatus" data-testid="opencl-status">-</strong></div>
-                <div><span>GPU Ops</span><strong id="acceleratedOps" data-testid="accelerated-ops">-</strong></div>
-                <div><span>CPU Fallback</span><strong id="fallbackOps" data-testid="fallback-ops">-</strong></div>
+                <div><span data-i18n="accelerator.requested">Requested</span><strong id="acceleratorRequested" data-testid="accelerator-requested">-</strong></div>
+                <div><span data-i18n="accelerator.opencl">OpenCL</span><strong id="openclStatus" data-testid="opencl-status">-</strong></div>
+                <div><span data-i18n="accelerator.gpuOps">GPU Ops</span><strong id="acceleratedOps" data-testid="accelerated-ops">-</strong></div>
+                <div><span data-i18n="accelerator.cpuFallback">CPU Fallback</span><strong id="fallbackOps" data-testid="fallback-ops">-</strong></div>
               </div>
               <div id="fallbackReason" class="fallback-reason" data-testid="fallback-reason">-</div>
               <table class="benchmark-table">
                 <thead>
-                  <tr><th>Op</th><th>Device</th><th>Path</th><th>ms</th></tr>
+                  <tr><th data-i18n="accelerator.op">Op</th><th data-i18n="accelerator.device">Device</th><th data-i18n="accelerator.path">Path</th><th>ms</th></tr>
                 </thead>
                 <tbody id="benchmarkRows" data-testid="benchmark-rows"></tbody>
               </table>
@@ -235,41 +235,41 @@
 
           <section id="panelAnalysis" class="panel-stack hidden" data-panel="analysis">
             <div class="zone-table">
-              <div class="zone-header">Brightness Zones</div>
+              <div class="zone-header" data-i18n="analysis.brightnessZones">Brightness Zones</div>
               <table>
                 <thead>
-                  <tr><th>Zone</th><th>a*</th><th>b*</th><th>Pixels</th></tr>
+                  <tr><th data-i18n="analysis.zone">Zone</th><th>a*</th><th>b*</th><th data-i18n="analysis.pixels">Pixels</th></tr>
                 </thead>
                 <tbody id="zoneRows" data-testid="zone-rows"></tbody>
               </table>
             </div>
 
             <div class="skin-card" data-testid="skin-card">
-              <div class="skin-card-header">Skin Detection</div>
-              <div id="skinStatus" class="skin-status" data-testid="skin-status">Not Detected</div>
+              <div class="skin-card-header" data-i18n="analysis.skinDetection">Skin Detection</div>
+              <div id="skinStatus" class="skin-status" data-testid="skin-status" data-i18n="analysis.skinNotDetected">Not Detected</div>
               <div class="skin-grid">
-                <div><span>Pixels</span><strong id="skinPixels" data-testid="skin-pixels">-</strong></div>
+                <div><span data-i18n="analysis.skinPixels">Pixels</span><strong id="skinPixels" data-testid="skin-pixels">-</strong></div>
                 <div><span>a*</span><strong id="skinA" data-testid="skin-a">-</strong></div>
                 <div><span>b*</span><strong id="skinB" data-testid="skin-b">-</strong></div>
-                <div><span>vs Global</span><strong id="skinDelta" data-testid="skin-delta">-</strong></div>
+                <div><span data-i18n="analysis.skinVsGlobal">vs Global</span><strong id="skinDelta" data-testid="skin-delta">-</strong></div>
               </div>
             </div>
 
             <div class="charts" data-testid="charts-panel">
               <section class="chart-card">
-                <div class="chart-title">RGB Histogram</div>
+                <div class="chart-title" data-i18n="analysis.rgbHistogram">RGB Histogram</div>
                 <canvas id="rgbHistogram" data-testid="rgb-histogram" width="300" height="150"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">Lab a/b Vector</div>
+                <div class="chart-title" data-i18n="analysis.labVector">Lab a/b Vector</div>
                 <canvas id="labVector" data-testid="lab-vector" width="300" height="180"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">Calibration Strength</div>
+                <div class="chart-title" data-i18n="analysis.calibrationStrength">Calibration Strength</div>
                 <canvas id="strengthChart" data-testid="strength-chart" width="300" height="130"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">Zone Cast</div>
+                <div class="chart-title" data-i18n="analysis.zoneCast">Zone Cast</div>
                 <canvas id="zoneChart" data-testid="zone-chart" width="300" height="150"></canvas>
               </section>
             </div>
@@ -277,28 +277,28 @@
 
           <section id="panelCrop" class="panel-stack hidden" data-panel="crop">
             <div class="crop-card" data-testid="crop-card">
-              <div class="crop-card-header">Film Scan Crop</div>
+              <div class="crop-card-header" data-i18n="crop.title">Film Scan Crop</div>
               <div class="crop-actions">
-                <button id="toggleCropOverlay" class="mini-button" type="button" data-testid="toggle-crop-overlay">Show Crop Box</button>
-                <button id="suggestCropButton" class="mini-button" type="button" data-testid="suggest-crop-button">Suggest</button>
-                <button id="resetCropButton" class="mini-button" type="button" data-testid="reset-crop-button">Reset</button>
+                <button id="toggleCropOverlay" class="mini-button" type="button" data-testid="toggle-crop-overlay" data-i18n="crop.showBox">Show Crop Box</button>
+                <button id="suggestCropButton" class="mini-button" type="button" data-testid="suggest-crop-button" data-i18n="crop.suggest">Suggest</button>
+                <button id="resetCropButton" class="mini-button" type="button" data-testid="reset-crop-button" data-i18n="crop.reset">Reset</button>
               </div>
               <div class="crop-grid">
-                <div><span>Status</span><strong id="cropStatus" data-testid="crop-status">Disabled</strong></div>
-                <div><span>Width</span><strong id="cropWidth" data-testid="crop-width">-</strong></div>
-                <div><span>Height</span><strong id="cropHeight" data-testid="crop-height">-</strong></div>
-                <div><span>Offset</span><strong id="cropOffset" data-testid="crop-offset">-</strong></div>
+                <div><span data-i18n="crop.status">Status</span><strong id="cropStatus" data-testid="crop-status" data-i18n="crop.disabled">Disabled</strong></div>
+                <div><span data-i18n="crop.width">Width</span><strong id="cropWidth" data-testid="crop-width">-</strong></div>
+                <div><span data-i18n="crop.height">Height</span><strong id="cropHeight" data-testid="crop-height">-</strong></div>
+                <div><span data-i18n="crop.offset">Offset</span><strong id="cropOffset" data-testid="crop-offset">-</strong></div>
               </div>
             </div>
 
             <div class="dock-panel">
               <div class="dock-panel-header">
-                <span>Detection Strategy</span>
+                <span data-i18n="crop.detectionStrategy">Detection Strategy</span>
               </div>
               <div class="library-section crop-notes" data-testid="crop-notes">
-                <div class="library-meta-row"><span>Candidates</span><strong>Edges / Lines / Corners</strong></div>
-                <div class="library-meta-row"><span>Current State</span><strong>Manual frame, awaiting algorithm</strong></div>
-                <small>Will only receive structured crop suggestions; algorithms stay in backend.</small>
+                <div class="library-meta-row"><span data-i18n="crop.candidates">Candidates</span><strong data-i18n="crop.candidatesValue">Edges / Lines / Corners</strong></div>
+                <div class="library-meta-row"><span data-i18n="crop.currentState">Current State</span><strong data-i18n="crop.currentStateValue">Manual frame, awaiting algorithm</strong></div>
+                <small data-i18n="crop.backendNote">Will only receive structured crop suggestions; algorithms stay in backend.</small>
               </div>
             </div>
           </section>
@@ -307,8 +307,8 @@
 
       <footer class="filmstrip-shell">
         <div class="filmstrip-meta">
-          <span id="folderLabel" data-testid="folder-label">No folder loaded</span>
-          <span id="countLabel">0 photos</span>
+          <span id="folderLabel" data-testid="folder-label" data-i18n="filmstrip.noFolder">No folder loaded</span>
+          <span id="countLabel">0 <span data-i18n="filmstrip.photos">photos</span></span>
         </div>
         <div id="filmstrip" class="filmstrip" data-testid="filmstrip"></div>
       </footer>

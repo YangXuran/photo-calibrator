@@ -677,7 +677,47 @@ AI 模块应设计为 provider-agnostic：
 - `CalibrationParams`、`CalibrationResult`。
 - 前端 `data-testid`。
 
-## 16. 下一步执行清单
+## 16. 国际化 (i18n)
+
+**代码语言：英文。UI 显示语言：通过 `web/i18n.js` 翻译层输出。**
+
+### 规则
+
+- 所有源代码（Python/JS/HTML 属性名/注释/变量名/API 字段）**只能用英文**。
+- 所有用户可见的 UI 文本必须通过 `web/i18n.js` 的 `t("key")` 获取，**禁止硬编码显示文案**。
+- 后端 API 响应中的标签字段（如 chart `name`）默认英文；如需多语言，前端在渲染时做映射。
+
+### i18n 使用
+
+```js
+import { t, setLocale, translateDOM } from "../i18n.js";
+
+// JS 中使用
+element.textContent = t("calibration.mode.global");
+
+// HTML 中使用 data-i18n 属性
+<span data-i18n="toolbar.openFolder">Open Folder</span>
+
+// 页面加载后调用
+translateDOM();
+```
+
+### 添加新文案
+
+1. 在 `web/i18n.js` 的 `messages.en` 和 `messages.zh` 中各加一条。
+2. Key 命名：`模块.含义`，如 `calibration.mode.global`、`crop.showBox`。
+3. UI 中使用 `t("key")` 或 `data-i18n="key"` 引用。
+
+### 切换语言
+
+```js
+import { setLocale } from "./i18n.js";
+setLocale("zh"); // 切换到中文，自动调用 translateDOM()
+```
+
+默认语言为 `en`。
+
+## 17. 下一步执行清单
 
 后续 agent 应按顺序执行：
 

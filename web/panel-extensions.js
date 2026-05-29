@@ -1,5 +1,6 @@
 import { registerInspectorExtension } from "./extensions.js";
 import { currentFile } from "./store.js";
+import { t } from "./i18n.js";
 
 export function registerBuiltinPanelExtensions({ state }) {
   registerInspectorExtension({
@@ -10,11 +11,11 @@ export function registerBuiltinPanelExtensions({ state }) {
       const file = currentFile();
       node.innerHTML = `
         <div class="dock-panel" data-testid="workspace-status-extension">
-          <div class="dock-panel-header"><span>Workspace Status</span></div>
+          <div class="dock-panel-header"><span>${t("ext.workspaceStatus")}</span></div>
           <div class="library-section">
-            <div class="library-meta-row"><span>Active Tool</span><strong>${state.activeTool}</strong></div>
-            <div class="library-meta-row"><span>Current File</span><strong>${file ? file.name : "None"}</strong></div>
-            <div class="library-meta-row"><span>Document Cache</span><strong>${state.documents.size}</strong></div>
+            <div class="library-meta-row"><span>${t("ext.activeTool")}</span><strong>${state.activeTool}</strong></div>
+            <div class="library-meta-row"><span>${t("ext.currentFile")}</span><strong>${file ? file.name : t("ext.none")}</strong></div>
+            <div class="library-meta-row"><span>${t("ext.documentCache")}</span><strong>${state.documents.size}</strong></div>
           </div>
         </div>
       `;

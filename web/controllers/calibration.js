@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+
 export function createCalibrationController({
   els,
   state,
@@ -29,18 +31,18 @@ export function createCalibrationController({
 
   async function runAcceleratorBenchmark() {
     els.benchmarkButton.disabled = true;
-    els.benchmarkButton.textContent = "Testing...";
+    els.benchmarkButton.textContent = t("status.testing");
     els.benchmarkRows.innerHTML = "";
     try {
       const payload = await fetchAcceleratorBenchmark(els.acceleratorSelect.value || "auto");
       renderAcceleratorPayload(els, payload.benchmark?.accelerator);
       renderBenchmark(els, payload.benchmark, fmt);
     } catch (error) {
-      els.fallbackReason.textContent = "Benchmark failed";
+      els.fallbackReason.textContent = t("status.benchmarkFailed");
       console.error(error);
     } finally {
       els.benchmarkButton.disabled = false;
-      els.benchmarkButton.textContent = "Benchmark";
+      els.benchmarkButton.textContent = t("accelerator.benchmark");
     }
   }
 
@@ -51,7 +53,7 @@ export function createCalibrationController({
     }
     document.lastPayload = payload;
 
-    els.sessionStatus.textContent = payload.session_id ? "Cached" : "Done";
+    els.sessionStatus.textContent = payload.session_id ? t("status.cached") : t("status.done");
     els.calibratedImage.src = payload.calibrated_image;
     if (payload.original_preview || imageData) {
       els.originalImage.src = payload.original_preview || imageData;
@@ -127,7 +129,7 @@ export function createCalibrationController({
       await runCalibration(file, requestId);
     } catch (error) {
       if (requestId !== state.requestId) return;
-      els.afterStrength.textContent = "Failed";
+      els.afterStrength.textContent = t("status.failed");
       els.reduction.textContent = "-";
       els.direction.textContent = "API error";
       console.error(error);
@@ -145,7 +147,7 @@ export function createCalibrationController({
         reselectCurrent(state.selectedIndex);
       }
     } catch (error) {
-      els.fallbackReason.textContent = "Accelerator switch failed";
+      els.fallbackReason.textContent = t("status.acceleratorSwitchFailed");
       console.error(error);
     }
   }

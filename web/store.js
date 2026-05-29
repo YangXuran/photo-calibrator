@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+
 export const rawExtensions = [".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw"];
 
 export const state = {
@@ -46,8 +48,8 @@ export function isBrowserDisplayable(file) {
 
 export function folderName(files) {
   const first = files.find((file) => file.webkitRelativePath);
-  if (!first) return "Manual selection";
-  return first.webkitRelativePath.split("/")[0] || "Folder";
+  if (!first) return t("store.manualSelection");
+  return first.webkitRelativePath.split("/")[0] || t("store.folder");
 }
 
 export function defaultCropRect() {

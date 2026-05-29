@@ -1,5 +1,6 @@
 import { els } from "./dom.js";
 import { fetchAcceleratorBenchmark, fetchCapabilities, postCalibration, postCalibrationSession } from "./api/client.js";
+import { t, translateDOM } from "./i18n.js";
 import { createCalibrationController } from "./controllers/calibration.js";
 import { createWorkspaceController } from "./controllers/workspace.js";
 import { mountRegisteredInspectorExtensions } from "./extensions.js";
@@ -109,7 +110,7 @@ const workspace = createWorkspaceController({
   onSelectForCalibration(file, index, requestId) {
     calibration.runCalibration(file, requestId).catch((error) => {
       if (index !== state.selectedIndex) return;
-      els.afterStrength.textContent = "Failed";
+      els.afterStrength.textContent = t("status.failed");
       els.reduction.textContent = "-";
       els.direction.textContent = "API error";
       console.error(error);
@@ -220,7 +221,8 @@ renderActiveTool();
 renderInspectorPanel();
 renderCompareMode(els, state);
 renderCropOverlay(els, state);
+translateDOM();
 calibration.loadCapabilities().catch((error) => {
-  els.fallbackReason.textContent = "Cannot read accelerator status";
+  els.fallbackReason.textContent = t("status.cannotReadAccelerator");
   console.error(error);
 });
