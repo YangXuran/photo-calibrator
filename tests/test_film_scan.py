@@ -150,3 +150,81 @@ def test_low_confidence_no_border() -> None:
     # When confidence is low, crop should be the full image
     assert result.crop_w >= 280, f"Crop too narrow: {result.crop_w}"
     assert result.crop_h >= 380, f"Crop too short: {result.crop_h}"
+
+
+# ── Perspective distortion tests ───────────────────────────────────
+
+
+def _make_perspective_test_image(
+    canvas_size: tuple[int, int] = (800, 600),
+    perspective_strength: float = 0.15,
+    border_width: int = 40,
+) -> np.ndarray:
+    """Create a synthetic film image with perspective (keystone) distortion.
+
+    Applies a trapezoidal warp to simulate film that isn't perfectly flat
+    on the scanner — top edge narrower than bottom edge (typical keystone).
+
+    Returns uint8 RGB image.
+    """
+    w, h = canvas_size
+
+    # Start with a level film image (no rotation)
+    img = _make_film_test_image(canvas_size, rotation_deg=0, border_width=border_width)
+
+    # Perspective warp: compress top edge (keystone — top narrower)
+    shrink = int(w * perspective_strength)
+    src = np.array(
+        [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]],
+        dtype=np.float32,
+    )
+    dst = np.array(
+        [[shrink, 0], [w - 1 - shrink, 0], [w - 1, h - 1], [0, h - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    return cv2.warpPerspective(
+        img, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(200, 200, 200)
+    )
+
+
+def test_perspective_distortion_detected() -> None:
+    """Keystone distortion should be flagged as is_perspective=True."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_perspective_test_image((800, 600), perspective_strength=0.10)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.3, f"Confidence too low: {result.confidence}"
+    assert result.is_perspective, "Perspective distortion not detected"
+
+
+def test_perspective_transform_matrix_produced() -> None:
+    """When perspective is detected, a valid 3×3 transform matrix is returned."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_perspective_test_image((800, 600), perspective_strength=0.12)
+    result = detect_film_frame(img)
+
+    if result.is_perspective:
+        assert result.transform_matrix is not None, "Transform matrix missing"
+        assert len(result.transform_matrix) == 3, "Not 3 rows"
+        assert all(len(row) == 3 for row in result.transform_matrix), "Not 3 cols"
+        # Perspective transform should have non-trivial off-diagonal elements
+        m = result.transform_matrix
+        has_perspective_component = (
+            abs(m[2][0]) > 1e-6 or abs(m[2][1]) > 1e-6
+        )
+        assert has_perspective_component, "Matrix looks affine, not perspective"
+
+
+def test_level_image_not_perspective() -> None:
+    """A perfectly level film image should NOT be flagged as perspective."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_film_test_image((800, 600), rotation_deg=0, border_width=40)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.5
+    assert not result.is_perspective, "Level image incorrectly flagged as perspective"
+    assert result.transform_matrix is None, "Should be no transform for level image"

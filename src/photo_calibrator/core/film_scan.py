@@ -40,6 +40,14 @@ class FilmScanResult:
     border_type: str
     """'black', 'white', 'mixed', or 'unknown'."""
 
+    is_perspective: bool = False
+    """True if the detected quad has significant perspective (keystone) distortion."""
+
+    transform_matrix: list[list[float]] | None = None
+    """3×3 perspective transform matrix (OpenCV format) mapping detected corners
+    to a fronto-parallel rectangle.  None if no perspective detected or
+    confidence is low."""
+
 
 # ── Constants ──────────────────────────────────────────────────────
 
@@ -50,7 +58,7 @@ _HOUGH_THRESHOLD = 80
 _HOUGH_MIN_LINE_LENGTH = 80
 _HOUGH_MAX_LINE_GAP = 20
 
-_ANGLE_TOLERANCE_DEG = 5.0  # cluster lines within ±5°
+_ANGLE_TOLERANCE_DEG = 8.0  # cluster lines within ±8° (allows perspective slant)
 _MIN_CONFIDENCE_LINES = 4  # need at least 4 long lines for a quad
 
 
@@ -88,6 +96,11 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
     crop = _corners_to_crop(corners, img_w=w, img_h=h)
     border_type = _classify_border(img_rgb, corners)
 
+    is_persp = _detect_perspective(corners)
+    transform = None
+    if is_persp:
+        transform = _perspective_transform(corners)
+
     return FilmScanResult(
         angle_deg=round(angle, 2),
         corners=corners,
@@ -97,6 +110,8 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
         crop_h=crop[3],
         confidence=round(confidence, 3),
         border_type=border_type,
+        is_perspective=is_persp,
+        transform_matrix=transform,
     )
 
 
@@ -321,6 +336,92 @@ def _classify_border(
     elif avg > 190:
         return "white"
     return "unknown"
+
+
+_PERSPECTIVE_ANGLE_THRESHOLD = 5.0  # degrees — max deviation from 90° corner
+_PERSPECTIVE_SIDE_RATIO_THRESHOLD = 0.12  # opposite sides differ by >12% → perspective
+
+
+def _detect_perspective(corners: list[tuple[int, int]]) -> bool:
+    """Check if the detected quad has significant perspective distortion.
+
+    A perfect rectangle has: opposite sides equal, all corners ≈ 90°.
+    Perspective (keystone) distortion breaks both properties.
+
+    Uses two heuristics:
+    1. Opposite sides length ratio: if |top - bottom| / avg > threshold
+    2. Corner angle deviation from 90°
+    """
+    tl, tr, br, bl = corners
+
+    # Side lengths: top, right, bottom, left
+    def _len(a, b):
+        return float(np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2))
+
+    top = _len(tl, tr)
+    right = _len(tr, br)
+    bottom = _len(br, bl)
+    left = _len(bl, tl)
+
+    # Opposite side ratio check
+    h_ratio = abs(top - bottom) / max((top + bottom) / 2.0, 1.0)
+    v_ratio = abs(left - right) / max((left + right) / 2.0, 1.0)
+    if h_ratio > _PERSPECTIVE_SIDE_RATIO_THRESHOLD or v_ratio > _PERSPECTIVE_SIDE_RATIO_THRESHOLD:
+        return True
+
+    # Corner angle check (should be ~90°)
+    def _corner_angle(p0, p1, p2):
+        """Angle at p1 formed by p0—p1—p2."""
+        v1 = (p0[0] - p1[0], p0[1] - p1[1])
+        v2 = (p2[0] - p1[0], p2[1] - p1[1])
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        norm = float(np.sqrt(v1[0] ** 2 + v1[1] ** 2) * np.sqrt(v2[0] ** 2 + v2[1] ** 2))
+        if norm < 1e-10:
+            return 90.0
+        cos_a = max(-1.0, min(1.0, dot / norm))
+        return float(np.degrees(np.arccos(cos_a)))
+
+    angles = [
+        _corner_angle(bl, tl, tr),  # TL corner
+        _corner_angle(tl, tr, br),  # TR corner
+        _corner_angle(tr, br, bl),  # BR corner
+        _corner_angle(br, bl, tl),  # BL corner
+    ]
+
+    for a in angles:
+        if abs(a - 90.0) > _PERSPECTIVE_ANGLE_THRESHOLD:
+            return True
+
+    return False
+
+
+def _perspective_transform(
+    corners: list[tuple[int, int]],
+) -> list[list[float]]:
+    """Compute 3×3 perspective transform matrix to rectify the quad.
+
+    Maps the four detected corners to an axis-aligned rectangle whose
+    dimensions are the average width and height of the detected quad.
+
+    Returns 3×3 matrix as list of lists (JSON-serializable, hashable).
+    """
+    tl, tr, br, bl = corners
+
+    # Target rectangle dimensions: average width × average height
+    def _len(a, b):
+        return float(np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2))
+
+    avg_w = int((_len(tl, tr) + _len(bl, br)) / 2.0)
+    avg_h = int((_len(tl, bl) + _len(tr, br)) / 2.0)
+
+    src = np.array([tl, tr, br, bl], dtype=np.float32)
+    dst = np.array(
+        [[0, 0], [avg_w - 1, 0], [avg_w - 1, avg_h - 1], [0, avg_h - 1]],
+        dtype=np.float32,
+    )
+
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    return [[float(matrix[i, j]) for j in range(3)] for i in range(3)]
 
 
 def _low_confidence_result(img_w: int, img_h: int) -> FilmScanResult:
