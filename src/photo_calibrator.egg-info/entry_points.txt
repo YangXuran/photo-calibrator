@@ -1,0 +1,2 @@
+[console_scripts]
+photo-calibrator-accelerator-benchmark = photo_calibrator.backend.accelerator_benchmark:main

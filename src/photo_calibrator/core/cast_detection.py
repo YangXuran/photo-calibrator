@@ -146,15 +146,41 @@ def find_histogram_peaks(img_rgb: np.ndarray, bins: int = 256) -> dict[str, int]
     return peaks
 
 
+def _find_haarcascade(filename: str) -> str:
+    """Locate a Haar cascade XML file across different OpenCV distributions.
+
+    - pip opencv-python: cv2.data.haarcascades + filename
+    - Fedora system package: /usr/share/opencv4/haarcascades/ + filename
+    - Fallback: search common paths.
+    """
+    # pip-installed opencv-python
+    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+        return cv2.data.haarcascades + filename
+
+    # Fedora / Debian system packages
+    import os
+    system_paths = [
+        "/usr/share/opencv4/haarcascades",
+        "/usr/share/opencv/haarcascades",
+    ]
+    for base in system_paths:
+        candidate = os.path.join(base, filename)
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        f"Cannot find {filename}. Install opencv-python or system opencv package."
+    )
+
+
 def _detect_faces(img_rgb: np.ndarray) -> list[tuple[int, int, int, int]]:
     """Detect frontal faces using OpenCV Haar cascade.
 
     Returns list of (x, y, w, h) bounding boxes. Empty if none found.
     """
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    cascade_path = _find_haarcascade("haarcascade_frontalface_default.xml")
+    cascade = cv2.CascadeClassifier(cascade_path)
     faces = cascade.detectMultiScale(
         gray,
         scaleFactor=1.1,

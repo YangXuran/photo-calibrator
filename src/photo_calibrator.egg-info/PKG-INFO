@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: photo-calibrator
+Version: 0.2.0
+Summary: Color cast analysis and calibration core for photo workflows
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: pillow
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Provides-Extra: raw
+Requires-Dist: rawpy; extra == "raw"
+Provides-Extra: io
+Requires-Dist: imageio; extra == "io"
+Requires-Dist: tifffile; extra == "io"
+Provides-Extra: gpu
+Requires-Dist: torch; extra == "gpu"
+Provides-Extra: color
+Provides-Extra: all
+Requires-Dist: rawpy; extra == "all"
+Requires-Dist: torch; extra == "all"
+Requires-Dist: imageio; extra == "all"
+Requires-Dist: tifffile; extra == "all"
