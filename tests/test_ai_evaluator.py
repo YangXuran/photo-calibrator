@@ -107,3 +107,121 @@ def test_prompt_includes_calibration_params() -> None:
     user = msgs[1]["content"]
     assert "skin-protect" in user
     assert "0.5" in user
+
+
+# ── Provider tests ──────────────────────────────────────────────────
+
+
+def test_mock_provider_returns_valid_output() -> None:
+    """MockProvider should return a well-formed EvalOutput."""
+    from photo_calibrator.ai.providers import MockProvider
+    from photo_calibrator.ai import EvalInput, EvalImageRef
+    import numpy as np
+
+    ref = EvalImageRef(key="test")
+    input = EvalInput(original=ref, calibrated=ref)
+
+    provider = MockProvider(score=0.85)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    result = provider.evaluate(input, [img, img])
+
+    assert result.overall_score == 0.85
+    assert len(result.scores) == 5
+    assert result.is_confident
+    assert result.reasoning != ""
+
+
+def test_mock_provider_name() -> None:
+    """MockProvider.name should be 'mock'."""
+    from photo_calibrator.ai.providers import MockProvider
+
+    p = MockProvider()
+    assert p.name == "mock"
+
+
+def test_openai_provider_default_name() -> None:
+    """OpenAICompatibleProvider.name should include the model."""
+    from photo_calibrator.ai.providers import OpenAICompatibleProvider, ProviderConfig
+
+    cfg = ProviderConfig(base_url="http://localhost:11434/v1", model="llama3.2-vision")
+    p = OpenAICompatibleProvider(cfg)
+    assert "llama3.2-vision" in p.name
+
+
+def test_provider_config_accepts_api_key() -> None:
+    """ProviderConfig should accept optional api_key."""
+    from photo_calibrator.ai.providers import ProviderConfig
+
+    cfg = ProviderConfig(
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o",
+        api_key="sk-test123",
+    )
+    assert cfg.api_key == "sk-test123"
+    assert cfg.model == "gpt-4o"
+
+
+def test_provider_config_defaults() -> None:
+    """ProviderConfig defaults should be sensible."""
+    from photo_calibrator.ai.providers import ProviderConfig
+
+    cfg = ProviderConfig(base_url="http://x", model="m")
+    assert cfg.api_key == ""
+    assert cfg.timeout == 60
+    assert cfg.temperature == 0.3
+    assert cfg.max_tokens == 1024
+
+
+def test_json_to_eval_output_handles_missing_fields() -> None:
+    """_json_to_eval_output should tolerate partial JSON."""
+    from photo_calibrator.ai.providers import _json_to_eval_output
+
+    raw = {"overall_score": 0.6}
+    result = _json_to_eval_output(raw)
+    assert result.overall_score == 0.6
+    assert result.reasoning == ""
+    assert result.scores == []
+
+
+def test_json_to_eval_output_parses_full_response() -> None:
+    """_json_to_eval_output should parse a complete evaluation."""
+    from photo_calibrator.ai.providers import _json_to_eval_output
+
+    raw = {
+        "overall_score": 0.72,
+        "scores": [
+            {"dimension": "skin_tone", "score": 0.8, "comment": "Nice"},
+        ],
+        "reasoning": "Good job.",
+        "suggestions": ["Try harder"],
+        "warnings": ["Low confidence"],
+    }
+    result = _json_to_eval_output(raw)
+    assert result.overall_score == 0.72
+    assert len(result.scores) == 1
+    assert result.scores[0].dimension == "skin_tone"
+    assert result.reasoning == "Good job."
+    assert "Try harder" in result.suggestions
+    assert "Low confidence" in result.warnings
+
+
+def test_encode_image_content_returns_valid_block() -> None:
+    """_encode_image_content should produce a valid image_url dict."""
+    from photo_calibrator.ai.providers import _encode_image_content
+    import numpy as np
+
+    img = np.zeros((16, 16, 3), dtype=np.uint8)
+    img[:, :] = (128, 128, 128)
+    block = _encode_image_content(img)
+
+    assert block["type"] == "image_url"
+    assert block["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_error_response_has_error_key() -> None:
+    """_error_response should return dict with 'error' key."""
+    from photo_calibrator.ai.providers import _error_response
+
+    resp = _error_response("Something went wrong")
+    assert resp["error"] == "Something went wrong"
