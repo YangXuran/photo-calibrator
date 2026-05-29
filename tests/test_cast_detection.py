@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -76,3 +77,87 @@ def test_auto_detect_prefers_low_saturation_neutral_region_when_available() -> N
     assert "neutral" in cast
     assert cast["neutral"].pixels >= 2000
     assert abs(cast["neutral"].a_mean) < abs(cast["global"].a_mean)
+
+
+# ── Skin detection robustness tests ──────────────────────────────
+
+
+def test_skin_mask_ycrcb_fallback_no_face() -> None:
+    """YCrCb fallback should detect skin-like pixels even without a face."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    img = np.zeros((120, 120, 3), dtype=np.uint8)
+    img[30:90, 30:90] = (180, 140, 120)
+    mask = detect_skin_mask(img, min_pixels=100)
+    assert mask.sum() > 100
+    assert mask[30:90, 30:90].sum() > 0
+
+
+def test_skin_mask_rejects_non_skin() -> None:
+    """Blue pixels should not be detected as skin."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :] = (50, 60, 200)
+    mask = detect_skin_mask(img, min_pixels=100)
+    assert mask.sum() == 0
+
+
+def test_skin_mask_morphology_cleans_noise() -> None:
+    """Morphological opening should remove sparse scattered skin-like dots."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    rng = np.random.default_rng(42)
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    yx = rng.integers(0, 100, size=(50, 2))
+    for y, x in yx:
+        img[y, x] = (180, 130, 110)
+    mask = detect_skin_mask(img, min_pixels=1)
+    # Morphological opening removes isolated dots
+    assert mask.sum() < 50
+
+
+def test_skin_mask_respects_min_pixels() -> None:
+    """Below min_pixels threshold, return all-False mask."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    img = np.zeros((80, 80, 3), dtype=np.uint8)
+    img[20:22, 20:22] = (180, 140, 120)
+    mask = detect_skin_mask(img, min_pixels=100)
+    assert mask.sum() == 0
+
+
+def test_skin_mask_detects_dark_skin_tone() -> None:
+    """Dark skin tones should be detected (HSV ranges often miss these)."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :] = (120, 85, 55)  # dark brown skin
+    mask = detect_skin_mask(img, min_pixels=100)
+    assert mask.sum() > 5000, f"Dark skin barely detected: {mask.sum()}/10000"
+
+
+def test_skin_mask_detects_light_skin_tone() -> None:
+    """Light East Asian skin tones should be detected."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :] = (230, 200, 175)  # light skin
+    mask = detect_skin_mask(img, min_pixels=100)
+    assert mask.sum() > 5000, f"Light skin barely detected: {mask.sum()}/10000"
+
+
+def test_skin_mask_detects_skin_with_face_present() -> None:
+    """When a face is detected, skin should be found in face-adjacent regions."""
+    from photo_calibrator.core.cast_detection import detect_skin_mask
+
+    # Synthetic image with a "face oval" in skin-tone surround
+    img = np.zeros((200, 200, 3), dtype=np.uint8)
+    img[:, :] = (190, 150, 130)  # skin-tone background
+    # A lighter oval in center — the face-seeded path should sample from
+    # surrounding skin tone and expand to cover the whole image
+    cv2.ellipse(img, (100, 100), (50, 60), 0, 0, 360, (210, 180, 160), -1)
+
+    mask = detect_skin_mask(img, min_pixels=200)
+    # Should detect skin — either via face seed or YCrCb fallback
+    assert mask.sum() > 1000, f"Skin regions not detected: {mask.sum()}/40000"
