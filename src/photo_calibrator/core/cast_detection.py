@@ -146,25 +146,125 @@ def find_histogram_peaks(img_rgb: np.ndarray, bins: int = 256) -> dict[str, int]
     return peaks
 
 
-def detect_skin_mask(img_rgb: np.ndarray, min_pixels: int = 200) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    hsv = ACCELERATOR.rgb_to_hsv(img_rgb)
-    mask = np.zeros(img_rgb.shape[:2], dtype=np.uint8)
-    for h_lo, s_lo, s_hi, v_lo, v_hi in [
-        (0, 15, 150, 50, 255),
-        (0, 10, 120, 90, 255),
-        (3, 12, 130, 60, 255),
-    ]:
-        lower = np.array([h_lo, s_lo, v_lo], dtype=np.uint8)
-        upper = np.array([25, s_hi, v_hi], dtype=np.uint8)
-        mask |= cv2.inRange(hsv, lower, upper)
+def _detect_faces(img_rgb: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Detect frontal faces using OpenCV Haar cascade.
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    if np.count_nonzero(mask) < min_pixels:
-        return np.zeros_like(mask, dtype=bool)
-    return mask.astype(bool)
+    Returns list of (x, y, w, h) bounding boxes. Empty if none found.
+    """
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    faces = cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(30, 30),
+    )
+    return [(int(x), int(y), int(w), int(h)) for x, y, w, h in faces]
+
+
+def _skin_ycrcb(img_rgb: np.ndarray) -> np.ndarray:
+    """YCrCb-based skin detection with well-established fixed thresholds.
+
+    Uses the Chai & Ngan (1999) skin color model. YCrCb separates
+    luminance from chrominance better than HSV, giving more consistent
+    results across lighting conditions.
+
+    Returns boolean mask.
+    """
+    ycrcb = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2YCrCb)
+    cr = ycrcb[:, :, 1]
+    cb = ycrcb[:, :, 2]
+
+    # Chai & Ngan skin ranges
+    mask = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)
+    return mask
+
+
+def _skin_from_faces(
+    img_rgb: np.ndarray, faces: list[tuple[int, int, int, int]]
+) -> np.ndarray:
+    """Build skin mask from face color sampling + Gaussian model.
+
+    Samples inner 60% of each detected face to avoid hair/background.
+    Builds a 2D Gaussian in (Cr, Cb) space and thresholds the full image
+    with Mahalanobis distance at 95% confidence.
+
+    Returns boolean mask.
+    """
+    if not faces:
+        return np.zeros(img_rgb.shape[:2], dtype=bool)
+
+    ycrcb = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2YCrCb)
+    cr = ycrcb[:, :, 1].astype(np.float64)
+    cb = ycrcb[:, :, 2].astype(np.float64)
+
+    # Sample from inner 60% of each face
+    samples = []
+    for x, y, w, h in faces:
+        margin_x = int(w * 0.2)
+        margin_y = int(h * 0.2)
+        inner_cr = cr[y + margin_y : y + h - margin_y, x + margin_x : x + w - margin_x]
+        inner_cb = cb[y + margin_y : y + h - margin_y, x + margin_x : x + w - margin_x]
+        if inner_cr.size > 0:
+            samples.append(np.column_stack([inner_cr.ravel(), inner_cb.ravel()]))
+
+    if not samples:
+        return np.zeros(img_rgb.shape[:2], dtype=bool)
+
+    all_samples = np.vstack(samples)
+    if len(all_samples) < 20:
+        return np.zeros(img_rgb.shape[:2], dtype=bool)
+
+    # Gaussian model in (Cr, Cb) space
+    mean = np.mean(all_samples, axis=0)
+    cov = np.cov(all_samples, rowvar=False) + np.eye(2) * 1e-3
+
+    # Mahalanobis distance for every pixel
+    inv_cov = np.linalg.inv(cov)
+    h, w = img_rgb.shape[:2]
+    pixels = np.column_stack([cr.ravel(), cb.ravel()])
+    diff = pixels - mean
+    mahalanobis = np.sum(diff @ inv_cov * diff, axis=1)
+
+    # Chi-square 2 DOF, 95% confidence ≈ 5.991
+    return (mahalanobis <= 5.991).reshape(h, w)
+
+
+def detect_skin_mask(img_rgb: np.ndarray, min_pixels: int = 200) -> np.ndarray:
+    """Detect skin regions using face-seeded adaptive model with YCrCb fallback.
+
+    Primary path: detect faces via Haar cascade, sample face colors,
+    build per-image Gaussian model in Cr/Cb space, expand to full image.
+
+    Fallback path: YCrCb fixed-threshold model when no faces detected.
+
+    Morphological open/close removes noise and fills small gaps.
+    Returns all-False mask if detected area below ``min_pixels``.
+    """
+    img_rgb = ensure_uint8_rgb(img_rgb)
+
+    # Primary: face-seeded adaptive model
+    faces = _detect_faces(img_rgb)
+    if faces:
+        mask = _skin_from_faces(img_rgb, faces)
+    else:
+        # Fallback: YCrCb fixed thresholds
+        mask = _skin_ycrcb(img_rgb)
+
+    # Morphological cleanup
+    if mask.any():
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_u8 = mask.astype(np.uint8)
+        mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
+        mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
+
+        if np.count_nonzero(mask_u8) < min_pixels:
+            return np.zeros_like(mask, dtype=bool)
+        return mask_u8.astype(bool)
+
+    return np.zeros(img_rgb.shape[:2], dtype=bool)
 
 
 def auto_detect_cast(img_rgb: np.ndarray) -> dict[str, ZoneCast]:
