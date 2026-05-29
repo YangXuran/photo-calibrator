@@ -48,6 +48,49 @@ class FilmScanResult:
     to a fronto-parallel rectangle.  None if no perspective detected or
     confidence is low."""
 
+    film_format: FilmFormat | None = None
+    """Identified film format, or None if confidence too low."""
+
+    evaluation: FilmScanEval | None = None
+    """Quality evaluation of the film frame detection and correction."""
+
+
+@dataclass(frozen=True)
+class FilmFormat:
+    """Known film format with nominal dimensions and aspect ratio."""
+
+    name: str
+    """Human-readable format name, e.g. '135 full-frame', '120 6×6'."""
+
+    nominal_ratio: float
+    """Nominal aspect ratio width/height (landscape).  e.g. 1.50 for 3:2."""
+
+    orientation: str
+    """'landscape', 'portrait', or 'square'."""
+
+    ratio_tolerance: float = 0.06
+    """Allowed deviation from nominal ratio for matching."""
+
+
+@dataclass(frozen=True)
+class FilmScanEval:
+    """Quality metrics for film frame detection and correction."""
+
+    format_match_confidence: float
+    """0–1. How well the detected aspect ratio matches the identified format."""
+
+    corner_symmetry: float
+    """0–1. 1.0 = perfectly symmetric rectangle (opposite sides equal)."""
+
+    crop_coverage: float
+    """Crop area / image area.  Ideal range ~0.3–0.85."""
+
+    overall_score: float
+    """Weighted composite 0–1.  < 0.3 = likely bad detection."""
+
+    diagnosis: list[str]
+    """Human-readable notes, e.g. 'aspect ratio matches 135 full-frame'."""
+
 
 # ── Constants ──────────────────────────────────────────────────────
 
@@ -60,6 +103,24 @@ _HOUGH_MAX_LINE_GAP = 20
 
 _ANGLE_TOLERANCE_DEG = 8.0  # cluster lines within ±8° (allows perspective slant)
 _MIN_CONFIDENCE_LINES = 4  # need at least 4 long lines for a quad
+
+# ── Known film formats ─────────────────────────────────────────────
+
+# Aspect ratios from film datasheets.  Landscape ratios (w/h ≥ 1.0).
+# Portrait variants handled by swapping orientation during matching.
+_KNOWN_FILM_FORMATS: list[FilmFormat] = [
+    FilmFormat("135 full-frame", 1.50, "landscape"),      # 36×24 mm → 3:2
+    FilmFormat("135 half-frame (landscape)", 1.33, "landscape"),  # 24×18 mm
+    FilmFormat("135 half-frame (portrait)", 0.75, "portrait"),    # 18×24 mm
+    FilmFormat("120 6×4.5", 1.33, "landscape"),          # 56×42 mm → 4:3
+    FilmFormat("120 6×6", 1.00, "square"),               # 56×56 mm
+    FilmFormat("120 6×7", 1.25, "landscape"),            # 56×70 mm
+    FilmFormat("120 6×9", 1.50, "landscape"),            # 56×84 mm → 3:2 (matches 135!)
+    FilmFormat("4×5 large format", 0.80, "portrait"),     # 102×127 mm
+    FilmFormat("APS-C (digital)", 1.50, "landscape"),     # ~23×15 mm → 3:2
+    FilmFormat("Micro 4/3", 1.33, "landscape"),          # 17×13 mm → 4:3
+    FilmFormat("1-inch sensor", 1.33, "landscape"),       # 13×9 mm → 4:3
+]
 
 
 # ── Public API ─────────────────────────────────────────────────────
@@ -101,6 +162,9 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
     if is_persp:
         transform = _perspective_transform(corners)
 
+    film_fmt = identify_film_format(corners) if confidence > 0.4 else None
+    evaluation = evaluate_film_correction(corners, crop, film_fmt, (w, h))
+
     return FilmScanResult(
         angle_deg=round(angle, 2),
         corners=corners,
@@ -112,6 +176,8 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
         border_type=border_type,
         is_perspective=is_persp,
         transform_matrix=transform,
+        film_format=film_fmt,
+        evaluation=evaluation,
     )
 
 
@@ -422,6 +488,127 @@ def _perspective_transform(
 
     matrix = cv2.getPerspectiveTransform(src, dst)
     return [[float(matrix[i, j]) for j in range(3)] for i in range(3)]
+
+
+# ── Film format identification ─────────────────────────────────────
+
+
+def identify_film_format(corners: list[tuple[int, int]]) -> FilmFormat | None:
+    """Identify film format from the detected frame aspect ratio.
+
+    Computes the aspect ratio from the 4 corners (average of opposite
+    side lengths), then matches against known film formats with tolerance.
+
+    Returns None if no format matches within tolerance.
+    """
+    tl, tr, br, bl = corners
+
+    def _len(a, b):
+        return float(np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2))
+
+    # Average width/height from opposite sides (robust to perspective)
+    avg_w = (_len(tl, tr) + _len(bl, br)) / 2.0
+    avg_h = (_len(tl, bl) + _len(tr, br)) / 2.0
+
+    if avg_w < 1 or avg_h < 1:
+        return None
+
+    ratio = avg_w / avg_h
+
+    # Find closest format
+    best: FilmFormat | None = None
+    best_dist = float("inf")
+
+    for fmt in _KNOWN_FILM_FORMATS:
+        dist = abs(ratio - fmt.nominal_ratio)
+        if dist < fmt.ratio_tolerance and dist < best_dist:
+            best = fmt
+            best_dist = dist
+
+    return best
+
+
+# ── Quality evaluation ─────────────────────────────────────────────
+
+
+def evaluate_film_correction(
+    corners: list[tuple[int, int]],
+    crop: tuple[int, int, int, int],
+    film_fmt: FilmFormat | None,
+    img_shape: tuple[int, int],
+) -> FilmScanEval:
+    """Evaluate the quality of the film frame detection.
+
+    Computes three metrics and an overall composite score:
+    1. format_match_confidence — how well the detected ratio matches film format
+    2. corner_symmetry — opposite sides equality (rectangle check)
+    3. crop_coverage — how much of the image the crop occupies
+
+    Returns FilmScanEval with scores and human-readable diagnosis.
+    """
+    tl, tr, br, bl = corners
+    img_w, img_h = img_shape
+
+    def _len(a, b):
+        return float(np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2))
+
+    # 1. Format match confidence
+    avg_w = (_len(tl, tr) + _len(bl, br)) / 2.0
+    avg_h = (_len(tl, bl) + _len(tr, br)) / 2.0
+    ratio = avg_w / avg_h if avg_h > 0 else 0.0
+
+    format_conf = 0.0
+    if film_fmt is not None:
+        ratio_err = abs(ratio - film_fmt.nominal_ratio)
+        format_conf = max(0.0, 1.0 - ratio_err / film_fmt.ratio_tolerance)
+
+    # 2. Corner symmetry — how equal are opposite sides
+    top = _len(tl, tr)
+    bottom = _len(br, bl)
+    left = _len(tl, bl)
+    right = _len(tr, br)
+
+    h_sym = 1.0 - min(abs(top - bottom) / max((top + bottom) / 2.0, 1.0), 1.0)
+    v_sym = 1.0 - min(abs(left - right) / max((left + right) / 2.0, 1.0), 1.0)
+    corner_sym = (h_sym + v_sym) / 2.0
+
+    # 3. Crop coverage — ideal ~0.4–0.85
+    crop_area = float(crop[2] * crop[3])
+    img_area = float(img_w * img_h)
+    coverage = crop_area / max(img_area, 1.0)
+
+    # Score: 1.0 if coverage in 0.4–0.85, falling off outside
+    ideal_lo, ideal_hi = 0.4, 0.85
+    if coverage < ideal_lo:
+        coverage_score = coverage / ideal_lo
+    elif coverage > ideal_hi:
+        coverage_score = max(0.0, 1.0 - (coverage - ideal_hi) * 2)
+    else:
+        coverage_score = 1.0
+
+    # 4. Overall score (weighted)
+    overall = 0.35 * format_conf + 0.35 * corner_sym + 0.30 * coverage_score
+
+    # Diagnosis
+    diagnosis: list[str] = []
+    if film_fmt is not None:
+        diagnosis.append(f"aspect ratio {ratio:.2f} matches {film_fmt.name} ({film_fmt.nominal_ratio:.2f})")
+    else:
+        diagnosis.append(f"aspect ratio {ratio:.2f} — no known format match")
+
+    if corner_sym < 0.85:
+        diagnosis.append(f"corner symmetry low ({corner_sym:.2f}) — possible perspective or uneven border")
+    if coverage_score < 0.6:
+        reason = "too small" if coverage < ideal_lo else "near full image"
+        diagnosis.append(f"crop coverage unusual ({coverage:.1%}) — {reason}")
+
+    return FilmScanEval(
+        format_match_confidence=round(format_conf, 3),
+        corner_symmetry=round(corner_sym, 3),
+        crop_coverage=round(coverage, 3),
+        overall_score=round(overall, 3),
+        diagnosis=diagnosis,
+    )
 
 
 def _low_confidence_result(img_w: int, img_h: int) -> FilmScanResult:

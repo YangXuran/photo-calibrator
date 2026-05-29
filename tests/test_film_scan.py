@@ -228,3 +228,91 @@ def test_level_image_not_perspective() -> None:
     assert result.confidence > 0.5
     assert not result.is_perspective, "Level image incorrectly flagged as perspective"
     assert result.transform_matrix is None, "Should be no transform for level image"
+
+
+# ── Film format identification tests ───────────────────────────────
+
+
+def _make_film_with_ratio(
+    canvas_size: tuple[int, int] = (800, 600),
+    photo_ratio: float = 1.5,
+    border_width: int = 30,
+) -> np.ndarray:
+    """Create a film image where the inner photo has a specific aspect ratio.
+
+    The photo area is centered and sized to fill most of the canvas while
+    preserving the given ratio.
+    """
+    cw, ch = canvas_size
+    # Fit the photo ratio into the canvas
+    if cw / ch > photo_ratio:
+        ph = ch - 2 * border_width
+        pw = int(ph * photo_ratio)
+    else:
+        pw = cw - 2 * border_width
+        ph = int(pw / photo_ratio)
+
+    x0 = (cw - pw) // 2
+    y0 = (ch - ph) // 2
+
+    img = np.zeros((ch, cw, 3), dtype=np.uint8)
+    # Black border
+    img[:, :] = (0, 0, 0)
+    # Fill inner photo with gradient
+    for row in range(ph):
+        r_val = int(100 + 155 * row / max(ph, 1))
+        img[y0 + row, x0 : x0 + pw] = (150, int(60 + 80 * (1 - row / max(ph, 1))), r_val)
+
+    return img
+
+
+def test_identify_135_full_frame() -> None:
+    """3:2 aspect ratio should be identified as 135 full-frame."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_film_with_ratio((800, 600), photo_ratio=1.50)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.5
+    assert result.film_format is not None, "No format identified"
+    assert "135 full-frame" in result.film_format.name or "APS-C" in result.film_format.name
+
+
+def test_identify_120_six_by_six() -> None:
+    """1:1 aspect ratio should be identified as 120 6×6."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_film_with_ratio((600, 600), photo_ratio=1.0)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.5
+    if result.film_format is not None:
+        assert "6×6" in result.film_format.name or result.film_format.orientation == "square"
+
+
+# ── Evaluation tests ───────────────────────────────────────────────
+
+
+def test_evaluation_produced_for_valid_frame() -> None:
+    """A valid film frame should produce an evaluation with non-zero scores."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_film_test_image((800, 600))
+    result = detect_film_frame(img)
+
+    assert result.evaluation is not None, "Evaluation missing"
+    assert result.evaluation.overall_score > 0.5, f"Overall score too low: {result.evaluation.overall_score}"
+    assert len(result.evaluation.diagnosis) > 0, "Diagnosis empty"
+
+
+def test_evaluation_symmetry_perfect_for_level_image() -> None:
+    """A perfectly level, rectangular frame should have high corner symmetry."""
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_film_test_image((800, 600), rotation_deg=0, border_width=40)
+    result = detect_film_frame(img)
+
+    assert result.evaluation is not None
+    assert result.evaluation.corner_symmetry > 0.9, (
+        f"Symmetry should be > 0.9 for level frame: {result.evaluation.corner_symmetry}"
+    )
