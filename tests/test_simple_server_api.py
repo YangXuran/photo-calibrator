@@ -97,7 +97,7 @@ def test_calibrate_payload_returns_metrics_and_preview_image() -> None:
     assert "neutral_mask" in payload["charts"]
     assert "lab_vectors" in payload["charts"]
     assert payload["input"]["skin"] is not None
-    assert any(v["name"] == "肤色" for v in payload["charts"]["lab_vectors"])
+    assert any(v["name"] == "Skin" for v in payload["charts"]["lab_vectors"])
     assert "processing" in payload
     assert "opencv_threads" in payload["processing"]
     assert "session_id" in payload

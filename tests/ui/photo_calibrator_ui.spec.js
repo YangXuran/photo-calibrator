@@ -69,7 +69,7 @@ test("loads a folder, shows bottom thumbnails, and displays calibration metrics"
 
     await expect(page.getByTestId("thumbnail")).toHaveCount(2);
     await expect(page.getByTestId("image-grid")).toBeVisible();
-    await expect(page.getByTestId("library-source")).not.toHaveText("未加载");
+    await expect(page.getByTestId("library-source")).not.toHaveText("Not loaded");
     await expect(page.getByTestId("library-count")).toHaveText("2");
     await expect(page.getByTestId("viewer-file-label")).toContainText("a-warm-01.png");
     await expect(page.getByTestId("original-image")).toHaveAttribute("src", /blob:/);
@@ -107,7 +107,7 @@ test("loads a folder, shows bottom thumbnails, and displays calibration metrics"
     await expect(page.getByTestId("strength-chart")).toBeVisible();
     await expect(page.getByTestId("zone-chart")).toBeVisible();
     await expect(page.getByTestId("zone-rows").locator("tr").first()).toBeVisible();
-    await expect(page.getByTestId("skin-status")).toHaveText("已检测");
+    await expect(page.getByTestId("skin-status")).toHaveText("Detected");
     await expect(page.getByTestId("skin-pixels")).not.toHaveText("-");
     await expect(page.getByTestId("skin-a")).not.toHaveText("-");
 
@@ -115,24 +115,24 @@ test("loads a folder, shows bottom thumbnails, and displays calibration metrics"
     await expect(page.getByTestId("crop-card")).toBeVisible();
     await page.getByTestId("toggle-crop-overlay").click();
     await expect(page.getByTestId("crop-overlay")).toBeVisible();
-    await expect(page.getByTestId("crop-status")).toHaveText("手动调整");
+    await expect(page.getByTestId("crop-status")).toHaveText("Manual");
     await page.getByTestId("thumbnail").filter({ hasText: "b-cool-02.tif" }).click();
     await expect(page.getByTestId("file-title")).toContainText("b-cool-02.tif");
     await expect(page.getByTestId("crop-overlay")).toBeHidden();
-    await expect(page.getByTestId("crop-status")).toHaveText("未启用");
+    await expect(page.getByTestId("crop-status")).toHaveText("Disabled");
     await page.getByTestId("thumbnail").filter({ hasText: "a-warm-01.png" }).click();
     await expect(page.getByTestId("file-title")).toContainText("a-warm-01.png");
     await expect(page.getByTestId("crop-overlay")).toBeVisible();
-    await expect(page.getByTestId("crop-status")).toHaveText("手动调整");
+    await expect(page.getByTestId("crop-status")).toHaveText("Manual");
     await page.getByTestId("reset-crop-button").click();
     await expect(page.getByTestId("crop-overlay")).toBeHidden();
-    await expect(page.getByTestId("crop-status")).toHaveText("未启用");
+    await expect(page.getByTestId("crop-status")).toHaveText("Disabled");
 
     await page.getByTestId("inspector-tab-adjust").click();
     await page.getByTestId("accelerator-select").selectOption("cpu-opencv");
     await expect(page.getByTestId("accelerator-requested")).toHaveText("cpu-opencv");
     await expect(page.getByTestId("accelerator-backend")).toHaveText("cpu-opencv");
-    await expect(page.getByTestId("accelerated-ops")).toHaveText("无");
+    await expect(page.getByTestId("accelerated-ops")).toHaveText("None");
     await expect(page.getByTestId("lut-path")).toHaveText("CPU");
     await expect(page.getByTestId("calibrated-image")).toHaveAttribute("src", /data:image\/jpeg/);
 

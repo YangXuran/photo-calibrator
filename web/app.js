@@ -109,7 +109,7 @@ const workspace = createWorkspaceController({
   onSelectForCalibration(file, index, requestId) {
     calibration.runCalibration(file, requestId).catch((error) => {
       if (index !== state.selectedIndex) return;
-      els.afterStrength.textContent = "失败";
+      els.afterStrength.textContent = "Failed";
       els.reduction.textContent = "-";
       els.direction.textContent = "API error";
       console.error(error);
@@ -221,6 +221,6 @@ renderInspectorPanel();
 renderCompareMode(els, state);
 renderCropOverlay(els, state);
 calibration.loadCapabilities().catch((error) => {
-  els.fallbackReason.textContent = "无法读取加速状态";
+  els.fallbackReason.textContent = "Cannot read accelerator status";
   console.error(error);
 });

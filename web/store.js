@@ -46,8 +46,8 @@ export function isBrowserDisplayable(file) {
 
 export function folderName(files) {
   const first = files.find((file) => file.webkitRelativePath);
-  if (!first) return "手动选择";
-  return first.webkitRelativePath.split("/")[0] || "文件夹";
+  if (!first) return "Manual selection";
+  return first.webkitRelativePath.split("/")[0] || "Folder";
 }
 
 export function defaultCropRect() {

@@ -46,8 +46,8 @@ export function renderCropOverlay(els, state) {
   els.cropBox.style.height = `${height}%`;
   els.cropOverlay.style.backgroundSize = `${left}% 100%, ${right}% 100%, 100% ${top}%, 100% ${bottom}%`;
   els.cropOverlay.style.backgroundPosition = `0 0, 100% 0, 0 0, 0 100%`;
-  els.toggleCropOverlay.textContent = document?.cropOverlayEnabled ? "隐藏裁切框" : "显示裁切框";
-  els.cropStatus.textContent = document?.cropOverlayEnabled ? "手动调整" : "未启用";
+  els.toggleCropOverlay.textContent = document?.cropOverlayEnabled ? "Hide Crop Box" : "Show Crop Box";
+  els.cropStatus.textContent = document?.cropOverlayEnabled ? "Manual" : "Disabled";
   els.cropWidth.textContent = `${Math.round(width)}%`;
   els.cropHeight.textContent = `${Math.round(height)}%`;
   els.cropOffset.textContent = `${Math.round(left)} / ${Math.round(top)}`;

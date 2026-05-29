@@ -48,7 +48,7 @@ export function renderZones(els, zones, fmt) {
 export function renderSkin(els, report, fmt) {
   const skin = report.skin;
   if (!skin) {
-    els.skinStatus.textContent = "未检测到稳定肤色区域";
+    els.skinStatus.textContent = "No stable skin region detected";
     els.skinStatus.classList.remove("detected");
     els.skinPixels.textContent = "-";
     els.skinA.textContent = "-";
@@ -58,7 +58,7 @@ export function renderSkin(els, report, fmt) {
   }
   const da = skin.a - report.lab.a;
   const db = skin.b - report.lab.b;
-  els.skinStatus.textContent = "已检测";
+  els.skinStatus.textContent = "Detected";
   els.skinStatus.classList.add("detected");
   els.skinPixels.textContent = String(skin.pixels);
   els.skinA.textContent = fmt(skin.a);
@@ -67,7 +67,7 @@ export function renderSkin(els, report, fmt) {
 }
 
 export function setBusyMetrics(els) {
-  els.sessionStatus.textContent = "处理中";
+  els.sessionStatus.textContent = "Processing...";
   els.afterStrength.textContent = "...";
   els.reduction.textContent = "...";
   els.direction.textContent = "...";
@@ -90,14 +90,14 @@ export function renderAccelerator(els, processing) {
   const gpu = processing.gpu_ops || [];
   els.acceleratorBackend.textContent = processing.accelerator_backend || "-";
   els.acceleratorRequested.textContent = processing.accelerator_requested || "-";
-  els.acceleratedOps.textContent = gpu.length ? gpu.join(", ") : "无";
+  els.acceleratedOps.textContent = gpu.length ? gpu.join(", ") : "None";
   els.fallbackOps.textContent = fallback.length ? fallback.join(", ") : "-";
-  els.fallbackReason.textContent = processing.fallback_reason || "无";
+  els.fallbackReason.textContent = processing.fallback_reason || "None";
   els.openclStatus.textContent = processing.opencl_available
     ? processing.opencl_enabled
-      ? "启用"
-      : "可用/未启用"
-    : "不可用";
+      ? "Enabled"
+      : "Available"
+    : "Unavailable";
   els.lutPath.textContent = gpu.includes("3d-lut") ? "GPU" : "CPU";
 }
 

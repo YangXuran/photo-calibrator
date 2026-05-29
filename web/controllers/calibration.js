@@ -29,18 +29,18 @@ export function createCalibrationController({
 
   async function runAcceleratorBenchmark() {
     els.benchmarkButton.disabled = true;
-    els.benchmarkButton.textContent = "测试中";
+    els.benchmarkButton.textContent = "Testing...";
     els.benchmarkRows.innerHTML = "";
     try {
       const payload = await fetchAcceleratorBenchmark(els.acceleratorSelect.value || "auto");
       renderAcceleratorPayload(els, payload.benchmark?.accelerator);
       renderBenchmark(els, payload.benchmark, fmt);
     } catch (error) {
-      els.fallbackReason.textContent = "基准测试失败";
+      els.fallbackReason.textContent = "Benchmark failed";
       console.error(error);
     } finally {
       els.benchmarkButton.disabled = false;
-      els.benchmarkButton.textContent = "基准测试";
+      els.benchmarkButton.textContent = "Benchmark";
     }
   }
 
@@ -51,7 +51,7 @@ export function createCalibrationController({
     }
     document.lastPayload = payload;
 
-    els.sessionStatus.textContent = payload.session_id ? "已缓存" : "完成";
+    els.sessionStatus.textContent = payload.session_id ? "Cached" : "Done";
     els.calibratedImage.src = payload.calibrated_image;
     if (payload.original_preview || imageData) {
       els.originalImage.src = payload.original_preview || imageData;
@@ -127,7 +127,7 @@ export function createCalibrationController({
       await runCalibration(file, requestId);
     } catch (error) {
       if (requestId !== state.requestId) return;
-      els.afterStrength.textContent = "失败";
+      els.afterStrength.textContent = "Failed";
       els.reduction.textContent = "-";
       els.direction.textContent = "API error";
       console.error(error);
@@ -145,7 +145,7 @@ export function createCalibrationController({
         reselectCurrent(state.selectedIndex);
       }
     } catch (error) {
-      els.fallbackReason.textContent = "加速后端切换失败";
+      els.fallbackReason.textContent = "Accelerator switch failed";
       console.error(error);
     }
   }

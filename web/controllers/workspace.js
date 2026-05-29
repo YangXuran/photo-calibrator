@@ -15,13 +15,13 @@ export function createWorkspaceController({
   onSelectForCalibration,
 }) {
   function applyWorkspaceMetadata() {
-    const currentFolderName = state.files.length ? folderName(state.files) : "未加载文件夹";
+    const currentFolderName = state.files.length ? folderName(state.files) : "No folder loaded";
     els.folderLabel.textContent = currentFolderName;
-    els.countLabel.textContent = `${state.files.length} 张`;
+    els.countLabel.textContent = `${state.files.length} photos`;
     els.librarySource.textContent = currentFolderName;
     els.libraryCount.textContent = String(state.files.length);
     els.viewerFolderLabel.textContent = currentFolderName;
-    els.sessionStatus.textContent = state.files.length ? "就绪" : "空闲";
+    els.sessionStatus.textContent = state.files.length ? "Ready" : "Idle";
   }
 
   function renderFilmstrip() {

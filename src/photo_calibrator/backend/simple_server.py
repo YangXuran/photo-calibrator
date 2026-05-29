@@ -503,9 +503,9 @@ def _static_chart_payload(input_report, img_rgb: np.ndarray) -> dict:
         "pci": _pci_payload(input_report),
         "neutral_mask": _neutral_mask_payload(img_rgb),
         "zones": zones,
-        "input_lab_vector": {"name": "原图", "a": input_report.lab.a_mean, "b": input_report.lab.b_star_mean},
+        "input_lab_vector": {"name": "Original", "a": input_report.lab.a_mean, "b": input_report.lab.b_star_mean},
         "skin_lab_vector": (
-            {"name": "肤色", "a": input_report.skin.a_mean, "b": input_report.skin.b_mean}
+            {"name": "Skin", "a": input_report.skin.a_mean, "b": input_report.skin.b_mean}
             if input_report.skin
             else None
         ),
@@ -516,7 +516,7 @@ def _chart_payload(input_report, output_report, img_rgb: np.ndarray, static_char
     static = static_charts or _static_chart_payload(input_report, img_rgb)
     lab_vectors = [
         static["input_lab_vector"],
-        {"name": "校准", "a": output_report.lab.a_mean, "b": output_report.lab.b_star_mean},
+        {"name": "Calibrated", "a": output_report.lab.a_mean, "b": output_report.lab.b_star_mean},
     ]
     if static.get("skin_lab_vector"):
         lab_vectors.append(static["skin_lab_vector"])
@@ -539,8 +539,8 @@ def _chart_payload(input_report, output_report, img_rgb: np.ndarray, static_char
         },
         "lab_vectors": lab_vectors,
         "strengths": [
-            {"name": "原图", "value": input_report.lab.cast_strength},
-            {"name": "校准", "value": output_report.lab.cast_strength},
+            {"name": "Original", "value": input_report.lab.cast_strength},
+            {"name": "Calibrated", "value": output_report.lab.cast_strength},
         ],
         "zones": static["zones"],
     }

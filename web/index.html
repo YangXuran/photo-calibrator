@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -16,101 +16,101 @@
         <div class="toolbar">
           <label class="button">
             <input id="folderInput" data-testid="folder-input" type="file" accept="image/*,.tif,.tiff,.dng,.cr2,.cr3,.nef,.arw,.raf,.rw2,.orf,.pef,.srw" multiple webkitdirectory />
-            打开文件夹
+            Open Folder
           </label>
           <label class="button secondary">
             <input id="fileInput" data-testid="file-input" type="file" accept="image/*,.tif,.tiff,.dng,.cr2,.cr3,.nef,.arw,.raf,.rw2,.orf,.pef,.srw" multiple />
-            添加照片
+            Add Photos
           </label>
         </div>
       </header>
 
       <main class="workspace">
-        <aside class="library-panel" aria-label="资源与预设">
+        <aside class="library-panel" aria-label="Resources &amp; Presets">
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>资源</span>
+              <span>Resources</span>
             </div>
             <div class="library-section">
               <div class="library-meta-row">
-                <span>当前来源</span>
-                <strong id="librarySource" data-testid="library-source">未加载</strong>
+                <span>Source</span>
+                <strong id="librarySource" data-testid="library-source">Not loaded</strong>
               </div>
               <div class="library-meta-row">
-                <span>照片数量</span>
+                <span>Photo Count</span>
                 <strong id="libraryCount" data-testid="library-count">0</strong>
               </div>
             </div>
           </section>
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>快速工具</span>
+              <span>Quick Tools</span>
             </div>
             <div id="toolGrid" class="tool-grid" data-testid="tool-grid"></div>
           </section>
           <section class="dock-panel">
             <div class="dock-panel-header">
-              <span>会话</span>
+              <span>Session</span>
             </div>
             <div class="library-section">
               <div class="session-card" data-testid="session-card">
-                <span>当前文档</span>
-                <strong id="sessionStatus" data-testid="session-status">空闲</strong>
-                <small>参数修改走 session 预览，避免重复解码原图。</small>
+                <span>Current Document</span>
+                <strong id="sessionStatus" data-testid="session-status">Idle</strong>
+                <small>Parameter changes use session preview to avoid re-decoding the original.</small>
               </div>
             </div>
           </section>
         </aside>
 
-        <section class="viewer" aria-label="照片预览">
+        <section class="viewer" aria-label="Photo Preview">
           <div class="viewer-toolbar">
             <div class="viewer-toolbar-group">
               <div class="viewer-breadcrumb">
-                <span id="viewerFolderLabel" data-testid="viewer-folder-label">未加载项目</span>
-                <strong id="viewerFileLabel" data-testid="viewer-file-label">选择照片开始</strong>
+                <span id="viewerFolderLabel" data-testid="viewer-folder-label">No project loaded</span>
+                <strong id="viewerFileLabel" data-testid="viewer-file-label">Select a photo to start</strong>
               </div>
             </div>
             <div class="segmented-control" data-testid="compare-mode">
-              <button id="compareSideBySide" class="segment active" type="button" data-mode="side-by-side" data-testid="compare-side-by-side">双栏</button>
-              <button id="compareSplit" class="segment" type="button" data-mode="split" data-testid="compare-split">擦拭</button>
-              <button id="compareCalibrated" class="segment" type="button" data-mode="calibrated-only" data-testid="compare-calibrated">校准图</button>
+              <button id="compareSideBySide" class="segment active" type="button" data-mode="side-by-side" data-testid="compare-side-by-side">Side by Side</button>
+              <button id="compareSplit" class="segment" type="button" data-mode="split" data-testid="compare-split">Split</button>
+              <button id="compareCalibrated" class="segment" type="button" data-mode="calibrated-only" data-testid="compare-calibrated">Calibrated</button>
             </div>
             <label id="splitControl" class="split-control hidden" data-testid="split-control">
-              擦拭位置
+              Split Position
               <input id="splitPositionInput" data-testid="split-position-input" type="range" min="10" max="90" step="1" value="50" />
             </label>
           </div>
           <div id="emptyState" class="empty-state" data-testid="empty-state">
-            <strong>加载照片开始检查校准效果</strong>
-            <span>选择文件夹后，底栏会显示该文件夹中的照片缩略图。</span>
+            <strong>Load a photo to inspect calibration</strong>
+            <span>After selecting a folder, thumbnails appear in the filmstrip below.</span>
           </div>
           <div id="imageGrid" class="image-grid hidden" data-testid="image-grid">
             <figure id="originalFigure" data-testid="original-figure">
-              <figcaption>原图</figcaption>
+              <figcaption>Original</figcaption>
               <div class="image-stage">
-                <img id="originalImage" data-testid="original-image" alt="原图预览" />
+                <img id="originalImage" data-testid="original-image" alt="Original preview" />
                 <div id="cropOverlay" class="crop-overlay hidden" data-testid="crop-overlay">
                   <div id="cropBox" class="crop-box" data-testid="crop-box">
-                    <button class="crop-handle crop-handle-nw" type="button" data-handle="nw" aria-label="左上裁切点"></button>
-                    <button class="crop-handle crop-handle-ne" type="button" data-handle="ne" aria-label="右上裁切点"></button>
-                    <button class="crop-handle crop-handle-sw" type="button" data-handle="sw" aria-label="左下裁切点"></button>
-                    <button class="crop-handle crop-handle-se" type="button" data-handle="se" aria-label="右下裁切点"></button>
+                    <button class="crop-handle crop-handle-nw" type="button" data-handle="nw" aria-label="NW crop handle"></button>
+                    <button class="crop-handle crop-handle-ne" type="button" data-handle="ne" aria-label="NE crop handle"></button>
+                    <button class="crop-handle crop-handle-sw" type="button" data-handle="sw" aria-label="SW crop handle"></button>
+                    <button class="crop-handle crop-handle-se" type="button" data-handle="se" aria-label="SE crop handle"></button>
                   </div>
                 </div>
               </div>
             </figure>
             <figure id="calibratedFigure" data-testid="calibrated-figure">
-              <figcaption>校准预览</figcaption>
+              <figcaption>Calibrated Preview</figcaption>
               <div class="image-stage">
-                <img id="calibratedImage" data-testid="calibrated-image" alt="校准预览" />
+                <img id="calibratedImage" data-testid="calibrated-image" alt="Calibrated preview" />
               </div>
             </figure>
             <figure id="splitCompare" class="split-compare hidden" data-testid="split-compare">
-              <figcaption>原图 / 校准 擦拭对比</figcaption>
+              <figcaption>Original / Calibrated Split View</figcaption>
               <div class="compare-stage">
-                <img id="splitOriginalImage" class="compare-image compare-image-base" alt="原图擦拭对比" />
+                <img id="splitOriginalImage" class="compare-image compare-image-base" alt="Original split" />
                 <div id="splitClip" class="compare-clip" data-testid="split-clip">
-                  <img id="splitCalibratedImage" class="compare-image compare-image-top" alt="校准擦拭对比" />
+                  <img id="splitCalibratedImage" class="compare-image compare-image-top" alt="Calibrated split" />
                 </div>
                 <div id="splitDivider" class="compare-divider" data-testid="split-divider"></div>
               </div>
@@ -118,45 +118,45 @@
           </div>
         </section>
 
-        <aside class="inspector" aria-label="算法检查">
+        <aside class="inspector" aria-label="Inspector">
           <div class="inspector-header">
-            <div class="file-title" id="fileTitle" data-testid="file-title">未选择照片</div>
+            <div class="file-title" id="fileTitle" data-testid="file-title">No photo selected</div>
             <div id="inspectorTabs" class="inspector-tabs" data-testid="inspector-tabs"></div>
           </div>
 
           <section id="panelAdjust" class="panel-stack" data-panel="adjust">
             <div class="dock-panel">
               <div class="dock-panel-header">
-                <span>主校准</span>
+                <span>Main Calibration</span>
               </div>
               <div class="controls">
                 <label>
-                  模式
+                  Mode
                   <select id="modeSelect" data-testid="mode-select">
-                    <option value="global">全局校准</option>
-                    <option value="midtones-only">中间调</option>
-                    <option value="skin-priority">肤色优先</option>
-                    <option value="highlights-only">高光去偏</option>
-                    <option value="preserve-split-tone">保留分离色调</option>
-                    <option value="rgb-curves">RGB 曲线</option>
-                    <option value="tone-zone">分区校正</option>
-                    <option value="matrix">3x3 矩阵</option>
+                    <option value="global">Global</option>
+                    <option value="midtones-only">Midtones</option>
+                    <option value="skin-priority">Skin Priority</option>
+                    <option value="highlights-only">Highlights</option>
+                    <option value="preserve-split-tone">Preserve Split Tone</option>
+                    <option value="rgb-curves">RGB Curves</option>
+                    <option value="tone-zone">Zone Correction</option>
+                    <option value="matrix">3x3 Matrix</option>
                     <option value="lut3d">3D LUT</option>
-                    <option value="selective">选择性色彩</option>
-                    <option value="film">胶片校准</option>
+                    <option value="selective">Selective Color</option>
+                    <option value="film">Film Calibration</option>
                   </select>
                 </label>
                 <label>
-                  强度 <span id="strengthValue">0.80</span>
+                  Strength <span id="strengthValue">0.80</span>
                   <input id="strengthInput" data-testid="strength-input" type="range" min="0" max="1.2" step="0.05" value="0.8" />
                 </label>
                 <label>
-                  加速后端
+                  Accelerator
                   <select id="acceleratorSelect" data-testid="accelerator-select">
-                    <option value="auto">自动</option>
+                    <option value="auto">Auto</option>
                     <option value="cpu-opencv">CPU OpenCV</option>
                     <option value="opencl-umat">OpenCL UMat</option>
-                    <option value="torch">Torch 自动</option>
+                    <option value="torch">Torch Auto</option>
                     <option value="torch-cuda">Torch CUDA</option>
                     <option value="torch-mps">Torch MPS</option>
                     <option value="metal-mps">Metal MPS</option>
@@ -167,43 +167,43 @@
 
             <div class="metric-grid">
               <div class="metric">
-                <span>原图 |dE|</span>
+                <span>Original |dE|</span>
                 <strong id="beforeStrength" data-testid="before-strength">-</strong>
               </div>
               <div class="metric">
-                <span>校准后 |dE|</span>
+                <span>Calibrated |dE|</span>
                 <strong id="afterStrength" data-testid="after-strength">-</strong>
               </div>
               <div class="metric">
-                <span>削减率</span>
+                <span>Reduction</span>
                 <strong id="reduction" data-testid="reduction">-</strong>
               </div>
               <div class="metric">
-                <span>方向</span>
+                <span>Direction</span>
                 <strong id="direction" data-testid="direction">-</strong>
               </div>
               <div class="metric">
-                <span>分析尺寸</span>
+                <span>Analysis Size</span>
                 <strong id="analysisSize" data-testid="analysis-size">-</strong>
               </div>
               <div class="metric">
-                <span>估计来源</span>
+                <span>Est. Source</span>
                 <strong id="castSource" data-testid="cast-source">-</strong>
               </div>
               <div class="metric">
-                <span>预览来源</span>
+                <span>Preview Source</span>
                 <strong id="previewSource" data-testid="preview-source">-</strong>
               </div>
               <div class="metric">
-                <span>加速后端</span>
+                <span>Accelerator</span>
                 <strong id="acceleratorBackend" data-testid="accelerator-backend">-</strong>
               </div>
               <div class="metric">
-                <span>3D LUT 路径</span>
+                <span>3D LUT Path</span>
                 <strong id="lutPath" data-testid="lut-path">-</strong>
               </div>
               <div class="metric">
-                <span>CCC Dσ</span>
+                <span>CCC D&sigma;</span>
                 <strong id="cccValue" data-testid="ccc-value">-</strong>
               </div>
               <div class="metric">
@@ -214,19 +214,19 @@
 
             <div class="accelerator-card" data-testid="accelerator-card">
               <div class="accelerator-card-header">
-                <span>加速状态</span>
-                <button id="benchmarkButton" class="mini-button" type="button" data-testid="benchmark-button">基准测试</button>
+                <span>Accelerator Status</span>
+                <button id="benchmarkButton" class="mini-button" type="button" data-testid="benchmark-button">Benchmark</button>
               </div>
               <div class="accelerator-grid">
-                <div><span>请求</span><strong id="acceleratorRequested" data-testid="accelerator-requested">-</strong></div>
+                <div><span>Requested</span><strong id="acceleratorRequested" data-testid="accelerator-requested">-</strong></div>
                 <div><span>OpenCL</span><strong id="openclStatus" data-testid="opencl-status">-</strong></div>
-                <div><span>GPU 路径</span><strong id="acceleratedOps" data-testid="accelerated-ops">-</strong></div>
-                <div><span>CPU 回退</span><strong id="fallbackOps" data-testid="fallback-ops">-</strong></div>
+                <div><span>GPU Ops</span><strong id="acceleratedOps" data-testid="accelerated-ops">-</strong></div>
+                <div><span>CPU Fallback</span><strong id="fallbackOps" data-testid="fallback-ops">-</strong></div>
               </div>
               <div id="fallbackReason" class="fallback-reason" data-testid="fallback-reason">-</div>
               <table class="benchmark-table">
                 <thead>
-                  <tr><th>算子</th><th>设备</th><th>路径</th><th>ms</th></tr>
+                  <tr><th>Op</th><th>Device</th><th>Path</th><th>ms</th></tr>
                 </thead>
                 <tbody id="benchmarkRows" data-testid="benchmark-rows"></tbody>
               </table>
@@ -235,41 +235,41 @@
 
           <section id="panelAnalysis" class="panel-stack hidden" data-panel="analysis">
             <div class="zone-table">
-              <div class="zone-header">亮度分区</div>
+              <div class="zone-header">Brightness Zones</div>
               <table>
                 <thead>
-                  <tr><th>区域</th><th>a*</th><th>b*</th><th>像素</th></tr>
+                  <tr><th>Zone</th><th>a*</th><th>b*</th><th>Pixels</th></tr>
                 </thead>
                 <tbody id="zoneRows" data-testid="zone-rows"></tbody>
               </table>
             </div>
 
             <div class="skin-card" data-testid="skin-card">
-              <div class="skin-card-header">肤色检测</div>
-              <div id="skinStatus" class="skin-status" data-testid="skin-status">未检测</div>
+              <div class="skin-card-header">Skin Detection</div>
+              <div id="skinStatus" class="skin-status" data-testid="skin-status">Not Detected</div>
               <div class="skin-grid">
-                <div><span>像素</span><strong id="skinPixels" data-testid="skin-pixels">-</strong></div>
+                <div><span>Pixels</span><strong id="skinPixels" data-testid="skin-pixels">-</strong></div>
                 <div><span>a*</span><strong id="skinA" data-testid="skin-a">-</strong></div>
                 <div><span>b*</span><strong id="skinB" data-testid="skin-b">-</strong></div>
-                <div><span>相对全图</span><strong id="skinDelta" data-testid="skin-delta">-</strong></div>
+                <div><span>vs Global</span><strong id="skinDelta" data-testid="skin-delta">-</strong></div>
               </div>
             </div>
 
             <div class="charts" data-testid="charts-panel">
               <section class="chart-card">
-                <div class="chart-title">RGB 直方图</div>
+                <div class="chart-title">RGB Histogram</div>
                 <canvas id="rgbHistogram" data-testid="rgb-histogram" width="300" height="150"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">Lab a/b 向量</div>
+                <div class="chart-title">Lab a/b Vector</div>
                 <canvas id="labVector" data-testid="lab-vector" width="300" height="180"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">校准强度</div>
+                <div class="chart-title">Calibration Strength</div>
                 <canvas id="strengthChart" data-testid="strength-chart" width="300" height="130"></canvas>
               </section>
               <section class="chart-card">
-                <div class="chart-title">分区偏色</div>
+                <div class="chart-title">Zone Cast</div>
                 <canvas id="zoneChart" data-testid="zone-chart" width="300" height="150"></canvas>
               </section>
             </div>
@@ -277,28 +277,28 @@
 
           <section id="panelCrop" class="panel-stack hidden" data-panel="crop">
             <div class="crop-card" data-testid="crop-card">
-              <div class="crop-card-header">翻拍裁切</div>
+              <div class="crop-card-header">Film Scan Crop</div>
               <div class="crop-actions">
-                <button id="toggleCropOverlay" class="mini-button" type="button" data-testid="toggle-crop-overlay">显示裁切框</button>
-                <button id="suggestCropButton" class="mini-button" type="button" data-testid="suggest-crop-button">建议框</button>
-                <button id="resetCropButton" class="mini-button" type="button" data-testid="reset-crop-button">重置</button>
+                <button id="toggleCropOverlay" class="mini-button" type="button" data-testid="toggle-crop-overlay">Show Crop Box</button>
+                <button id="suggestCropButton" class="mini-button" type="button" data-testid="suggest-crop-button">Suggest</button>
+                <button id="resetCropButton" class="mini-button" type="button" data-testid="reset-crop-button">Reset</button>
               </div>
               <div class="crop-grid">
-                <div><span>状态</span><strong id="cropStatus" data-testid="crop-status">未启用</strong></div>
-                <div><span>宽度</span><strong id="cropWidth" data-testid="crop-width">-</strong></div>
-                <div><span>高度</span><strong id="cropHeight" data-testid="crop-height">-</strong></div>
-                <div><span>偏移</span><strong id="cropOffset" data-testid="crop-offset">-</strong></div>
+                <div><span>Status</span><strong id="cropStatus" data-testid="crop-status">Disabled</strong></div>
+                <div><span>Width</span><strong id="cropWidth" data-testid="crop-width">-</strong></div>
+                <div><span>Height</span><strong id="cropHeight" data-testid="crop-height">-</strong></div>
+                <div><span>Offset</span><strong id="cropOffset" data-testid="crop-offset">-</strong></div>
               </div>
             </div>
 
             <div class="dock-panel">
               <div class="dock-panel-header">
-                <span>检测策略</span>
+                <span>Detection Strategy</span>
               </div>
               <div class="library-section crop-notes" data-testid="crop-notes">
-                <div class="library-meta-row"><span>候选来源</span><strong>边框 / 直线 / 四角</strong></div>
-                <div class="library-meta-row"><span>当前状态</span><strong>手动框架，待接算法</strong></div>
-                <small>后续只接结构化裁切建议，不把算法塞进前端。</small>
+                <div class="library-meta-row"><span>Candidates</span><strong>Edges / Lines / Corners</strong></div>
+                <div class="library-meta-row"><span>Current State</span><strong>Manual frame, awaiting algorithm</strong></div>
+                <small>Will only receive structured crop suggestions; algorithms stay in backend.</small>
               </div>
             </div>
           </section>
@@ -307,8 +307,8 @@
 
       <footer class="filmstrip-shell">
         <div class="filmstrip-meta">
-          <span id="folderLabel" data-testid="folder-label">未加载文件夹</span>
-          <span id="countLabel">0 张</span>
+          <span id="folderLabel" data-testid="folder-label">No folder loaded</span>
+          <span id="countLabel">0 photos</span>
         </div>
         <div id="filmstrip" class="filmstrip" data-testid="filmstrip"></div>
       </footer>
