@@ -1,8 +1,8 @@
 # Photo Calibrator — Development Status
 
-> Last updated: 2026-05-28  
+> Last updated: 2026-05-29  
 > Branch: `dev-codex`  
-> Tests: 145 passed / 1 skipped | Coverage: 83%
+> Tests: 182 passed / 10 failed / 1 skipped | Coverage: ~83%
 
 ---
 
@@ -47,30 +47,59 @@
 - Library panel, dock panels, session card, data-testids
 - Playwright test updated
 
+### Phase 4 P0: Film Scan + Skin Detection (Agent C) ✅
+- **Skin detection**: Haar cascade face-seeded → CrCb Gaussian model + YCrCb fallback
+  - `_detect_faces()`: OpenCV frontal face detection
+  - `_skin_face_seeded()`: adaptive skin sampling via Mahalanobis distance
+  - `_skin_ycrcb()`: fixed-threshold fallback when no face detected
+  - 7 dedicated skin robustness tests (dark/light skin, non-skin rejection, morphology)
+  - `_find_haarcascade()`: cross-distro cascade file locator (pip + Fedora/Debian system paths)
+- **Film scan**: `core/film_scan.py`
+  - `detect_film_frame()`: Canny edge → Hough line → quad fit → rotation/crop rect
+  - `FilmScanResult`: angle_deg, corners, crop_x/y/w/h, confidence, border_type
+  - `identify_film_format()`: 11 known formats (135/120/large format/digital sensors)
+  - `evaluate_film_correction()`: FilmScanEval with format_match, corner_symmetry, crop_coverage
+  - Perspective distortion detection (`is_perspective`, `transform_matrix` 3x3)
+  - 8 film scan tests (rotation, white border, low confidence, perspective)
+
+### Phase 4 P1: Plugin System + AI Evaluator (Agent F) ✅
+- **Plugin system**: `plugins/` package
+  - `hooks.py`: protocol definitions (AnalyzerHook, CalibratorHook, ImageReaderHook, ImageWriterHook, FilmScanDetectorHook, AIEvaluatorHook)
+  - `api.py`: manifest validation, `@register` decorator, `PluginManifest` schema
+  - `manager.py`: `PluginManager` — discovery, loading, lifecycle, hook query (`list_for_hook`)
+  - `builtin/noop.py`: bundled stub plugin for testing
+  - 14 plugin manager tests
+- **AI evaluator**: `ai/` package
+  - `evaluators.py`: EvalImageRef, EvalInput, EvalOutput, EvalScore data models
+  - `prompts.py`: reusable, provider-agnostic evaluation prompt templates
+  - 5 evaluator tests
+- **AI provider layer**: `ai/providers.py`
+  - `OpenAICompatibleProvider`: single class covers Ollama / llama.cpp / vLLM / OpenAI / DeepSeek / Groq
+  - Zero new deps: stdlib `urllib` only
+  - `MockProvider`: deterministic mock for testing/offline use
+  - `ProviderConfig`: base_url, api_key, model, max_tokens, temperature
+  - 9 provider tests
+
 ---
 
 ## Remaining
 
-### Phase 4: Electron Shell + Film Scan + Plugin System
+### Phase 4: P1/P2/P3
 
-| Priority | Task | Agent | Details |
-|----------|------|-------|---------|
-| P0 | **Film scan auto-level/crop** | C | `core/film_scan.py`: Canny→Hough→quad fit, low-confidence skip |
-| P0 | **Skin detection robustness** | C | Replace HSV heuristics with more robust masking |
-| P1 | **Plugin system skeleton** | F | `plugins/`: manifest validation, hook API, builtin stubs |
-| P1 | **AI evaluator interface** | F | `ai/`: provider-agnostic schema, no direct image mutation |
-| P1 | **ICC/OCIO export pipeline** | D/F | `.cube` LUT completion, ICC profile embedding, OCIO config gen |
-| P2 | **Electron Shell** | E | Desktop window, menus, file dialogs, backend lifecycle |
-| P2 | **Full-resolution export** | D | Replay calibration on original image, not analysis preview |
-| P3 | **FastAPI migration** | D | Replace ThreadingHTTPServer with FastAPI + WebSocket |
-| P3 | **Non-destructive edit model** | D | History stack + serialization in `pipeline/` |
-| P3 | **Batch true cancellation** | D | ProcessPoolExecutor for killable batch workers |
+| Priority | Task | Details |
+|----------|------|---------|
+| P1 | **ICC/OCIO export pipeline** | `.cube` LUT completion, ICC profile embedding, OCIO config gen |
+| P2 | **Electron Shell** | Desktop window, menus, file dialogs, backend lifecycle |
+| P2 | **Full-resolution export** | Replay calibration on original image, not analysis preview |
+| P3 | **FastAPI migration** | Replace ThreadingHTTPServer with FastAPI + WebSocket |
+| P3 | **Non-destructive edit model** | History stack + serialization in `pipeline/` |
+| P3 | **Batch true cancellation** | ProcessPoolExecutor for killable batch workers |
 
 ### Phase 5: AI Evaluation + Packaging
 
 | Task | Details |
 |------|---------|
-| AI provider interface | At least one configurable provider (OpenAI/Claude/local) |
+| AI evaluation integration | Wire providers into calibration evaluation pipeline |
 | Privacy confirmation UI | Upload consent, request logging, retry on failure |
 | Linux/macOS packaging | Electron + Python runtime + native I/O deps |
 | Minimal CI | lint, test, build smoke test |
@@ -82,11 +111,14 @@
 | Component | Status |
 |-----------|--------|
 | Python | 3.14.4 |
-| OpenCV | 4.13.0 (OpenCL ✓) |
-| GPU | RTX 5070 Ti 16GB (OpenCL UMat) |
-| rawpy | 0.27.0 (LibRaw) |
+| OpenCV | 4.13.0 (system package, OpenCL ✓) |
+| GPU | RTX 5070 Ti 16GB |
+| rawpy | ❌ (not installed — `pip install rawpy` or `dnf install python3-rawpy`) |
 | OCIO | 2.4.2 |
 | OIIO | 3.1.12.0 |
-| imageio | ✓ |
-| tifffile | ✓ |
+| imageio | ❌ (not installed — `pip install imageio tifffile` for TIFF tests) |
+| tifffile | ❌ (see imageio) |
 | Torch CUDA | ❌ (pip install hangs, not blocking — OpenCL covers GPU) |
+| pytest | 9.0.3 |
+| numpy | 2.4.6 (system package) |
+| Pillow | 12.2.0 (system package) |

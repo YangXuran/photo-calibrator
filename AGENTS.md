@@ -4,7 +4,7 @@
 
 ## 0. 当前状态
 
-仓库已经从早期三脚本形态进入了可运行 MVP。历史核心文件仍可作为算法来源参考：
+仓库已经从早期三脚本形态进入了可运行 MVP，Phase 1-3 及 Phase 4 P0/P1 全部完成。历史核心文件仍可作为算法来源参考：
 
 - `color_cast_detector.py`: 偏色检测、肤色/亮度分区、CCC、PCI、诱导效应、Matplotlib 报告图。
 - `color_cast_calibrator.py`: 基于 Lab a*/b* 偏移的全局/中间调/肤色/高光/保留分离色调校准。
@@ -12,10 +12,14 @@
 
 当前主要实现位于：
 
-- `src/photo_calibrator/core/`: 图像模型、偏色分析、校准算法、accelerator 抽象。
+- `src/photo_calibrator/core/`: 图像模型、偏色分析、校准算法、accelerator 抽象、**胶片扫描检测**。
+- `src/photo_calibrator/io/`: 图像读写 (readers/writers)、RAW 解码、EXIF/ICC 元数据、sidecar JSON、LUT 导出。
+- `src/photo_calibrator/pipeline/`: 非破坏处理图 (Document/Operation/LabShiftOp/RgbCurvesOp/MatrixOp/Lut3DOp)。
 - `src/photo_calibrator/backend/simple_server.py`: 本地 HTTP 服务、预览缓存、内存分析缓存、批处理 API。
+- `src/photo_calibrator/plugins/`: **插件系统** — hook 协议、manifest 验证、发现/加载/生命周期管理、内置 stub 插件。
+- `src/photo_calibrator/ai/`: **AI 评估子系统** — provider-agnostic 接口、提示词模板、OpenAI 兼容 provider（覆盖 Ollama/vLLM/OpenAI/DeepSeek/Groq）+ MockProvider。
 - `web/`: 轻量 Web UI，支持文件/文件夹导入、TIFF/RAW 预览、图表展示、session 调参。
-- `tests/`: Python 单元测试和 Playwright UI 测试。
+- `tests/`: Python 单元测试 (182 passed / 10 failed / 1 skipped)。
 
 已实现的性能/加速基础：
 
@@ -29,13 +33,20 @@
   - GPU 3D LUT 硬门禁: `python -m photo_calibrator.backend.accelerator_benchmark --backend torch --require-accelerated 3d-lut`
   - 安装入口: `pip install -e ".[gpu]"` 或 `pip install -e ".[all]"`。
 
+Phase 4 新增能力：
+
+- **肤色检测增强** (P0): Haar cascade 人脸检测 → CrCb 高斯模型自适应采样 → 马氏距离全图扩展；无人脸时 YCrCb 固定阈值回退。`_find_haarcascade()` 跨发行版兼容 pip/Fedora/Debian。
+- **胶片扫描** (P0): `film_scan.py` — Canny 边缘 → Hough 直线 → 四边形拟合 → 旋转角/裁切矩形；透视畸变检测 + 3×3 校正矩阵；11 种胶片格式识别；裁切质量自动评估。
+- **插件系统** (P1): `plugins/` — hook 协议 (AnalyzerHook/CalibratorHook/ImageReaderHook/ImageWriterHook/FilmScanDetectorHook/AIEvaluatorHook)；manifest 校验 + `@register` 装饰器；`PluginManager` 发现/加载/生命周期/hook 查询；内置 `noop` stub。
+- **AI 评估** (P1): `ai/` — `EvalInput`/`EvalOutput` 数据模型；provider-agnostic 提示词模板；`OpenAICompatibleProvider` 一个类覆盖 Ollama/llama.cpp/vLLM/OpenAI/DeepSeek/Groq（零新依赖，stdlib urllib）；`MockProvider` 测试用。
+
 主要限制：
 
 - 当前核心仍主要是 8-bit 预览管线；RAW、16-bit TIFF、EXR/HDR 和高质量导出还需要完整 float/色彩管理管线。
 - 轻量 HTTP 服务是 MVP，不是最终 FastAPI/IPC 架构。
 - 当前校准以 Lab 通道平移、RGB 曲线、矩阵、3D LUT 预览为主，缺少 ICC/OCIO/LUT 导出管线、线性光处理、软打样和非破坏编辑模型。
 - GPU 可用性取决于运行环境。开发机若无 OpenCL/CUDA/MPS，只能验证 CPU fallback 和 fake torch 逻辑，不能宣称完成实机 GPU 性能验证。
-- 现有肤色/高光掩码是启发式规则，适合 MVP，但不能作为专业自动裁切、胶片翻拍、复杂主体识别的最终方案。
+- AI 评估目前只有 provider 层和 skeleton，尚未接入真实模型跑校准评估流程。
 - 中文/英文输出有部分乱码和语义残缺，重构时应重新整理用户可见文案。
 
 ## 1. 产品目标
@@ -130,65 +141,75 @@
    - 插件发现、manifest 校验、hook 调用、权限/隔离策略。
    - MVP 可用 Python 插件，后续再增加外部进程插件。
 
-## 5. 推荐目录结构
+## 5. 实际目录结构
 
 ```text
 photo_calibrator/
   pyproject.toml
   AGENTS.md
+  STATUS.md
   src/photo_calibrator/
     __init__.py
-    backend/
-      main.py
-      api.py
-      schemas.py
-      workers.py
     core/
-      image_model.py
-      color_metrics.py
-      cast_detection.py
-      calibration.py
-      film_scan.py
-      lut.py
+      __init__.py
+      image_model.py        # ImageBuffer dataclass
+      cast_detection.py     # 偏色检测 + 肤色检测 (Haar+YCrCb)
+      calibration.py        # 11 种校准模式
+      accelerator.py        # CPU/OpenCL/Torch/Hybrid 后端
+      film_scan.py           # 胶片扫描: 旋转/裁切/透视/格式识别/质量评估
     io/
-      readers.py
-      writers.py
-      raw.py
-      ocio.py
-      metadata.py
+      __init__.py
+      readers.py            # imageio/cv2/OIIO 多后端读取
+      writers.py            # JPEG/PNG/TIFF16/EXR 写入
+      raw.py                # rawpy RAW 解码
+      metadata.py           # EXIF/IPTC/XMP/ICC 提取
+      ocio.py               # OpenColorIO 色彩空间转换
+      oiio.py               # OpenImageIO EXR/HDR 读写
+      sidecar.py            # JSON sidecar 配置
+      lut_export.py         # .cube 3D LUT 导出
     pipeline/
-      document.py
-      operations.py
-      renderer.py
-      cache.py
+      __init__.py
+      document.py           # Document: 非破坏处理图
+      operations.py         # LabShiftOp/RgbCurvesOp/MatrixOp/Lut3DOp
+    backend/
+      __init__.py
+      simple_server.py      # HTTP API server (ThreadingHTTPServer)
+      schemas.py            # Pydantic 请求/响应模型
+      accelerator.py        # Accelerator 抽象层
+      accelerator_benchmark.py  # CLI bench 工具
     plugins/
-      api.py
-      manager.py
-      hooks.py
+      __init__.py
+      hooks.py              # Hook 协议 (6 种 hook)
+      api.py                # PluginManifest + @register 装饰器
+      manager.py            # PluginManager: 发现/加载/查询
       builtin/
+        __init__.py
+        noop.py             # 内置 stub 插件
     ai/
-      evaluators.py
-      prompts.py
-      providers.py
-  desktop/
-    package.json
-    electron/
-      main.ts
-      preload.ts
-    src/
-      App.tsx
-      api/
-      components/
-      panels/
-      charts/
-      styles/
-    tests/
-      e2e/
+      __init__.py
+      evaluators.py         # EvalInput/EvalOutput/EvalScore 数据模型
+      prompts.py            # Provider-agnostic 提示词模板
+      providers.py          # OpenAICompatibleProvider + MockProvider
+  web/                      # 前端 (vanilla JS MVC)
+    index.html
+    store.js / dom.js
+    api/client.js
+    controllers/calibration.js / workspace.js
+    ui/viewer.js / charts.js / inspector.js / panels.js
   tests/
-    test_color_metrics.py
+    test_cast_detection.py
     test_calibration.py
     test_film_scan.py
+    test_image_io.py
+    test_accelerator.py
+    test_pipeline.py
+    test_schemas.py
+    test_simple_server_api.py
+    test_oiio_ocio.py
     test_plugin_manager.py
+    test_ai_evaluator.py
+    test_cli_smoke.py
+    test_accelerator_benchmark_cli.py
 ```
 
 ## 6. UI 设计方向
