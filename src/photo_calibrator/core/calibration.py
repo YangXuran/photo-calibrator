@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from .accelerator import ACCELERATOR
-from .cast_detection import CastReport, analyze_image_array, auto_detect_cast, ensure_uint8_rgb, rgb_to_lab_float
+from .cast_detection import CastReport, analyze_image_array, auto_detect_cast, ensure_rgb_image, ensure_uint8_rgb, rgb_to_lab_float
 
 DEFAULT_STRENGTH = 0.8
 
@@ -59,12 +59,87 @@ class CalibrationResult:
         return (1.0 - after / max(before, 0.01)) * 100.0
 
 
+def _working_rgb(img_rgb: np.ndarray) -> tuple[np.ndarray, np.dtype, float]:
+    img_rgb = ensure_rgb_image(img_rgb)
+    if img_rgb.dtype == np.uint8:
+        return img_rgb.astype(np.float32) / 255.0, img_rgb.dtype, 255.0
+    if np.issubdtype(img_rgb.dtype, np.integer):
+        info = np.iinfo(img_rgb.dtype)
+        scale = float(info.max) if info.max > 0 else 1.0
+        return img_rgb.astype(np.float32) / scale, img_rgb.dtype, scale
+    rgb_float = img_rgb.astype(np.float32, copy=False)
+    if rgb_float.size == 0:
+        return rgb_float, np.float32, 1.0
+    max_value = float(rgb_float.max())
+    min_value = float(rgb_float.min())
+    if min_value >= 0.0 and max_value <= 1.0:
+        return rgb_float, img_rgb.dtype, 1.0
+    scale = max(max_value, 1.0)
+    return np.clip(rgb_float / scale, 0.0, 1.0), img_rgb.dtype, scale
+
+
+def _to_calibration_working_space(
+    img_rgb: np.ndarray,
+    *,
+    color_space: str = "sRGB",
+    data_range: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, dict[str, object]]:
+    working, dtype, scale = _working_rgb(img_rgb)
+    branch = "display-referred"
+    hdr_reference = 1.0
+    if color_space.lower() == "linear":
+        branch = "scene-linear-display-referred"
+        if data_range is not None and data_range[1] > 1.0:
+            hdr_reference = max(float(np.percentile(working, 99.5)), 1.0)
+            working = np.clip(working / hdr_reference, 0.0, 1.0)
+            branch = "scene-linear-hdr-display-referred"
+        working = np.power(np.clip(working, 0.0, 1.0), 1.0 / 2.2).astype(np.float32)
+    elif data_range is not None and data_range[1] > 1.0 and np.issubdtype(img_rgb.dtype, np.floating):
+        hdr_reference = max(float(np.percentile(working, 99.5)), 1.0)
+        working = np.clip(working / hdr_reference, 0.0, 1.0)
+        branch = "hdr-display-referred"
+    return working, {
+        "dtype": dtype,
+        "scale": scale,
+        "color_space": color_space,
+        "data_range": data_range,
+        "hdr_reference": hdr_reference,
+        "working_branch": branch,
+    }
+
+
+def _from_calibration_working_space(corrected: np.ndarray, context: dict[str, object]) -> np.ndarray:
+    working = np.clip(corrected.astype(np.float32, copy=False), 0.0, 1.0)
+    color_space = str(context.get("color_space", "sRGB"))
+    hdr_reference = float(context.get("hdr_reference", 1.0))
+    if color_space.lower() == "linear":
+        working = np.power(working, 2.2).astype(np.float32)
+        if hdr_reference > 1.0:
+            working = working * hdr_reference
+    elif hdr_reference > 1.0:
+        working = working * hdr_reference
+    return _restore_dtype(working, context["dtype"], float(context["scale"]))
+
+
+def _restore_dtype(rgb_float: np.ndarray, dtype: np.dtype, scale: float) -> np.ndarray:
+    rgb_float = np.clip(rgb_float.astype(np.float32, copy=False), 0.0, 1.0)
+    if dtype == np.uint8:
+        return np.clip(np.rint(rgb_float * 255.0), 0, 255).astype(np.uint8)
+    if np.issubdtype(dtype, np.integer):
+        max_value = float(np.iinfo(dtype).max)
+        return np.clip(np.rint(rgb_float * max_value), 0, max_value).astype(dtype)
+    restored = rgb_float * float(scale)
+    return restored.astype(np.float32 if dtype == np.float32 else dtype, copy=False)
+
+
 def _lab_shift(img_rgb: np.ndarray, a_delta: np.ndarray | float, b_delta: np.ndarray | float) -> np.ndarray:
     lab = rgb_to_lab_float(img_rgb)
     lab[:, :, 1] += a_delta
     lab[:, :, 2] += b_delta
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    rgb_float, dtype, scale = _working_rgb(img_rgb)
+    corrected = ACCELERATOR.lab_to_rgb_float(lab)
+    return _restore_dtype(corrected, dtype, scale)
 
 
 def calibrate_global(
@@ -73,7 +148,6 @@ def calibrate_global(
     b_shift: float,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
     return _lab_shift(img_rgb, a_shift * strength, b_shift * strength)
 
 
@@ -83,7 +157,6 @@ def calibrate_midtones_only(
     b_shift: float,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
     l_ch = lab[:, :, 0]
     mid_lo = np.percentile(l_ch, 30)
@@ -93,7 +166,8 @@ def calibrate_midtones_only(
     lab[:, :, 1] += a_shift * strength * weight
     lab[:, :, 2] += b_shift * strength * weight
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def calibrate_skin_priority(
@@ -102,9 +176,9 @@ def calibrate_skin_priority(
     b_shift: float,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
+    img_rgb_u8 = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
-    hsv = ACCELERATOR.rgb_to_hsv(img_rgb)
+    hsv = ACCELERATOR.rgb_to_hsv(img_rgb_u8)
     skin_mask = (
         (hsv[:, :, 0] >= 0)
         & (hsv[:, :, 0] <= 25)
@@ -118,7 +192,8 @@ def calibrate_skin_priority(
     lab[:, :, 1] += a_shift * strength * weight
     lab[:, :, 2] += b_shift * strength * weight
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def calibrate_highlights_only(
@@ -129,10 +204,10 @@ def calibrate_highlights_only(
     highlight_pct: float = 55.0,
     sat_pct: float = 25.0,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
+    img_rgb_u8 = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
     l_ch = lab[:, :, 0]
-    hsv = ACCELERATOR.rgb_to_hsv(img_rgb)
+    hsv = ACCELERATOR.rgb_to_hsv(img_rgb_u8)
     s_ch = hsv[:, :, 1].astype(float)
     l_threshold = np.percentile(l_ch, highlight_pct)
     s_threshold = np.percentile(s_ch, sat_pct)
@@ -142,7 +217,8 @@ def calibrate_highlights_only(
     lab[:, :, 1] += a_shift * strength * weight
     lab[:, :, 2] += b_shift * strength * weight
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def calibrate_preserve_split_tone(
@@ -151,7 +227,6 @@ def calibrate_preserve_split_tone(
     b_shift: float,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
     l_ch = lab[:, :, 0]
     lo_thr = np.percentile(l_ch, 5)
@@ -168,7 +243,8 @@ def calibrate_preserve_split_tone(
     lab[:, :, 1] += a_shift * strength * weight
     lab[:, :, 2] += b_shift * strength * weight
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def calibrate_rgb_curves(
@@ -180,8 +256,7 @@ def calibrate_rgb_curves(
 ) -> np.ndarray:
     """Per-channel black/white/gamma correction for film layer mismatch."""
 
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    src = img_rgb.astype(np.float32) / 255.0
+    src, dtype, scale = _working_rgb(img_rgb)
     gamma_values = gamma or _estimate_channel_gamma(src)
     luts = []
     for ch in range(3):
@@ -195,7 +270,8 @@ def calibrate_rgb_curves(
         curve = np.power(curve, 1.0 / max(gamma_values[ch], 1e-3))
         blended = axis * (1.0 - strength) + curve * strength
         luts.append(np.clip(blended * 255.0, 0, 255).astype(np.uint8))
-    return ACCELERATOR.apply_channel_luts(img_rgb, luts)
+    corrected_u8 = ACCELERATOR.apply_channel_luts(np.clip(np.rint(src * 255.0), 0, 255).astype(np.uint8), luts)
+    return _restore_dtype(corrected_u8.astype(np.float32) / 255.0, dtype, scale)
 
 
 def _estimate_channel_gamma(src: np.ndarray) -> tuple[float, float, float]:
@@ -217,7 +293,6 @@ def calibrate_tone_zone(
 ) -> np.ndarray:
     """Correct shadows/midtones/highlights independently in Lab."""
 
-    img_rgb = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
     l_ch = lab[:, :, 0]
     zones = [
@@ -241,16 +316,18 @@ def calibrate_tone_zone(
     lab[:, :, 1] += a_delta / total_weight * strength
     lab[:, :, 2] += b_delta / total_weight * strength
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def estimate_color_matrix(img_rgb: np.ndarray) -> np.ndarray:
     """Estimate a conservative 3x3 channel matrix from low-saturation pixels."""
 
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    hsv = ACCELERATOR.rgb_to_hsv(img_rgb)
+    img_rgb_u8 = ensure_uint8_rgb(img_rgb)
+    hsv = ACCELERATOR.rgb_to_hsv(img_rgb_u8)
     neutral = hsv[:, :, 1] <= min(float(np.percentile(hsv[:, :, 1], 35)), 48.0)
-    pixels = img_rgb[neutral] if int(neutral.sum()) >= 100 else img_rgb.reshape(-1, 3)
+    src, _, _ = _working_rgb(img_rgb)
+    pixels = src[neutral] if int(neutral.sum()) >= 100 else src.reshape(-1, 3)
     means = pixels.astype(np.float32).mean(axis=0)
     target = float(means.mean())
     gains = np.clip(target / np.maximum(means, 1.0), 0.7, 1.35)
@@ -265,12 +342,11 @@ def apply_color_matrix(
     matrix: np.ndarray | None = None,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    src = img_rgb.astype(np.float32) / 255.0
+    src, dtype, scale = _working_rgb(img_rgb)
     mat = estimate_color_matrix(img_rgb) if matrix is None else np.asarray(matrix, dtype=np.float32)
     corrected = ACCELERATOR.apply_color_matrix(src, mat)
     out = src * (1.0 - strength) + corrected * strength
-    return np.clip(out * 255.0, 0, 255).astype(np.uint8)
+    return _restore_dtype(out, dtype, scale)
 
 
 def build_identity_lut(size: int = 17) -> np.ndarray:
@@ -292,11 +368,10 @@ def apply_3d_lut(
     strength: float = DEFAULT_STRENGTH,
     size: int = 17,
 ) -> np.ndarray:
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    src = img_rgb.astype(np.float32) / 255.0
+    src, dtype, scale = _working_rgb(img_rgb)
     table = build_auto_lut(img_rgb, size=size) if lut is None else lut.astype(np.float32)
     out = ACCELERATOR.apply_3d_lut(src, table, strength)
-    return np.clip(out * 255.0, 0, 255).astype(np.uint8)
+    return _restore_dtype(out, dtype, scale)
 
 
 def calibrate_selective(
@@ -305,9 +380,9 @@ def calibrate_selective(
 ) -> np.ndarray:
     """Apply subject-aware gentle corrections for skin, sky, and foliage."""
 
-    img_rgb = ensure_uint8_rgb(img_rgb)
+    img_rgb_u8 = ensure_uint8_rgb(img_rgb)
     lab = rgb_to_lab_float(img_rgb)
-    hsv = ACCELERATOR.rgb_to_hsv(img_rgb)
+    hsv = ACCELERATOR.rgb_to_hsv(img_rgb_u8)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     masks = [
         (((h <= 25) & (s >= 10) & (s <= 155) & (v >= 45)), (1.2, 2.0), 0.35),  # skin warmer
@@ -323,7 +398,8 @@ def calibrate_selective(
         lab[:, :, 1] += (a_target - current_a) * local_strength * strength * weight
         lab[:, :, 2] += (b_target - current_b) * local_strength * strength * weight
     lab[:, :, 0] = np.clip(lab[:, :, 0], 0, 100)
-    return ACCELERATOR.lab_to_rgb_uint8(lab)
+    _, dtype, scale = _working_rgb(img_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
 def preserve_luminance(
@@ -333,15 +409,16 @@ def preserve_luminance(
 ) -> np.ndarray:
     """Blend corrected color back toward the original Lab lightness channel."""
 
-    original_rgb = ensure_uint8_rgb(original_rgb)
-    corrected_rgb = ensure_uint8_rgb(corrected_rgb)
+    ensure_rgb_image(original_rgb)
+    ensure_rgb_image(corrected_rgb)
     if original_rgb.shape != corrected_rgb.shape:
         raise ValueError("original and corrected images must have the same shape")
     original_lab = rgb_to_lab_float(original_rgb)
     corrected_lab = rgb_to_lab_float(corrected_rgb)
     amount = float(np.clip(amount, 0.0, 1.0))
     corrected_lab[:, :, 0] = corrected_lab[:, :, 0] * (1.0 - amount) + original_lab[:, :, 0] * amount
-    return ACCELERATOR.lab_to_rgb_uint8(corrected_lab)
+    _, dtype, scale = _working_rgb(corrected_rgb)
+    return _restore_dtype(ACCELERATOR.lab_to_rgb_float(corrected_lab), dtype, scale)
 
 
 def calibrate_film(
@@ -358,21 +435,21 @@ def calibrate_film(
 
 
 def make_comparison(original: np.ndarray, calibrated: np.ndarray) -> np.ndarray:
-    original = ensure_uint8_rgb(original)
-    calibrated = ensure_uint8_rgb(calibrated)
+    original_u8 = ensure_uint8_rgb(original)
+    calibrated_u8 = ensure_uint8_rgb(calibrated)
     h = max(original.shape[0], calibrated.shape[0])
-    if original.shape[0] != h:
-        w = int(original.shape[1] * h / original.shape[0])
-        original = ACCELERATOR.resize_area(original, (w, h))
-    if calibrated.shape[0] != h:
-        w = int(calibrated.shape[1] * h / calibrated.shape[0])
-        calibrated = ACCELERATOR.resize_area(calibrated, (w, h))
-    side = np.hstack([original, calibrated])
+    if original_u8.shape[0] != h:
+        w = int(original_u8.shape[1] * h / original_u8.shape[0])
+        original_u8 = ACCELERATOR.resize_area(original_u8, (w, h))
+    if calibrated_u8.shape[0] != h:
+        w = int(calibrated_u8.shape[1] * h / calibrated_u8.shape[0])
+        calibrated_u8 = ACCELERATOR.resize_area(calibrated_u8, (w, h))
+    side = np.hstack([original_u8, calibrated_u8])
     cv2.putText(side, "ORIGINAL", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
     cv2.putText(
         side,
         "CALIBRATED",
-        (original.shape[1] + 20, 40),
+        (original_u8.shape[1] + 20, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         (255, 255, 255),
@@ -386,11 +463,20 @@ def calibrate_image_from_analysis(
     params: CalibrationParams,
     pre_report: CastReport,
     zones: dict[str, object],
+    *,
+    color_space: str = "sRGB",
+    data_range: tuple[float, float] | None = None,
 ) -> CalibrationResult:
-    img_rgb = ensure_uint8_rgb(img_rgb)
-    estimate_cast = zones.get("neutral", zones["global"])
+    working_img, working_context = _to_calibration_working_space(
+        img_rgb,
+        color_space=color_space,
+        data_range=data_range,
+    )
+    working_pre_report = analyze_image_array(working_img)
+    working_zones = auto_detect_cast(working_img)
+    estimate_cast = working_zones.get("neutral", working_zones["global"])
     manual_shift = params.a_shift is not None or params.b_shift is not None
-    auto_cast_source = "neutral" if "neutral" in zones else "global"
+    auto_cast_source = "neutral" if "neutral" in working_zones else "global"
     a_shift = params.a_shift if params.a_shift is not None else -estimate_cast.a_mean
     b_shift = params.b_shift if params.b_shift is not None else -estimate_cast.b_mean
     if not manual_shift and float(np.hypot(a_shift, b_shift)) < 1.0:
@@ -400,38 +486,38 @@ def calibrate_image_from_analysis(
 
     if abs(float(a_shift)) < 1e-9 and abs(float(b_shift)) < 1e-9:
         if params.mode == CalibrationMode.RGB_CURVES:
-            calibrated = calibrate_rgb_curves(
-                img_rgb,
+            calibrated_working = calibrate_rgb_curves(
+                working_img,
                 params.strength,
                 params.curve_low_pct,
                 params.curve_high_pct,
                 params.gamma,
             )
         elif params.mode == CalibrationMode.TONE_ZONE:
-            calibrated = calibrate_tone_zone(img_rgb, params.strength)
+            calibrated_working = calibrate_tone_zone(working_img, params.strength)
         elif params.mode == CalibrationMode.MATRIX:
-            calibrated = apply_color_matrix(
-                img_rgb,
+            calibrated_working = apply_color_matrix(
+                working_img,
                 np.asarray(params.matrix, dtype=np.float32) if params.matrix is not None else None,
                 params.strength,
             )
         elif params.mode == CalibrationMode.LUT3D:
-            calibrated = apply_3d_lut(img_rgb, strength=params.strength, size=params.lut_size)
+            calibrated_working = apply_3d_lut(working_img, strength=params.strength, size=params.lut_size)
         elif params.mode == CalibrationMode.SELECTIVE:
-            calibrated = calibrate_selective(img_rgb, params.strength)
+            calibrated_working = calibrate_selective(working_img, params.strength)
         elif params.mode == CalibrationMode.FILM:
-            calibrated = calibrate_film(img_rgb, params.strength)
+            calibrated_working = calibrate_film(working_img, params.strength)
         else:
-            calibrated = img_rgb.copy()
+            calibrated_working = working_img.copy()
     elif params.mode == CalibrationMode.GLOBAL:
-        calibrated = calibrate_global(img_rgb, a_shift, b_shift, params.strength)
+        calibrated_working = calibrate_global(working_img, a_shift, b_shift, params.strength)
     elif params.mode == CalibrationMode.MIDTONES_ONLY:
-        calibrated = calibrate_midtones_only(img_rgb, a_shift, b_shift, params.strength)
+        calibrated_working = calibrate_midtones_only(working_img, a_shift, b_shift, params.strength)
     elif params.mode == CalibrationMode.SKIN_PRIORITY:
-        calibrated = calibrate_skin_priority(img_rgb, a_shift, b_shift, params.strength)
+        calibrated_working = calibrate_skin_priority(working_img, a_shift, b_shift, params.strength)
     elif params.mode == CalibrationMode.HIGHLIGHTS_ONLY:
-        calibrated = calibrate_highlights_only(
-            img_rgb,
+        calibrated_working = calibrate_highlights_only(
+            working_img,
             a_shift,
             b_shift,
             params.strength,
@@ -439,32 +525,33 @@ def calibrate_image_from_analysis(
             params.sat_pct,
         )
     elif params.mode == CalibrationMode.PRESERVE_SPLIT_TONE:
-        calibrated = calibrate_preserve_split_tone(img_rgb, a_shift, b_shift, params.strength)
+        calibrated_working = calibrate_preserve_split_tone(working_img, a_shift, b_shift, params.strength)
     elif params.mode == CalibrationMode.RGB_CURVES:
-        calibrated = calibrate_rgb_curves(
-            img_rgb,
+        calibrated_working = calibrate_rgb_curves(
+            working_img,
             params.strength,
             params.curve_low_pct,
             params.curve_high_pct,
             params.gamma,
         )
     elif params.mode == CalibrationMode.TONE_ZONE:
-        calibrated = calibrate_tone_zone(img_rgb, params.strength)
+        calibrated_working = calibrate_tone_zone(working_img, params.strength)
     elif params.mode == CalibrationMode.MATRIX:
-        calibrated = apply_color_matrix(
-            img_rgb,
+        calibrated_working = apply_color_matrix(
+            working_img,
             np.asarray(params.matrix, dtype=np.float32) if params.matrix is not None else None,
             params.strength,
         )
     elif params.mode == CalibrationMode.LUT3D:
-        calibrated = apply_3d_lut(img_rgb, strength=params.strength, size=params.lut_size)
+        calibrated_working = apply_3d_lut(working_img, strength=params.strength, size=params.lut_size)
     elif params.mode == CalibrationMode.SELECTIVE:
-        calibrated = calibrate_selective(img_rgb, params.strength)
+        calibrated_working = calibrate_selective(working_img, params.strength)
     elif params.mode == CalibrationMode.FILM:
-        calibrated = calibrate_film(img_rgb, params.strength)
+        calibrated_working = calibrate_film(working_img, params.strength)
     else:
         raise ValueError(f"Unsupported calibration mode: {params.mode}")
 
+    calibrated = _from_calibration_working_space(calibrated_working, working_context)
     post_report = analyze_image_array(calibrated)
     return CalibrationResult(
         image=calibrated,
@@ -480,12 +567,28 @@ def calibrate_image_from_analysis(
             "reduction_pct": (1.0 - post_report.lab.cast_strength / max(pre_report.lab.cast_strength, 0.01)) * 100.0,
             "auto_cast_source": auto_cast_source,
             "auto_cast_confidence": estimate_cast.confidence,
+            "working_color_space": color_space,
+            "working_branch": str(working_context["working_branch"]),
+            "working_pre_cast_strength": working_pre_report.lab.cast_strength,
         },
     )
 
 
-def calibrate_image(img_rgb: np.ndarray, params: CalibrationParams) -> CalibrationResult:
-    img_rgb = ensure_uint8_rgb(img_rgb)
+def calibrate_image(
+    img_rgb: np.ndarray,
+    params: CalibrationParams,
+    *,
+    color_space: str = "sRGB",
+    data_range: tuple[float, float] | None = None,
+) -> CalibrationResult:
+    img_rgb = ensure_rgb_image(img_rgb)
     pre_report = analyze_image_array(img_rgb)
     zones = auto_detect_cast(img_rgb)
-    return calibrate_image_from_analysis(img_rgb, params, pre_report, zones)
+    return calibrate_image_from_analysis(
+        img_rgb,
+        params,
+        pre_report,
+        zones,
+        color_space=color_space,
+        data_range=data_range,
+    )

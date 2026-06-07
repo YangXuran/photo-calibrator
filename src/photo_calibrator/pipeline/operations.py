@@ -35,6 +35,21 @@ class IdentityOp(Operation):
 
 
 @dataclass(frozen=True)
+class CalibrationOp(Operation):
+    """Generic calibration operation that preserves the backend mode semantics."""
+
+    name: str = "calibration"
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        from photo_calibrator.core.calibration import CalibrationMode, CalibrationParams, calibrate_image
+
+        params = dict(self.params)
+        mode = CalibrationMode(params.pop("mode", "global"))
+        calibration_params = CalibrationParams(mode=mode, **params)
+        return calibrate_image(image, calibration_params).image
+
+
+@dataclass(frozen=True)
 class LabShiftOp(Operation):
     """Lab a*/b* channel shift — the primary calibration operation.
 

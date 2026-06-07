@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
+from copy import deepcopy
+from dataclasses import asdict, is_dataclass
 import hashlib
 import json
 import mimetypes
 import os
+import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -24,13 +29,24 @@ from photo_calibrator.core.calibration import (
     calibrate_image,
     calibrate_image_from_analysis,
 )
-from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, rgb_to_lab_float
+from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, ensure_uint8_rgb, rgb_to_lab_float
+from photo_calibrator.core.film_scan import detect_film_frame
 from photo_calibrator.backend.schemas import AnalysisEntry, PreparedImage
+from photo_calibrator.ai import EvalImageRef, EvalInput, MockProvider, OpenAICompatibleProvider, ProviderConfig
+from photo_calibrator.core.image_model import ImageBuffer
+from photo_calibrator.io import read_image
+from photo_calibrator.io.raw import decode_raw_image, is_raw_extension
+from photo_calibrator.pipeline import CalibrationOp, PipelineDocument
+from photo_calibrator.services import AIEvaluationService, PluginService
+from photo_calibrator.services.contracts import HookNotSupportedError, ServiceError
+from photo_calibrator.backend.workspace_db import get_workspace_db
 
 ROOT = Path(__file__).resolve().parents[3]
-WEB_ROOT = ROOT / "web"
+_FRONTEND_DIST = ROOT / "frontend" / "dist"
+WEB_ROOT = _FRONTEND_DIST if _FRONTEND_DIST.is_dir() else ROOT / "web"
 PREVIEW_CACHE_DIR = ROOT / ".cache" / "previews"
-DEFAULT_ANALYSIS_MAX_SIDE = 1800
+SESSION_STORE_DIR = ROOT / ".cache" / "sessions"
+DEFAULT_ANALYSIS_MAX_SIDE = 3200
 MEMORY_CACHE_LIMIT = 16
 BATCH_WORKERS = max(1, min(4, os.cpu_count() or 1))
 
@@ -45,6 +61,24 @@ _ANALYSIS_CACHE: OrderedDict[str, AnalysisEntry] = OrderedDict()
 _CACHE_LOCK = Lock()
 _ANALYSIS_KEY_LOCKS: dict[str, Lock] = {}
 SESSION_TTL_SECONDS = 3600  # 1 hour
+_PLUGIN_SERVICE: PluginService | None = None
+_AI_EVALUATION_SERVICE: AIEvaluationService | None = None
+_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=max(2, min(4, os.cpu_count() or 2)))
+
+
+def _plugin_service() -> PluginService:
+    global _PLUGIN_SERVICE
+    if _PLUGIN_SERVICE is None:
+        _PLUGIN_SERVICE = PluginService()
+        _PLUGIN_SERVICE.discover()
+    return _PLUGIN_SERVICE
+
+
+def _ai_evaluation_service() -> AIEvaluationService:
+    global _AI_EVALUATION_SERVICE
+    if _AI_EVALUATION_SERVICE is None:
+        _AI_EVALUATION_SERVICE = AIEvaluationService(_plugin_service())
+    return _AI_EVALUATION_SERVICE
 
 
 def _remember_analysis(entry: AnalysisEntry) -> AnalysisEntry:
@@ -92,7 +126,14 @@ def _build_analysis_entry(cache_key: str, prepare) -> AnalysisEntry:
         prepared = prepare()
         input_report = analyze_image_array(prepared.image)
         zones = auto_detect_cast(prepared.image)
-        static_charts = _static_chart_payload(input_report, prepared.image)
+        static_charts = _static_chart_payload(
+            input_report,
+            _render_preview_rgb(
+                prepared.image,
+                color_space=prepared.color_space,
+                data_range=prepared.data_range,
+            ),
+        )
         return _remember_analysis(
             AnalysisEntry(
                 prepared=prepared,
@@ -118,40 +159,512 @@ def _data_url_bytes(data_url: str) -> tuple[bytes, str]:
     return base64.b64decode(payload), header
 
 
-def _uploaded_cache_key(raw: bytes, file_name: str, max_side: int) -> str:
+def _uploaded_cache_key(raw: bytes, file_name: str, max_side: int, reader_plugin: str | None = None) -> str:
     digest = hashlib.sha256(raw).hexdigest()
-    return f"upload:{digest}:{Path(file_name).name.lower()}:{int(max_side)}"
+    plugin_part = f":reader={reader_plugin}" if reader_plugin else ""
+    return f"upload:{digest}:{Path(file_name).name.lower()}:{int(max_side)}{plugin_part}"
 
 
-def _file_cache_key(path: Path, max_side: int) -> str:
-    return f"file:{_preview_cache_key(path, max_side)}"
+def _file_cache_key(path: Path, max_side: int, reader_plugin: str | None = None) -> str:
+    plugin_part = f":reader={reader_plugin}" if reader_plugin else ""
+    return f"file:{_preview_cache_key(path, max_side)}{plugin_part}"
 
 
 def _analysis_entry_for_prepared(prepared: PreparedImage, cache_key: str) -> AnalysisEntry:
     return _build_analysis_entry(cache_key, lambda: prepared)
 
 
+def _session_metadata(entry: AnalysisEntry) -> dict:
+    return entry.session_metadata
+
+
+def _json_safe(value):
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
+def _encode_array_payload(array: np.ndarray) -> dict[str, object]:
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return {
+        "dtype": str(array.dtype),
+        "shape": list(array.shape),
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+
+def _decode_array_payload(payload: dict) -> np.ndarray:
+    raw = base64.b64decode(payload["data"])
+    return np.load(io.BytesIO(raw), allow_pickle=False)
+
+
+def _record_session_calibration(entry: AnalysisEntry, payload: dict) -> None:
+    meta = _session_metadata(entry)
+    processing = payload.get("processing", {})
+    meta["last_calibration"] = {
+        "mode": payload.get("mode"),
+        "shift": deepcopy(payload.get("shift", {})),
+        "reduction_pct": payload.get("reduction_pct"),
+        "processing": {
+            "calibration_source": processing.get("calibration_source"),
+            "plugin_id": processing.get("calibration_plugin_id"),
+            "plugin_name": processing.get("calibration_plugin_name"),
+        },
+    }
+    if "document" in payload:
+        meta["document"] = deepcopy(payload["document"])
+
+
+def _record_ai_evaluation(entry: AnalysisEntry, evaluator_name: str, evaluation: dict) -> None:
+    meta = _session_metadata(entry)
+    evaluations = meta.setdefault("ai_evaluations", {})
+    evaluations[evaluator_name] = deepcopy(_json_safe(evaluation))
+
+
+def _record_ai_request(entry: AnalysisEntry, payload: dict) -> None:
+    meta = _session_metadata(entry)
+    requests = meta.setdefault("ai_requests", [])
+    requests.append(deepcopy(_json_safe(payload)))
+    if len(requests) > 20:
+        del requests[:-20]
+
+
+def _session_sidecar_metadata(entry: AnalysisEntry) -> dict[str, object]:
+    meta = _session_metadata(entry)
+    return {
+        "session_id": entry.cache_key,
+        "analysis": {
+            "width": entry.prepared.analysis_width,
+            "height": entry.prepared.analysis_height,
+            "preview_source": entry.prepared.preview_source,
+            "source_dtype": entry.prepared.source_dtype,
+            "color_space": entry.prepared.color_space,
+            "data_range": list(entry.prepared.data_range) if entry.prepared.data_range is not None else None,
+        },
+        "last_calibration": deepcopy(meta.get("last_calibration")),
+        "document": deepcopy(meta.get("document")),
+        "ai_requests": deepcopy(meta.get("ai_requests", [])),
+    }
+
+
+def _provider_summary(provider) -> dict[str, object]:
+    if isinstance(provider, MockProvider):
+        return {"type": "mock", "name": provider.name}
+    if isinstance(provider, OpenAICompatibleProvider):
+        config = getattr(provider, "_config", None)
+        if config is not None:
+            return {
+                "type": "openai_compatible",
+                "name": provider.name,
+                "base_url": config.base_url,
+                "model": config.model,
+                "timeout": config.timeout,
+                "max_tokens": config.max_tokens,
+            }
+    return {"type": "custom", "name": getattr(provider, "name", provider.__class__.__name__)}
+
+
+def _provider_from_body(body: dict):
+    config = body.get("provider") or body.get("provider_config")
+    if not isinstance(config, dict):
+        return None
+    provider_type = str(config.get("type", "openai_compatible")).strip().lower()
+    if provider_type == "mock":
+        return MockProvider(
+            score=float(config.get("score", 0.5)),
+            reasoning=str(config.get("reasoning", "")),
+        )
+    if provider_type in {"openai", "openai_compatible", "openai-compatible"}:
+        base_url = str(config.get("base_url", "")).strip()
+        model = str(config.get("model", "")).strip()
+        if not base_url or not model:
+            raise ValueError("provider_config requires base_url and model")
+        return OpenAICompatibleProvider(
+            ProviderConfig(
+                base_url=base_url,
+                model=model,
+                api_key=str(config.get("api_key", "")),
+                timeout=int(config.get("timeout", 60)),
+                max_tokens=int(config.get("max_tokens", 1024)),
+                temperature=float(config.get("temperature", 0.3)),
+            )
+        )
+    raise ValueError(f"Unsupported provider type: {provider_type}")
+
+
+def _export_settings_payload(
+    *,
+    fmt: str,
+    output_path: Path,
+    source_buffer,
+    quality: int | None = None,
+    embed_icc: bool = True,
+    preserve_metadata: bool = True,
+    transform: str = "auto",
+    ocio_config_path: str | None = None,
+    ocio_display_space: str = "sRGB - Display",
+    ocio_scene_linear_space: str = "scene_linear",
+) -> dict[str, object]:
+    return {
+        "format": fmt,
+        "output_path": str(output_path),
+        "quality": quality,
+        "export_transform": transform,
+        "embed_icc": bool(embed_icc),
+        "preserve_metadata": bool(preserve_metadata),
+        "ocio_config_path": ocio_config_path,
+        "ocio_display_space": ocio_display_space,
+        "ocio_scene_linear_space": ocio_scene_linear_space,
+        "color_space": source_buffer.color_space,
+        "bit_depth": int(source_buffer.bit_depth),
+        "data_range": list(source_buffer.data_range) if source_buffer.data_range is not None else None,
+        "icc_embedded": bool(embed_icc and source_buffer.icc_profile),
+        "metadata_keys": sorted(str(key) for key in source_buffer.metadata.keys()),
+    }
+
+
+def _source_input_metadata(source_buffer) -> dict[str, object]:
+    return {
+        "color_space": source_buffer.color_space,
+        "bit_depth": int(source_buffer.bit_depth),
+        "data_range": list(source_buffer.data_range) if source_buffer.data_range is not None else None,
+        "icc_embedded": bool(source_buffer.icc_profile),
+        "metadata": deepcopy(source_buffer.metadata),
+    }
+
+
+def _document_operation_from_payload(payload: dict) -> dict[str, object] | None:
+    processing = payload.get("processing", {})
+    calibration_source = processing.get("calibration_source") or payload.get("metadata", {}).get("calibration_source")
+    if calibration_source == "plugin":
+        plugin_id = processing.get("calibration_plugin_id") or payload.get("metadata", {}).get("plugin_id")
+        return {
+            "name": "plugin-calibration",
+            "params": {
+                "plugin_id": plugin_id,
+                "plugin_name": processing.get("calibration_plugin_name") or payload.get("metadata", {}).get("plugin_name"),
+                "mode": payload.get("mode"),
+                "strength": payload.get("params").strength if payload.get("params") is not None else None,
+            },
+            "replayable": False,
+        }
+    params = payload.get("params")
+    if params is None:
+        return None
+    op = CalibrationOp(
+        params={
+            "mode": params.mode.value,
+            "a_shift": payload.get("shift", {}).get("a"),
+            "b_shift": payload.get("shift", {}).get("b"),
+            "strength": params.strength,
+            "highlight_pct": params.highlight_pct,
+            "sat_pct": params.sat_pct,
+            "curve_low_pct": params.curve_low_pct,
+            "curve_high_pct": params.curve_high_pct,
+            "gamma": list(params.gamma) if params.gamma is not None else None,
+            "matrix": [list(row) for row in params.matrix] if params.matrix is not None else None,
+            "lut_size": params.lut_size,
+        },
+    )
+    return {"name": op.name, "params": _json_safe(op.params), "replayable": True}
+
+
+def _render_document_from_metadata(entry: AnalysisEntry) -> tuple[dict[str, object], np.ndarray]:
+    meta = _session_metadata(entry)
+    stored = deepcopy(meta.get("document")) if isinstance(meta.get("document"), dict) else None
+    source = entry.prepared.image
+    if not stored:
+        return {"source": "session-analysis", "operations": []}, source
+    operations = stored.get("operations", [])
+    doc = PipelineDocument(source_image=source)
+    replayable_ops: list[dict[str, object]] = []
+    for op in operations:
+        if not op.get("replayable", False):
+            continue
+        if op.get("name") == "calibration":
+            doc.add_op(CalibrationOp(params=dict(op.get("params", {}))))
+            replayable_ops.append(op)
+    rendered = doc.render() if replayable_ops else source
+    return {
+        "source": stored.get("source", "session-analysis"),
+        "operations": operations,
+        "replayable_operations": replayable_ops,
+    }, rendered
+
+
+def _session_document_payload(entry: AnalysisEntry, payload: dict | None = None) -> dict[str, object]:
+    meta = _session_metadata(entry)
+    existing = deepcopy(meta.get("document")) if isinstance(meta.get("document"), dict) else None
+    if payload is None:
+        if existing is not None:
+            return existing
+        return {"source": "session-analysis", "operations": []}
+    op = _document_operation_from_payload(payload)
+    operations = []
+    if existing is not None:
+        operations.extend(existing.get("operations", []))
+    if op is not None:
+        operations.append(op)
+    return {"source": "session-analysis", "operations": operations}
+
+
+def _document_payload(body: dict) -> dict:
+    session_id = str(body["session_id"])
+    entry = _get_analysis(session_id)
+    if entry is None:
+        raise ValueError("Unknown or expired session_id")
+    document, _ = _render_document_from_metadata(entry)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "document": document,
+    }
+
+
+def _document_render_payload(body: dict) -> dict:
+    session_id = str(body["session_id"])
+    entry = _get_analysis(session_id)
+    if entry is None:
+        raise ValueError("Unknown or expired session_id")
+    document, rendered = _render_document_from_metadata(entry)
+    report = analyze_image_array(rendered)
+    prepared = entry.prepared
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "document": document,
+        "output": _report_payload(report),
+        "calibrated_image": _encode_data_url(
+            _render_preview_rgb(
+                rendered,
+                color_space=prepared.color_space,
+                data_range=prepared.data_range,
+            )
+        ),
+        "processing": {
+            "analysis_width": prepared.analysis_width,
+            "analysis_height": prepared.analysis_height,
+            "preview_source": prepared.preview_source,
+            "document_replayable_ops": len(document.get("replayable_operations", [])),
+        },
+    }
+
+
+def _export_policy(body: dict) -> dict[str, object]:
+    return {
+        "embed_icc": bool(body.get("embed_icc", True)),
+        "preserve_metadata": bool(body.get("preserve_metadata", True)),
+        "transform": str(body.get("export_transform", "auto")),
+        "ocio_config_path": body.get("ocio_config_path"),
+        "ocio_display_space": str(body.get("ocio_display_space", "sRGB - Display")),
+        "ocio_scene_linear_space": str(body.get("ocio_scene_linear_space", "scene_linear")),
+    }
+
+
+def _export_buffer_from_result(source_buffer: ImageBuffer, export_image: np.ndarray, body: dict) -> ImageBuffer:
+    policy = _export_policy(body)
+    return ImageBuffer(
+        data=export_image,
+        color_space=source_buffer.color_space,
+        data_range=source_buffer.data_range,
+        icc_profile=source_buffer.icc_profile if policy["embed_icc"] else None,
+        metadata=deepcopy(source_buffer.metadata) if policy["preserve_metadata"] else {},
+        orientation=source_buffer.orientation,
+    )
+
+
+def _plugin_reader_id(body: dict) -> str | None:
+    value = body.get("reader_plugin")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _raw_decode_options(body: dict) -> dict[str, object] | None:
+    keys = {"raw_white_balance", "white_balance", "raw_output_bps", "output_bps", "raw_no_auto_bright", "no_auto_bright", "raw_user_wb"}
+    if not any(key in body for key in keys):
+        return None
+    white_balance = str(body.get("raw_white_balance", body.get("white_balance", "camera"))).strip().lower()
+    options: dict[str, object] = {
+        "output_bps": int(body.get("raw_output_bps", body.get("output_bps", 16))),
+        "white_balance": white_balance or "camera",
+        "no_auto_bright": bool(body.get("raw_no_auto_bright", body.get("no_auto_bright", True))),
+    }
+    user_wb = body.get("raw_user_wb")
+    if user_wb is not None:
+        if not isinstance(user_wb, (list, tuple)) or len(user_wb) != 4:
+            raise ValueError("raw_user_wb must contain four white-balance multipliers")
+        options["user_wb"] = tuple(float(v) for v in user_wb)
+    return options
+
+
+def _plugin_writer_id(body: dict) -> str | None:
+    value = body.get("writer_plugin")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _plugin_film_scan_detector_id(body: dict) -> str | None:
+    for key in ("film_scan_detector_plugin", "film_scan_plugin", "detector_plugin"):
+        value = body.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _image_buffer_from_plugin_output(image, plugin_id: str, metadata: dict | None = None) -> ImageBuffer:
+    if isinstance(image, ImageBuffer):
+        merged_metadata = {**image.metadata, **(metadata or {})}
+        if merged_metadata == image.metadata:
+            return image
+        return ImageBuffer(
+            data=image.data,
+            color_space=image.color_space,
+            bit_depth=image.bit_depth,
+            data_range=image.data_range,
+            icc_profile=image.icc_profile,
+            metadata=merged_metadata,
+            orientation=image.orientation,
+        )
+    rgb = np.asarray(image)
+    return ImageBuffer(
+        data=rgb,
+        metadata={"reader": f"plugin:{plugin_id}", **(metadata or {})},
+    )
+
+
+def _read_image_with_plugins(path: str | Path, *, reader_plugin: str | None = None) -> ImageBuffer:
+    service = _plugin_service()
+    explicit = reader_plugin is not None
+    try:
+        result = service.run_image_reader(path, reader_id=reader_plugin)
+        return _image_buffer_from_plugin_output(result.image, result.plugin_id, result.metadata)
+    except HookNotSupportedError:
+        if explicit:
+            raise
+    except ServiceError:
+        if explicit:
+            raise
+    return read_image(path)
+
+
+def _write_image_with_plugins(
+    buf: ImageBuffer,
+    path: str | Path,
+    *,
+    fmt: str,
+    quality: int = 92,
+    writer_plugin: str | None = None,
+    embed_icc: bool = True,
+    preserve_metadata: bool = True,
+    transform: str = "auto",
+    ocio_config_path: str | Path | None = None,
+    ocio_display_space: str = "sRGB - Display",
+    ocio_scene_linear_space: str = "scene_linear",
+) -> dict[str, object] | None:
+    from photo_calibrator.io.writers import write_image
+
+    service = _plugin_service()
+    explicit = writer_plugin is not None
+    try:
+        result = service.run_image_writer(
+            buf,
+            path,
+            writer_id=writer_plugin,
+            quality=quality,
+            format=fmt,
+            embed_icc=embed_icc,
+            preserve_metadata=preserve_metadata,
+            transform=transform,
+            ocio_config_path=ocio_config_path,
+            ocio_display_space=ocio_display_space,
+            ocio_scene_linear_space=ocio_scene_linear_space,
+        )
+        return {
+            "writer_plugin_id": result.plugin_id,
+            "writer_plugin_name": result.writer_name,
+            **result.metadata,
+        }
+    except HookNotSupportedError:
+        if explicit:
+            raise
+    except ServiceError:
+        if explicit:
+            raise
+    write_image(
+        buf,
+        path,
+        quality=quality,
+        embed_icc=embed_icc,
+        preserve_metadata=preserve_metadata,
+        transform=transform,
+        ocio_config_path=ocio_config_path,
+        ocio_display_space=ocio_display_space,
+        ocio_scene_linear_space=ocio_scene_linear_space,
+    )
+    return None
+
+
 def _prepare_uploaded_analysis(
     data_url: str,
     file_name: str = "",
     max_side: int = DEFAULT_ANALYSIS_MAX_SIDE,
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
 ) -> AnalysisEntry:
     raw, _ = _data_url_bytes(data_url)
-    cache_key = _uploaded_cache_key(raw, file_name, max_side)
+    cache_key = _uploaded_cache_key(raw, file_name, max_side, reader_plugin)
 
     def prepare() -> PreparedImage:
-        bgr, preview_source = _decode_preview_bgr(raw, file_name, max_side)
+        if reader_plugin:
+            suffix = Path(file_name).suffix or ".png"
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                tmp.write(raw)
+                tmp.flush()
+                image_buffer = _read_image_with_plugins(tmp.name, reader_plugin=reader_plugin)
+            return _prepare_image_buffer_for_analysis(image_buffer, max_side)
+        if raw_options is None:
+            bgr, preview_source = _decode_preview_bgr(raw, file_name, max_side)
+        else:
+            bgr, preview_source = _decode_preview_bgr(raw, file_name, max_side, raw_options=raw_options)
         return _prepare_bgr_for_analysis(bgr, preview_source, max_side)
 
     return _build_analysis_entry(cache_key, prepare)
 
 
-def _prepare_file_analysis(file_path: str | Path, max_side: int = DEFAULT_ANALYSIS_MAX_SIDE) -> AnalysisEntry:
+def _prepare_file_analysis(
+    file_path: str | Path,
+    max_side: int = DEFAULT_ANALYSIS_MAX_SIDE,
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
+) -> AnalysisEntry:
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
-    cache_key = _file_cache_key(path, max_side)
-    return _build_analysis_entry(cache_key, lambda: _prepare_file_for_analysis(path, max_side))
+    cache_key = _file_cache_key(path, max_side, reader_plugin)
+    if reader_plugin is None:
+        if raw_options is None:
+            return _build_analysis_entry(cache_key, lambda: _prepare_file_for_analysis(path, max_side))
+        return _build_analysis_entry(cache_key, lambda: _prepare_file_for_analysis(path, max_side, raw_options=raw_options))
+    return _build_analysis_entry(
+        cache_key,
+        lambda: _prepare_file_for_analysis(path, max_side, reader_plugin=reader_plugin, raw_options=raw_options),
+    )
 
 
 def _prepare_image_for_analysis(data_url: str, max_side: int = DEFAULT_ANALYSIS_MAX_SIDE) -> PreparedImage:
@@ -162,29 +675,40 @@ def _prepare_uploaded_image(
     data_url: str,
     file_name: str = "",
     max_side: int = DEFAULT_ANALYSIS_MAX_SIDE,
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
 ) -> PreparedImage:
-    return _prepare_uploaded_analysis(data_url, file_name, max_side).prepared
+    return _prepare_uploaded_analysis(
+        data_url,
+        file_name,
+        max_side,
+        reader_plugin=reader_plugin,
+        raw_options=raw_options,
+    ).prepared
 
 
-def _prepare_file_for_analysis(file_path: str | Path, max_side: int = DEFAULT_ANALYSIS_MAX_SIDE) -> PreparedImage:
+def _prepare_file_for_analysis(
+    file_path: str | Path,
+    max_side: int = DEFAULT_ANALYSIS_MAX_SIDE,
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
+) -> PreparedImage:
     path = Path(file_path)
-    lower_name = path.name.lower()
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
 
-    cached = _load_cached_preview(path, max_side)
+    cached = _load_cached_preview(path, max_side) if reader_plugin is None else None
     if cached is not None:
         return cached
 
-    if lower_name.endswith((".tif", ".tiff")):
-        bgr, source = _decode_tiff_file_preview(path, max_side)
-        prepared = _prepare_bgr_for_analysis(bgr, source, max_side, source_size=_image_size_hint(path))
-        _write_cached_preview(path, max_side, prepared)
+    if reader_plugin is not None:
+        image_buffer = _read_image_with_plugins(path, reader_plugin=reader_plugin)
+        prepared = _prepare_image_buffer_for_analysis(image_buffer, max_side)
         return prepared
 
-    if lower_name.endswith((".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw")):
+    if is_raw_extension(path.name):
         raw = path.read_bytes()
-        bgr_source = _try_decode_raw_preview(raw, path.name)
+        bgr_source = _try_decode_raw_preview(raw, path.name, raw_options=raw_options)
         if bgr_source is None:
             raise ValueError("Unsupported RAW file")
         bgr, source = bgr_source
@@ -192,16 +716,8 @@ def _prepare_file_for_analysis(file_path: str | Path, max_side: int = DEFAULT_AN
         _write_cached_preview(path, max_side, prepared)
         return prepared
 
-    flag = _reduced_imread_flag_for_path(path, max_side)
-    bgr = cv2.imread(str(path), flag)
-    if bgr is None:
-        raise ValueError(f"Unsupported or corrupt image file: {path}")
-    prepared = _prepare_bgr_for_analysis(
-        bgr,
-        "opencv-file-reduced" if flag != cv2.IMREAD_COLOR else "opencv-file",
-        max_side,
-        source_size=_image_size_hint(path),
-    )
+    image_buffer = _read_image_with_plugins(path)
+    prepared = _prepare_image_buffer_for_analysis(image_buffer, max_side)
     _write_cached_preview(path, max_side, prepared)
     return prepared
 
@@ -249,7 +765,12 @@ def _write_cached_preview(path: Path, max_side: int, prepared: PreparedImage) ->
     try:
         PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         image_path, meta_path = _preview_cache_paths(path, max_side)
-        bgr = ACCELERATOR.rgb_to_bgr(prepared.image)
+        preview_rgb = _render_preview_rgb(
+            prepared.image,
+            color_space=prepared.color_space,
+            data_range=prepared.data_range,
+        )
+        bgr = ACCELERATOR.rgb_to_bgr(preview_rgb)
         ok = cv2.imwrite(str(image_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if not ok:
             return
@@ -260,6 +781,8 @@ def _write_cached_preview(path: Path, max_side: int, prepared: PreparedImage) ->
             "analysis_height": prepared.analysis_height,
             "source_dtype": prepared.source_dtype,
             "preview_source": prepared.preview_source,
+            "color_space": prepared.color_space,
+            "data_range": list(prepared.data_range) if prepared.data_range is not None else None,
             "created_at": time.time(),
         }
         meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
@@ -319,7 +842,13 @@ def _image_size_hint(path: Path) -> tuple[int, int] | None:
         return None
 
 
-def _decode_preview_bgr(raw: bytes, file_name: str, max_side: int) -> tuple[np.ndarray, str]:
+def _decode_preview_bgr(
+    raw: bytes,
+    file_name: str,
+    max_side: int,
+    *,
+    raw_options: dict[str, object] | None = None,
+) -> tuple[np.ndarray, str]:
     arr = np.frombuffer(raw, dtype=np.uint8)
     lower_name = file_name.lower()
 
@@ -334,7 +863,7 @@ def _decode_preview_bgr(raw: bytes, file_name: str, max_side: int) -> tuple[np.n
     if bgr is not None:
         return bgr, "opencv-decode"
 
-    raw_preview = _try_decode_raw_preview(raw, file_name)
+    raw_preview = _try_decode_raw_preview(raw, file_name, raw_options=raw_options)
     if raw_preview is not None:
         return raw_preview
 
@@ -365,6 +894,30 @@ def _prepare_bgr_for_analysis(
         downsample_ratio=float(downsample_ratio),
         source_dtype=source_dtype,
         preview_source=preview_source,
+        color_space="sRGB",
+        data_range=(0.0, 255.0),
+    )
+
+
+def _prepare_image_buffer_for_analysis(image_buffer, max_side: int) -> PreparedImage:
+    rgb = image_buffer.data
+    analysis = _resize_to_max_side(rgb, max_side)
+    width = int(image_buffer.width)
+    height = int(image_buffer.height)
+    downsample_ratio = analysis.shape[1] / max(width, 1)
+    source_dtype = str(image_buffer.dtype)
+    reader = image_buffer.metadata.get("reader", "image-buffer")
+    return PreparedImage(
+        image=analysis,
+        original_width=width,
+        original_height=height,
+        analysis_width=int(analysis.shape[1]),
+        analysis_height=int(analysis.shape[0]),
+        downsample_ratio=float(downsample_ratio),
+        source_dtype=source_dtype,
+        preview_source=f"io-{reader}",
+        color_space=image_buffer.color_space,
+        data_range=image_buffer.data_range,
     )
 
 
@@ -396,12 +949,17 @@ def _choose_tiff_preview_page(pages: list[np.ndarray], max_side: int) -> np.ndar
     return max(pages, key=lambda page: max(page.shape[:2]))
 
 
-def _try_decode_raw_preview(raw: bytes, file_name: str) -> tuple[np.ndarray, str] | None:
+def _try_decode_raw_preview(
+    raw: bytes,
+    file_name: str,
+    *,
+    raw_options: dict[str, object] | None = None,
+) -> tuple[np.ndarray, str] | None:
     from photo_calibrator.io.raw import RAW_EXTENSIONS, decode_raw_preview
 
     if not file_name.lower().endswith(RAW_EXTENSIONS):
         return None
-    return decode_raw_preview(raw, file_name)
+    return decode_raw_preview(raw, file_name, **(raw_options or {}))
 
 
 def _normalize_bgr(bgr: np.ndarray) -> np.ndarray:
@@ -428,6 +986,35 @@ def _to_uint8_preview(img: np.ndarray) -> np.ndarray:
     else:
         data = data / max(max_value, 1.0) * 255.0
     return np.clip(data, 0, 255).astype(np.uint8)
+
+
+def _render_preview_rgb(
+    img_rgb: np.ndarray,
+    *,
+    color_space: str = "sRGB",
+    data_range: tuple[float, float] | None = None,
+) -> np.ndarray:
+    if img_rgb.dtype == np.uint8 and color_space.lower() == "srgb":
+        return img_rgb
+    data = img_rgb.astype(np.float32, copy=False)
+    if np.issubdtype(img_rgb.dtype, np.integer):
+        info = np.iinfo(img_rgb.dtype)
+        scale = float(info.max) if info.max > 0 else 255.0
+        data = data / scale
+    else:
+        rng = data_range or (float(data.min()) if data.size else 0.0, float(data.max()) if data.size else 1.0)
+        peak = float(rng[1]) if rng is not None else (float(data.max()) if data.size else 1.0)
+        if peak > 1.0:
+            tone_ref = float(np.percentile(data, 99.5)) if data.size else peak
+            peak = max(tone_ref, 1.0)
+            data = np.clip(data / peak, 0.0, 1.0)
+        else:
+            data = np.clip(data, 0.0, 1.0)
+
+    if color_space.lower() == "linear":
+        data = np.power(np.clip(data, 0.0, 1.0), 1.0 / 2.2)
+
+    return np.clip(np.rint(data * 255.0), 0, 255).astype(np.uint8)
 
 
 def _encode_data_url(img_rgb: np.ndarray, ext: str = ".jpg", quality: int = 92) -> str:
@@ -614,14 +1201,163 @@ def _accelerator_benchmark_payload(image_side: int = 256, lut_size: int = 17, it
     return benchmark_accelerator(image_side=image_side, lut_size=lut_size, iterations=iterations)
 
 
+def _calibration_params_from_body(body: dict) -> CalibrationParams:
+    return CalibrationParams(
+        mode=CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value)),
+        strength=float(body.get("strength", 0.8)),
+        highlight_pct=float(body.get("highlight_pct", 55.0)),
+        sat_pct=float(body.get("sat_pct", 25.0)),
+    )
+
+
+def _plugin_calibrator_id(body: dict) -> str | None:
+    plugin_id = body.get("calibrator_plugin")
+    if plugin_id in {"", None}:
+        return None
+    return str(plugin_id)
+
+
+def _apply_plugin_calibration(
+    entry: AnalysisEntry,
+    image: np.ndarray,
+    params: CalibrationParams,
+    calibrator_id: str,
+) -> dict:
+    params_dict = {
+        "mode": params.mode.value,
+        "strength": params.strength,
+        "highlight_pct": params.highlight_pct,
+        "sat_pct": params.sat_pct,
+    }
+    plugin_result = _plugin_service().run_calibrator(
+        image,
+        params_dict,
+        calibrator_id=calibrator_id,
+        session_id=entry.cache_key,
+        analysis=_report_payload(entry.input_report),
+        zones=entry.zones,
+    )
+    calibrated = ensure_uint8_rgb(plugin_result.image)
+    post_report = analyze_image_array(calibrated)
+    before = entry.input_report.lab.cast_strength
+    after = post_report.lab.cast_strength
+    reduction_pct = (1.0 - after / max(before, 0.01)) * 100.0
+    return {
+        "image": calibrated,
+        "post_report": post_report,
+        "mode": params.mode.value,
+        "shift": {"a": None, "b": None},
+        "metadata": {
+            "auto_cast_source": "plugin",
+            "auto_cast_confidence": 1.0,
+            "plugin_id": plugin_result.plugin_id,
+            "plugin_name": plugin_result.calibrator_name,
+            "plugin_metadata": _json_safe(plugin_result.metadata),
+            "calibration_source": "plugin",
+            "reduction_pct": reduction_pct,
+        },
+        "reduction_pct": reduction_pct,
+    }
+
+
+def _apply_core_calibration(entry: AnalysisEntry, image: np.ndarray, params: CalibrationParams) -> dict:
+    result = calibrate_image_from_analysis(
+        image,
+        params,
+        entry.input_report,
+        entry.zones,
+        color_space=entry.prepared.color_space,
+        data_range=entry.prepared.data_range,
+    )
+    return {
+        "image": result.image,
+        "post_report": result.post_report,
+        "mode": result.mode.value,
+        "shift": {"a": result.a_shift, "b": result.b_shift},
+        "metadata": {
+            **result.metadata,
+            "calibration_source": "core",
+        },
+        "reduction_pct": result.reduction_pct,
+    }
+
+
+def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> dict:
+    params = _calibration_params_from_body(body)
+    calibrator_id = _plugin_calibrator_id(body)
+    if calibrator_id:
+        payload = _apply_plugin_calibration(entry, image, params, calibrator_id)
+    else:
+        payload = _apply_core_calibration(entry, image, params)
+    payload["params"] = params
+    payload["calibrator_plugin"] = calibrator_id
+    return payload
+
+
 def _calibrate_payload(body: dict) -> dict:
     start = time.perf_counter()
     entry = _prepare_uploaded_analysis(
         body["image_data"],
         file_name=str(body.get("file_name", "")),
         max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
     return _calibrate_entry_payload(entry, body, start)
+
+
+def _preview_payload(body: dict) -> dict:
+    start = time.perf_counter()
+    max_side = int(body.get("analysis_max_side", 320))
+    path = body.get("path") or body.get("file_name")
+    if body.get("path"):
+        # Path-based file — avoid sending 600MB data URLs through the browser
+        entry = _prepare_file_analysis(
+            str(body["path"]),
+            max_side=max_side,
+            reader_plugin=_plugin_reader_id(body),
+            raw_options=_raw_decode_options(body),
+        )
+    elif body.get("session_id"):
+        entry = _get_analysis(str(body["session_id"]))
+        if entry is None:
+            raise ValueError("Unknown or expired session_id")
+    elif body.get("image_data"):
+        entry = _prepare_uploaded_analysis(
+            body["image_data"],
+            file_name=str(body.get("file_name", "")),
+            max_side=max_side,
+            reader_plugin=_plugin_reader_id(body),
+            raw_options=_raw_decode_options(body),
+        )
+    else:
+        raise ValueError("preview requires path, session_id, or image_data")
+    prepared = entry.prepared
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return {
+        "session_id": entry.cache_key,
+        "original_preview": _encode_data_url(
+            _render_preview_rgb(
+                prepared.image,
+                color_space=prepared.color_space,
+                data_range=prepared.data_range,
+            )
+        ),
+        "processing": {
+            "original_width": prepared.original_width,
+            "original_height": prepared.original_height,
+            "analysis_width": prepared.analysis_width,
+            "analysis_height": prepared.analysis_height,
+            "downsample_ratio": prepared.downsample_ratio,
+            "source_dtype": prepared.source_dtype,
+            "preview_source": prepared.preview_source,
+            "color_space": prepared.color_space,
+            "data_range": list(prepared.data_range) if prepared.data_range is not None else None,
+            "elapsed_ms": elapsed_ms,
+            "cache_key": entry.cache_key,
+            "memory_cache_items": len(_ANALYSIS_CACHE),
+        },
+    }
 
 
 def _calibrate_session_payload(body: dict) -> dict:
@@ -634,17 +1370,10 @@ def _calibrate_session_payload(body: dict) -> dict:
 
 def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> dict:
     img = entry.prepared.image
-    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
-    params = CalibrationParams(
-        mode=mode,
-        strength=float(body.get("strength", 0.8)),
-        highlight_pct=float(body.get("highlight_pct", 55.0)),
-        sat_pct=float(body.get("sat_pct", 25.0)),
-    )
-    result = calibrate_image_from_analysis(img, params, entry.input_report, entry.zones)
+    calibration = _apply_calibration(entry, img, body)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     include_original = bool(body.get("include_original", True))
-    return _calibration_response(entry, result, img, elapsed_ms, include_original=include_original)
+    return _calibration_response(entry, calibration, img, elapsed_ms, include_original=include_original)
 
 
 def _calibrate_path_payload(body: dict) -> dict:
@@ -652,11 +1381,13 @@ def _calibrate_path_payload(body: dict) -> dict:
     entry = _prepare_file_analysis(
         body["path"],
         max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
     return _calibrate_entry_payload(entry, body, start)
 
 
-def _calibrate_paths_payload(body: dict) -> dict:
+def _run_paths_batch_sync(body: dict) -> dict:
     paths = [str(path) for path in body.get("paths", [])]
     if not paths:
         raise ValueError("paths must contain at least one image path")
@@ -665,7 +1396,12 @@ def _calibrate_paths_payload(body: dict) -> dict:
 
     def one(path: str) -> dict:
         start = time.perf_counter()
-        entry = _prepare_file_analysis(path, max_side=max_side)
+        entry = _prepare_file_analysis(
+            path,
+            max_side=max_side,
+            reader_plugin=_plugin_reader_id(body),
+            raw_options=_raw_decode_options(body),
+        )
         return _calibrate_entry_payload(entry, body | {"path": path}, start)
 
     results: list[dict | None] = [None] * len(paths)
@@ -680,7 +1416,13 @@ def _calibrate_paths_payload(body: dict) -> dict:
     return {"workers": workers, "results": results}
 
 
-def _calibrate_batch_payload(body: dict) -> dict:
+def _calibrate_paths_payload(body: dict) -> dict:
+    if body.get("async"):
+        return _start_paths_batch_job(body)
+    return _run_paths_batch_sync(body)
+
+
+def _run_upload_batch_sync(body: dict) -> dict:
     items = list(body.get("items", []))
     if not items:
         raise ValueError("items must contain at least one uploaded image")
@@ -693,6 +1435,8 @@ def _calibrate_batch_payload(body: dict) -> dict:
             item["image_data"],
             file_name=str(item.get("file_name", f"upload-{index}")),
             max_side=max_side,
+            reader_plugin=_plugin_reader_id(body | item),
+            raw_options=_raw_decode_options(body | item),
         )
         request_body = body | item
         request_body.pop("items", None)
@@ -710,25 +1454,43 @@ def _calibrate_batch_payload(body: dict) -> dict:
     return {"workers": workers, "results": results}
 
 
+def _calibrate_batch_payload(body: dict) -> dict:
+    if body.get("async"):
+        return _start_upload_batch_job(body)
+    return _run_upload_batch_sync(body)
+
+
 def _calibration_response(
     entry: AnalysisEntry,
-    result,
+    calibration: dict,
     img: np.ndarray,
     elapsed_ms: float,
     include_original: bool = True,
 ) -> dict:
     prepared = entry.prepared
     accelerator = _accelerator_payload()
-    return {
+    post_report = calibration["post_report"]
+    metadata = calibration.get("metadata", {})
+    original_preview = _render_preview_rgb(
+        img,
+        color_space=prepared.color_space,
+        data_range=prepared.data_range,
+    )
+    calibrated_preview = _render_preview_rgb(
+        calibration["image"],
+        color_space=prepared.color_space,
+        data_range=prepared.data_range,
+    )
+    payload = {
         "session_id": entry.cache_key,
         "input": _report_payload(entry.input_report),
-        "output": _report_payload(result.post_report),
-        "mode": result.mode.value,
-        "shift": {"a": result.a_shift, "b": result.b_shift},
-        "reduction_pct": result.reduction_pct,
-        "original_preview": _encode_data_url(img) if include_original else None,
-        "calibrated_image": _encode_data_url(result.image),
-        "charts": _chart_payload(entry.input_report, result.post_report, img, entry.static_charts),
+        "output": _report_payload(post_report),
+        "mode": calibration["mode"],
+        "shift": calibration["shift"],
+        "reduction_pct": calibration["reduction_pct"],
+        "original_preview": _encode_data_url(original_preview) if include_original else None,
+        "calibrated_image": _encode_data_url(calibrated_preview),
+        "charts": _chart_payload(entry.input_report, post_report, original_preview, entry.static_charts),
         "processing": {
             "original_width": prepared.original_width,
             "original_height": prepared.original_height,
@@ -737,6 +1499,8 @@ def _calibration_response(
             "downsample_ratio": prepared.downsample_ratio,
             "source_dtype": prepared.source_dtype,
             "preview_source": prepared.preview_source,
+            "color_space": prepared.color_space,
+            "data_range": list(prepared.data_range) if prepared.data_range is not None else None,
             "elapsed_ms": elapsed_ms,
             "cache_key": entry.cache_key,
             "memory_cache_items": len(_ANALYSIS_CACHE),
@@ -749,52 +1513,77 @@ def _calibration_response(
             "fallback_reason": accelerator["fallback_reason"],
             "opencl_available": accelerator["opencl_available"],
             "opencl_enabled": accelerator["opencl_enabled"],
-            "auto_cast_source": result.metadata.get("auto_cast_source", "global"),
-            "auto_cast_confidence": result.metadata.get("auto_cast_confidence", 1.0),
+            "auto_cast_source": metadata.get("auto_cast_source", "global"),
+            "auto_cast_confidence": metadata.get("auto_cast_confidence", 1.0),
+            "calibration_source": metadata.get("calibration_source", "core"),
+            "calibration_plugin_id": metadata.get("plugin_id"),
+            "calibration_plugin_name": metadata.get("plugin_name"),
         },
     }
+    payload["document"] = _session_document_payload(entry, {**calibration, "processing": payload["processing"]})
+    _record_session_calibration(entry, payload)
+    return payload
 
 
 def _export_payload(body: dict) -> dict:
     """Export calibrated image to disk file."""
     start = time.perf_counter()
 
-    output_path = Path(body["output_path"]).resolve()
+    output_path = _resolve_output_path(body["output_path"], body.get("format", "jpeg"))
     fmt = body.get("format", "jpeg")
+    policy = _export_policy(body)
 
     entry = _prepare_uploaded_analysis(
         body["image_data"],
         file_name=str(body.get("file_name", "")),
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
-    img = entry.prepared.image
-    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
-    params = CalibrationParams(
-        mode=mode,
-        strength=float(body.get("strength", 0.8)),
-        highlight_pct=float(body.get("highlight_pct", 55.0)),
-        sat_pct=float(body.get("sat_pct", 25.0)),
+
+    source_buffer = _load_uploaded_source_buffer(
+        body["image_data"],
+        file_name=str(body.get("file_name", "")),
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
-    result = calibrate_image_from_analysis(img, params, entry.input_report, entry.zones)
+    export_result = _apply_calibration(entry, source_buffer.data, body)
+    buf = _export_buffer_from_result(source_buffer, export_result["image"], body)
+    writer_metadata = None
 
-    from photo_calibrator.core.image_model import ImageBuffer
-    from photo_calibrator.io.writers import write_image
-
-    buf = ImageBuffer(data=result.image)
-
-    if fmt in {"jpeg", "jpg", "png", "tiff16", "tif16"}:
-        if fmt == "tiff16" or fmt == "tif16":
-            output_path = output_path.with_suffix(".tif")
-        write_image(buf, output_path, quality=int(body.get("quality", 92)))
+    if fmt in {"jpeg", "jpg", "png", "tiff16", "tif16", "exr", "hdr"}:
+        writer_metadata = _write_image_with_plugins(
+            buf,
+            output_path,
+            fmt=fmt,
+            quality=int(body.get("quality", 92)),
+            writer_plugin=_plugin_writer_id(body),
+            **policy,
+        )
     elif fmt == "sidecar":
         from photo_calibrator.io.sidecar import write_sidecar_json
 
+        params = _calibration_params_from_body(body)
         calib_params = {
-            "mode": result.mode.value,
-            "a_shift": result.a_shift,
-            "b_shift": result.b_shift,
-            "strength": result.params.strength,
+            "mode": export_result["mode"],
+            "a_shift": export_result["shift"].get("a"),
+            "b_shift": export_result["shift"].get("b"),
+            "strength": params.strength,
+            "calibrator_plugin": _plugin_calibrator_id(body),
         }
-        write_sidecar_json(output_path, calib_params)
+        write_sidecar_json(
+            output_path,
+            calib_params,
+            input_metadata=_source_input_metadata(source_buffer),
+            ai_evaluations=deepcopy(_session_metadata(entry).get("ai_evaluations")),
+            session_metadata=_session_sidecar_metadata(entry),
+            export_settings=_export_settings_payload(
+                fmt=fmt,
+                output_path=output_path,
+                source_buffer=source_buffer,
+                quality=int(body.get("quality", 92)),
+                **policy,
+            ),
+        )
     elif fmt == "cube":
         from photo_calibrator.io.lut_export import write_cube_lut
 
@@ -809,6 +1598,14 @@ def _export_payload(body: dict) -> dict:
         "format": fmt,
         "size": output_path.stat().st_size if output_path.exists() else 0,
         "elapsed_ms": elapsed_ms,
+        "writer": writer_metadata,
+        "export_settings": _export_settings_payload(
+            fmt=fmt,
+            output_path=output_path,
+            source_buffer=source_buffer,
+            quality=int(body.get("quality", 92)),
+            **policy,
+        ),
     }
 
 
@@ -821,21 +1618,54 @@ def _cache_stats_payload() -> dict:
             age = now - entry.created_at
             if oldest == 0.0 or age > oldest:
                 oldest = age
+        preview_files = 0
+        if PREVIEW_CACHE_DIR.exists():
+            preview_files = sum(1 for path in PREVIEW_CACHE_DIR.iterdir() if path.is_file())
         return {
             "items": len(_ANALYSIS_CACHE),
             "limit": MEMORY_CACHE_LIMIT,
             "ttl_seconds": SESSION_TTL_SECONDS,
             "oldest_age_seconds": oldest,
+            "preview_cache_files": preview_files,
         }
 
 
 def _cache_clear_payload() -> dict:
     """POST /api/cache/clear — clear all cached analysis entries."""
+    preview_deleted = 0
     with _CACHE_LOCK:
         count = len(_ANALYSIS_CACHE)
         _ANALYSIS_CACHE.clear()
         _ANALYSIS_KEY_LOCKS.clear()
-    return {"ok": True, "cleared": count}
+    if PREVIEW_CACHE_DIR.exists():
+        for path in PREVIEW_CACHE_DIR.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                preview_deleted += 1
+    return {"ok": True, "cleared": count, "preview_cache_deleted": preview_deleted}
+
+
+def _preview_cache_cleanup_payload(body: dict) -> dict:
+    max_age_seconds = max(0.0, float(body.get("max_age_seconds", SESSION_TTL_SECONDS)))
+    deleted = 0
+    kept = 0
+    now = time.time()
+    PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    for path in PREVIEW_CACHE_DIR.iterdir():
+        if not path.is_file():
+            continue
+        age = now - path.stat().st_mtime
+        if age >= max_age_seconds:
+            path.unlink(missing_ok=True)
+            deleted += 1
+        else:
+            kept += 1
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "kept": kept,
+        "max_age_seconds": max_age_seconds,
+    }
 
 
 def _sidecar_save_payload(body: dict) -> dict:
@@ -846,7 +1676,29 @@ def _sidecar_save_payload(body: dict) -> dict:
     calib = body.get("calibration", {})
     version = body.get("algorithm_version", "0.2.0")
     metadata = body.get("input_metadata")
-    write_sidecar_json(path, calib, algorithm_version=version, input_metadata=metadata)
+    session_meta = body.get("session_metadata")
+    ai_evaluations = body.get("ai_evaluations")
+    export_settings = body.get("export_settings")
+    session_id = body.get("session_id")
+    if session_id:
+        entry = _get_analysis(str(session_id))
+        if entry is None:
+            raise ValueError("Unknown or expired session_id")
+        if not calib:
+            calib = deepcopy(_session_metadata(entry).get("last_calibration", {}))
+        if session_meta is None:
+            session_meta = _session_sidecar_metadata(entry)
+        if ai_evaluations is None:
+            ai_evaluations = deepcopy(_session_metadata(entry).get("ai_evaluations"))
+    write_sidecar_json(
+        path,
+        calib,
+        algorithm_version=version,
+        input_metadata=metadata,
+        ai_evaluations=ai_evaluations,
+        session_metadata=session_meta,
+        export_settings=export_settings,
+    )
     return {"ok": True, "path": str(path), "size": path.stat().st_size}
 
 
@@ -855,6 +1707,219 @@ def _sidecar_load_payload(body: dict) -> dict:
     from photo_calibrator.io.sidecar import read_sidecar_json
 
     return read_sidecar_json(body["path"])
+
+
+def _serialize_analysis_entry(entry: AnalysisEntry) -> dict[str, object]:
+    return {
+        "cache_key": entry.cache_key,
+        "created_at": entry.created_at,
+        "prepared": {
+            "image": _encode_array_payload(entry.prepared.image),
+            "original_width": entry.prepared.original_width,
+            "original_height": entry.prepared.original_height,
+            "analysis_width": entry.prepared.analysis_width,
+            "analysis_height": entry.prepared.analysis_height,
+            "downsample_ratio": entry.prepared.downsample_ratio,
+            "source_dtype": entry.prepared.source_dtype,
+            "preview_source": entry.prepared.preview_source,
+            "color_space": entry.prepared.color_space,
+            "data_range": list(entry.prepared.data_range) if entry.prepared.data_range is not None else None,
+        },
+        "input_report": _report_payload(entry.input_report),
+        "zones": _json_safe(entry.zones),
+        "static_charts": _json_safe(entry.static_charts),
+        "session_metadata": _json_safe(entry.session_metadata),
+    }
+
+
+def _deserialize_analysis_entry(payload: dict) -> AnalysisEntry:
+    prepared_payload = payload["prepared"]
+    prepared = PreparedImage(
+        image=_decode_array_payload(prepared_payload["image"]),
+        original_width=int(prepared_payload["original_width"]),
+        original_height=int(prepared_payload["original_height"]),
+        analysis_width=int(prepared_payload["analysis_width"]),
+        analysis_height=int(prepared_payload["analysis_height"]),
+        downsample_ratio=float(prepared_payload["downsample_ratio"]),
+        source_dtype=str(prepared_payload["source_dtype"]),
+        preview_source=str(prepared_payload["preview_source"]),
+        color_space=str(prepared_payload.get("color_space", "sRGB")),
+        data_range=tuple(prepared_payload["data_range"]) if prepared_payload.get("data_range") is not None else None,
+    )
+    input_report = analyze_image_array(prepared.image)
+    zones = payload.get("zones") or auto_detect_cast(prepared.image)
+    static_charts = payload.get("static_charts") or _static_chart_payload(
+        input_report,
+        _render_preview_rgb(
+            prepared.image,
+            color_space=prepared.color_space,
+            data_range=prepared.data_range,
+        ),
+    )
+    return AnalysisEntry(
+        prepared=prepared,
+        input_report=input_report,
+        zones=zones,
+        static_charts=static_charts,
+        cache_key=str(payload["cache_key"]),
+        created_at=float(payload.get("created_at", time.time())),
+        session_metadata=deepcopy(payload.get("session_metadata", {})),
+    )
+
+
+def _session_save_payload(body: dict) -> dict:
+    session_id = str(body["session_id"])
+    path_value = body.get("path")
+    path = Path(path_value) if path_value else (SESSION_STORE_DIR / f"{session_id}.json")
+    entry = _get_analysis(session_id)
+    if entry is None:
+        raise ValueError("Unknown or expired session_id")
+    doc = {
+        "session_version": 1,
+        "saved_at": time.time(),
+        "entry": _serialize_analysis_entry(entry),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return {
+        "ok": True,
+        "path": str(path),
+        "session_id": session_id,
+        "size": path.stat().st_size,
+    }
+
+
+def _session_load_payload(body: dict) -> dict:
+    path = Path(body["path"])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = _deserialize_analysis_entry(payload["entry"])
+    if body.get("new_session_id"):
+        entry = AnalysisEntry(
+            prepared=entry.prepared,
+            input_report=entry.input_report,
+            zones=entry.zones,
+            static_charts=entry.static_charts,
+            cache_key=str(body["new_session_id"]),
+            created_at=time.time(),
+            session_metadata=deepcopy(entry.session_metadata),
+        )
+    _remember_analysis(entry)
+    return {
+        "ok": True,
+        "path": str(path),
+        "session_id": entry.cache_key,
+        "processing": {
+            "analysis_width": entry.prepared.analysis_width,
+            "analysis_height": entry.prepared.analysis_height,
+            "preview_source": entry.prepared.preview_source,
+            "color_space": entry.prepared.color_space,
+            "data_range": list(entry.prepared.data_range) if entry.prepared.data_range is not None else None,
+        },
+    }
+
+
+def _session_list_payload(_query: dict) -> dict:
+    SESSION_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    sessions: list[dict[str, object]] = []
+    for path in sorted(SESSION_STORE_DIR.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            entry = payload.get("entry", {})
+            prepared = entry.get("prepared", {})
+            sessions.append(
+                {
+                    "path": str(path),
+                    "session_id": str(entry.get("cache_key", path.stem)),
+                    "saved_at": payload.get("saved_at"),
+                    "size": path.stat().st_size,
+                    "analysis_width": prepared.get("analysis_width"),
+                    "analysis_height": prepared.get("analysis_height"),
+                    "preview_source": prepared.get("preview_source"),
+                }
+            )
+        except Exception:
+            sessions.append(
+                {
+                    "path": str(path),
+                    "session_id": path.stem,
+                    "error": "unreadable",
+                    "size": path.stat().st_size,
+                }
+            )
+    return {"sessions": sessions}
+
+
+def _session_delete_payload(body: dict) -> dict:
+    path_value = body.get("path")
+    session_id = body.get("session_id")
+    if path_value:
+        path = Path(path_value)
+    elif session_id:
+        path = SESSION_STORE_DIR / f"{session_id}.json"
+    else:
+        raise ValueError("session delete requires path or session_id")
+    existed = path.exists()
+    path.unlink(missing_ok=True)
+    return {"ok": True, "path": str(path), "deleted": existed}
+
+
+def _session_cleanup_payload(body: dict) -> dict:
+    max_age_seconds = max(0.0, float(body.get("max_age_seconds", SESSION_TTL_SECONDS)))
+    SESSION_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    deleted = 0
+    kept = 0
+    now = time.time()
+    for path in SESSION_STORE_DIR.glob("*.json"):
+        age = now - path.stat().st_mtime
+        if age >= max_age_seconds:
+            path.unlink(missing_ok=True)
+            deleted += 1
+        else:
+            kept += 1
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "kept": kept,
+        "max_age_seconds": max_age_seconds,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Workspace DB API
+# ---------------------------------------------------------------------------
+
+
+def _workspace_stats_payload() -> dict:
+    """GET /api/workspace/stats — workspace database statistics."""
+    db = get_workspace_db(ROOT)
+    return db.stats()
+
+
+def _workspace_sync_payload(body: dict) -> dict:
+    """POST /api/workspace/sync — sync file inventory for a directory."""
+    directory = Path(body.get("directory", ROOT))
+    if not directory.is_dir():
+        raise ValueError(f"Directory not found: {directory}")
+    extensions = body.get("extensions")
+    ext_set = set(extensions) if extensions else None
+    db = get_workspace_db(ROOT)
+    report = db.sync_directory(directory, extensions=ext_set)
+    return {
+        "ok": True,
+        "directory": str(directory),
+        "added": len(report.added),
+        "removed": len(report.removed),
+        "modified": len(report.modified),
+        "unchanged": report.unchanged,
+        "total_changes": report.total_changes,
+    }
+
+
+def _workspace_clear_payload() -> dict:
+    """POST /api/workspace/clear — clear all workspace database entries."""
+    db = get_workspace_db(ROOT)
+    result = db.clear_all()
+    return {"ok": True, **result}
 
 
 # ---------------------------------------------------------------------------
@@ -866,25 +1931,60 @@ def _export_path_payload(body: dict) -> dict:
     """POST /api/export-path — calibrate and export from local file path."""
     start = time.perf_counter()
     input_path = body["input_path"]
-    output_path = Path(body["output_path"]).resolve()
+    output_path = _resolve_output_path(body["output_path"], body.get("format", "jpeg"))
     fmt = body.get("format", "jpeg")
+    policy = _export_policy(body)
     max_side = int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE))
 
-    entry = _prepare_file_analysis(input_path, max_side=max_side)
-    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
-    params = CalibrationParams(
-        mode=mode,
-        strength=float(body.get("strength", 0.8)),
+    entry = _prepare_file_analysis(
+        input_path,
+        max_side=max_side,
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
-    result = calibrate_image_from_analysis(
-        entry.prepared.image, params, entry.input_report, entry.zones
+    source_buffer = _load_file_source_buffer(
+        input_path,
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
     )
+    result = _apply_calibration(entry, source_buffer.data, body)
 
-    from photo_calibrator.core.image_model import ImageBuffer
-    from photo_calibrator.io.writers import write_image
+    if fmt == "sidecar":
+        from photo_calibrator.io.sidecar import write_sidecar_json
 
-    buf = ImageBuffer(data=result.image)
-    write_image(buf, output_path, quality=int(body.get("quality", 92)))
+        params = _calibration_params_from_body(body)
+        write_sidecar_json(
+            output_path,
+            {
+                "mode": result["mode"],
+                "a_shift": result["shift"].get("a"),
+                "b_shift": result["shift"].get("b"),
+                "strength": params.strength,
+                "calibrator_plugin": _plugin_calibrator_id(body),
+            },
+            input_metadata=_source_input_metadata(source_buffer),
+            session_metadata=_session_sidecar_metadata(entry),
+            ai_evaluations=deepcopy(_session_metadata(entry).get("ai_evaluations")),
+            export_settings=_export_settings_payload(
+                fmt=fmt,
+                output_path=output_path,
+                source_buffer=source_buffer,
+                quality=int(body.get("quality", 92)),
+                **policy,
+            ),
+        )
+    else:
+        buf = _export_buffer_from_result(source_buffer, result["image"], body)
+        writer_metadata = _write_image_with_plugins(
+            buf,
+            output_path,
+            fmt=fmt,
+            quality=int(body.get("quality", 92)),
+            writer_plugin=_plugin_writer_id(body),
+            **policy,
+        )
+    if fmt == "sidecar":
+        writer_metadata = None
 
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     return {
@@ -893,33 +1993,715 @@ def _export_path_payload(body: dict) -> dict:
         "format": fmt,
         "size": output_path.stat().st_size,
         "elapsed_ms": elapsed_ms,
+        "writer": writer_metadata,
+        "export_settings": _export_settings_payload(
+            fmt=fmt,
+            output_path=output_path,
+            source_buffer=source_buffer,
+            quality=int(body.get("quality", 92)),
+            **policy,
+        ),
+    }
+
+
+def _resolve_output_path(output_path: str | Path, fmt: str) -> Path:
+    path = Path(output_path).resolve()
+    suffix_map = {
+        "jpeg": ".jpg",
+        "jpg": ".jpg",
+        "png": ".png",
+        "tiff16": ".tif",
+        "tif16": ".tif",
+        "exr": ".exr",
+        "hdr": ".hdr",
+        "sidecar": ".json",
+        "cube": ".cube",
+    }
+    desired = suffix_map.get(fmt.lower())
+    if desired and path.suffix.lower() != desired:
+        return path.with_suffix(desired)
+    return path
+
+
+def _load_uploaded_source_buffer(
+    data_url: str,
+    file_name: str = "",
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
+):
+    raw, _ = _data_url_bytes(data_url)
+    suffix = Path(file_name).suffix or ".png"
+    if reader_plugin:
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            tmp.write(raw)
+            tmp.flush()
+            return _read_image_with_plugins(tmp.name, reader_plugin=reader_plugin)
+    if is_raw_extension(file_name):
+        return decode_raw_image(raw, file_name, **(raw_options or {"output_bps": 16}))
+
+    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+        tmp.write(raw)
+        tmp.flush()
+        return _read_image_with_plugins(tmp.name)
+
+
+def _load_file_source_buffer(
+    file_path: str | Path,
+    reader_plugin: str | None = None,
+    raw_options: dict[str, object] | None = None,
+):
+    path = Path(file_path)
+    if reader_plugin:
+        return _read_image_with_plugins(path, reader_plugin=reader_plugin)
+    if is_raw_extension(path.name):
+        return decode_raw_image(path.read_bytes(), path.name, **(raw_options or {"output_bps": 16}))
+    return _read_image_with_plugins(path)
+
+
+def _image_buffer_to_export_rgb(image_buffer) -> np.ndarray:
+    rgb = image_buffer.data
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError("Export image must be an HxWx3 RGB array")
+    return rgb
+
+
+def _film_scan_payload(body: dict) -> dict:
+    detector_plugin = _plugin_film_scan_detector_id(body)
+    session_id = body.get("session_id")
+    if session_id:
+        entry = _get_analysis(session_id)
+        if entry is None:
+            raise ValueError("session_id is missing or expired")
+    elif body.get("image_data"):
+        entry = _prepare_uploaded_analysis(
+            body["image_data"],
+            file_name=str(body.get("file_name", "")),
+            max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
+            reader_plugin=_plugin_reader_id(body),
+            raw_options=_raw_decode_options(body),
+        )
+    else:
+        raise ValueError("film scan requires session_id or image_data")
+
+    prepared = entry.prepared
+    plugin_result = None
+    if detector_plugin:
+        plugin_result = _plugin_service().run_film_scan(prepared.image, detector_id=detector_plugin)
+        width = max(1, prepared.analysis_width)
+        height = max(1, prepared.analysis_height)
+        crop_rect = plugin_result.crop_rect or {}
+        crop_left = float(np.clip(float(crop_rect.get("left", 0.0)), 0.0, 1.0))
+        crop_top = float(np.clip(float(crop_rect.get("top", 0.0)), 0.0, 1.0))
+        crop_width = float(np.clip(float(crop_rect.get("width", 0.0)), 0.0, 1.0 - crop_left))
+        crop_height = float(np.clip(float(crop_rect.get("height", 0.0)), 0.0, 1.0 - crop_top))
+        return {
+            "session_id": entry.cache_key,
+            "crop_rect": {
+                "left": crop_left,
+                "top": crop_top,
+                "width": crop_width,
+                "height": crop_height,
+            },
+            "film_scan": {
+                "angle_deg": plugin_result.angle_deg,
+                "confidence": plugin_result.confidence,
+                "border_type": plugin_result.border_type,
+                "is_perspective": plugin_result.is_perspective,
+                "corners": plugin_result.corners,
+                "crop_x": int(round(crop_left * width)),
+                "crop_y": int(round(crop_top * height)),
+                "crop_w": int(round(crop_width * width)),
+                "crop_h": int(round(crop_height * height)),
+                "film_format": plugin_result.film_format,
+                "evaluation_score": plugin_result.metadata.get("evaluation_score"),
+                "diagnosis": plugin_result.metadata.get("diagnosis", []),
+            },
+            "processing": {
+                "analysis_width": prepared.analysis_width,
+                "analysis_height": prepared.analysis_height,
+                "preview_source": prepared.preview_source,
+                "film_scan_source": "plugin",
+                "film_scan_plugin_id": plugin_result.plugin_id,
+                "film_scan_plugin_name": plugin_result.detector_name,
+            },
+        }
+
+    result = detect_film_frame(prepared.image)
+    width = max(1, prepared.analysis_width)
+    height = max(1, prepared.analysis_height)
+    crop_rect = {
+        "left": float(result.crop_x) / width,
+        "top": float(result.crop_y) / height,
+        "width": float(result.crop_w) / width,
+        "height": float(result.crop_h) / height,
+    }
+    crop_rect["left"] = float(np.clip(crop_rect["left"], 0.0, 1.0))
+    crop_rect["top"] = float(np.clip(crop_rect["top"], 0.0, 1.0))
+    crop_rect["width"] = float(np.clip(crop_rect["width"], 0.0, 1.0 - crop_rect["left"]))
+    crop_rect["height"] = float(np.clip(crop_rect["height"], 0.0, 1.0 - crop_rect["top"]))
+
+    return {
+        "session_id": entry.cache_key,
+        "crop_rect": crop_rect,
+        "film_scan": {
+            "angle_deg": result.angle_deg,
+            "confidence": result.confidence,
+            "border_type": result.border_type,
+            "is_perspective": result.is_perspective,
+            "corners": result.corners,
+            "crop_x": result.crop_x,
+            "crop_y": result.crop_y,
+            "crop_w": result.crop_w,
+            "crop_h": result.crop_h,
+            "film_format": result.film_format.name if result.film_format else None,
+            "evaluation_score": result.evaluation.overall_score if result.evaluation else None,
+            "diagnosis": result.evaluation.diagnosis if result.evaluation else [],
+        },
+        "processing": {
+            "analysis_width": prepared.analysis_width,
+            "analysis_height": prepared.analysis_height,
+            "preview_source": prepared.preview_source,
+            "film_scan_source": "core",
+        },
+    }
+
+
+def _plugins_payload(query: dict) -> dict:
+    hook = query.get("hook", [None])[0]
+    service = _plugin_service()
+    plugins = service.list_hooks_for(hook) if hook else service.list_plugins()
+    return {
+        "plugins": [asdict(plugin) for plugin in plugins],
+        "hook": hook,
+    }
+
+
+def _ai_evaluators_payload(_query: dict) -> dict:
+    return {
+        "evaluators": _ai_evaluation_service().list_evaluators(),
+    }
+
+
+def _require_privacy_confirmation(body: dict, provider, privacy_confirmed: bool) -> None:
+    """Raise ValueError if the provider could access the network and privacy isn't confirmed."""
+    if privacy_confirmed:
+        return
+    # Mock providers never touch the network
+    if provider is not None and isinstance(provider, MockProvider):
+        return
+    provider_name = str(body.get("provider", "")).strip().lower()
+    if provider_name in ("mock", ""):
+        return
+    raise ValueError(
+        "privacy_confirmed must be true when using a network provider. "
+        "Set privacy_confirmed: true in the request body to acknowledge "
+        "that image data and analysis may be sent to an external service."
+    )
+
+
+def _retry_evaluation(
+    call_fn,
+    retry_count: int,
+    delay_ms: int,
+    request_log: dict,
+) -> object:
+    """Call an evaluation function with retry on recoverable errors.
+
+    Uses exponential backoff: delay * 2^attempt between retries.
+    Does not retry ValueError (privacy gate) or KeyboardInterrupt.
+    """
+    last_error: Exception | None = None
+    max_attempts = retry_count + 1  # total attempts = initial + retries
+    for attempt in range(max_attempts):
+        try:
+            if attempt > 0:
+                import time as _time
+                wait = delay_ms * (2 ** (attempt - 1)) / 1000.0
+                _time.sleep(wait)
+                request_log["retry_attempt"] = attempt
+            return call_fn()
+        except (ValueError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            last_error = exc
+            request_log[f"retry_{attempt}_error"] = str(exc)
+    raise RuntimeError(
+        f"Evaluation failed after {max_attempts} attempt(s): {last_error}"
+    )
+
+
+
+def _ai_evaluate_payload(body: dict) -> dict:
+    if body.get("async"):
+        return _start_ai_evaluation_job(body)
+    return _ai_evaluate_payload_sync(body, record_session=bool(body.get("_record_session", True)))
+
+
+def _ai_evaluate_payload_sync(body: dict, *, record_session: bool) -> dict:
+    evaluator_name = str(body.get("evaluator_name", "__default__"))
+    timeout_ms = max(0, int(body.get("timeout_ms", 0) or 0))
+    timeout_seconds = timeout_ms / 1000.0 if timeout_ms > 0 else None
+    allow_failure = bool(body.get("allow_failure", False))
+    retry_count = max(0, int(body.get("retry_count", 0) or 0))
+    retry_delay_ms = max(100, int(body.get("retry_delay_ms", 500) or 500))
+    privacy_confirmed = bool(body.get("privacy_confirmed", False))
+    mode = CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value))
+    params = CalibrationParams(
+        mode=mode,
+        strength=float(body.get("strength", 0.8)),
+        highlight_pct=float(body.get("highlight_pct", 55.0)),
+        sat_pct=float(body.get("sat_pct", 25.0)),
+    )
+    context = str(body.get("context", ""))
+
+    session_id = body.get("session_id")
+    if session_id:
+        entry = _get_analysis(session_id)
+        if entry is None:
+            raise ValueError("session_id is missing or expired")
+    elif body.get("image_data"):
+        entry = _prepare_uploaded_analysis(
+            body["image_data"],
+            file_name=str(body.get("file_name", "")),
+            max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
+            raw_options=_raw_decode_options(body),
+        )
+    else:
+        raise ValueError("AI evaluation requires session_id or image_data")
+
+    provider = _provider_from_body(body)
+    # Privacy gate: require explicit confirmation when using a network provider
+    _require_privacy_confirmation(body, provider, privacy_confirmed)
+
+    start = time.perf_counter()
+    request_log = {
+        "evaluator_name": evaluator_name,
+        "timeout_ms": timeout_ms or None,
+        "retry_count": retry_count,
+        "retry_delay_ms": retry_delay_ms,
+        "privacy_confirmed": privacy_confirmed,
+        "used_session": bool(session_id),
+        "context_length": len(context),
+        "provider": _provider_summary(provider) if provider is not None else None,
+        "status": "started",
+    }
+    try:
+        result = calibrate_image_from_analysis(
+            entry.prepared.image,
+            params,
+            entry.input_report,
+            entry.zones,
+            color_space=entry.prepared.color_space,
+            data_range=entry.prepared.data_range,
+        )
+        eval_input = EvalInput(
+            original=EvalImageRef(
+                key=f"{entry.cache_key}:original",
+                width=entry.prepared.analysis_width,
+                height=entry.prepared.analysis_height,
+                color_space=entry.prepared.color_space,
+                source="original",
+            ),
+            calibrated=EvalImageRef(
+                key=f"{entry.cache_key}:calibrated",
+                width=entry.prepared.analysis_width,
+                height=entry.prepared.analysis_height,
+                color_space=entry.prepared.color_space,
+                source="calibrated",
+            ),
+            analysis={
+                "input": _report_payload(entry.input_report),
+                "output": _report_payload(result.post_report),
+                "zones": entry.zones,
+            },
+            calibration_params={
+                "mode": params.mode.value,
+                "strength": params.strength,
+                "highlight_pct": params.highlight_pct,
+                "sat_pct": params.sat_pct,
+            },
+            context=context,
+        )
+        def _call_provider() -> object:
+            if provider is not None:
+                return _ai_evaluation_service().evaluate_with_provider(
+                    provider,
+                    eval_input,
+                    [entry.prepared.image, result.image],
+                    timeout_seconds=timeout_seconds,
+                )
+            return _ai_evaluation_service().evaluate(
+                evaluator_name,
+                eval_input,
+                [entry.prepared.image, result.image],
+                timeout_seconds=timeout_seconds,
+            )
+        evaluation = _retry_evaluation(_call_provider, retry_count, retry_delay_ms, request_log)
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        request_log.update(
+            {
+                "status": "error",
+                "elapsed_ms": elapsed_ms,
+                "error": str(exc),
+            }
+        )
+        if record_session:
+            _record_ai_request(entry, request_log)
+        if not allow_failure:
+            raise
+        return {
+            "ok": False,
+            "session_id": entry.cache_key,
+            "evaluator_name": evaluator_name,
+            "error": str(exc),
+            "request": request_log,
+        }
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    payload = {
+        "ok": True,
+        "session_id": entry.cache_key,
+        "evaluator_name": evaluator_name,
+        "evaluation": asdict(evaluation),
+        "elapsed_ms": elapsed_ms,
+        "request": {
+            **request_log,
+            "status": "ok",
+            "elapsed_ms": elapsed_ms,
+            "provider": _provider_summary(provider) if provider is not None else None,
+        },
+    }
+    if record_session:
+        _record_ai_evaluation(entry, evaluator_name, payload["evaluation"])
+        _record_ai_request(entry, payload["request"])
+    return payload
+
+
+def _plugin_analyze_payload(body: dict) -> dict:
+    session_id = body.get("session_id")
+    if session_id:
+        entry = _get_analysis(session_id)
+        if entry is None:
+            raise ValueError("session_id is missing or expired")
+    elif body.get("image_data"):
+        entry = _prepare_uploaded_analysis(
+            body["image_data"],
+            file_name=str(body.get("file_name", "")),
+            max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
+            raw_options=_raw_decode_options(body),
+        )
+    else:
+        raise ValueError("Plugin analysis requires session_id or image_data")
+
+    analyzer_ids = body.get("analyzer_ids")
+    if analyzer_ids is not None and not isinstance(analyzer_ids, list):
+        raise ValueError("analyzer_ids must be a list of plugin ids")
+
+    results = _plugin_service().run_analyzers(
+        entry.prepared.image,
+        analyzer_ids=analyzer_ids,
+        analysis={
+            "input": _report_payload(entry.input_report),
+            "zones": entry.zones,
+        },
+        session_id=entry.cache_key,
+    )
+    return {
+        "session_id": entry.cache_key,
+        "results": [asdict(result) for result in results],
     }
 
 
 # ---------------------------------------------------------------------------
-# Batch progress tracking
+# Async job tracking
 # ---------------------------------------------------------------------------
 
 _BATCH_STATUS: dict[str, dict] = {}
 _BATCH_STATUS_LOCK = Lock()
+_JOB_CANCEL_EVENTS: dict[str, Event] = {}
+
+
+def _new_job_id(prefix: str) -> str:
+    return f"{prefix}:{uuid4().hex[:12]}"
+
+
+def _batch_or_job_id_from_query(query: dict) -> str:
+    return query.get("job_id", query.get("batch_id", [""]))[0]
+
+
+def _batch_or_job_id_from_body(body: dict) -> str:
+    return str(body.get("job_id") or body.get("batch_id") or "")
+
+
+def _job_status_snapshot(job_id: str) -> dict | None:
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(job_id)
+        if status is None:
+            return None
+        return deepcopy(_json_safe(status))
+
+
+def _job_create(kind: str, *, total_items: int, workers: int = 1, metadata: dict | None = None) -> dict:
+    job_id = _new_job_id(kind)
+    now = time.time()
+    status = {
+        "job_id": job_id,
+        "batch_id": job_id,
+        "kind": kind,
+        "state": "queued",
+        "workers": int(workers),
+        "total_items": int(total_items),
+        "completed_items": 0,
+        "failed_items": 0,
+        "cancel_requested": False,
+        "cancelled": False,
+        "done": False,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "results": [],
+        "error": None,
+        "metadata": deepcopy(metadata or {}),
+    }
+    with _BATCH_STATUS_LOCK:
+        _BATCH_STATUS[job_id] = status
+        _JOB_CANCEL_EVENTS[job_id] = Event()
+    return deepcopy(status)
+
+
+def _job_cancel_event(job_id: str) -> Event | None:
+    with _BATCH_STATUS_LOCK:
+        return _JOB_CANCEL_EVENTS.get(job_id)
+
+
+def _job_mark_running(job_id: str) -> None:
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(job_id)
+        if status is None:
+            return
+        status["state"] = "running"
+        status["started_at"] = status["started_at"] or time.time()
+        status["updated_at"] = time.time()
+
+
+def _job_append_result(job_id: str, result: dict, *, failed: bool = False) -> None:
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(job_id)
+        if status is None:
+            return
+        status["results"].append(deepcopy(_json_safe(result)))
+        status["completed_items"] += 1
+        if failed:
+            status["failed_items"] += 1
+        status["updated_at"] = time.time()
+
+
+def _job_request_cancel(job_id: str) -> bool:
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(job_id)
+        event = _JOB_CANCEL_EVENTS.get(job_id)
+        if status is None or event is None:
+            return False
+        status["cancel_requested"] = True
+        if status["state"] == "queued":
+            status["state"] = "cancelling"
+        status["updated_at"] = time.time()
+        event.set()
+        return True
+
+
+def _job_finish(job_id: str, *, state: str, error: str | None = None) -> None:
+    with _BATCH_STATUS_LOCK:
+        status = _BATCH_STATUS.get(job_id)
+        if status is None:
+            return
+        status["state"] = state
+        status["cancelled"] = state == "cancelled"
+        status["done"] = True
+        status["error"] = error
+        status["finished_at"] = time.time()
+        status["updated_at"] = status["finished_at"]
+
+
+def _run_async_batch_job(
+    job_id: str,
+    items: list,
+    *,
+    workers: int,
+    run_one,
+    cancel_result,
+) -> None:
+    cancel_event = _job_cancel_event(job_id)
+    if cancel_event is None:
+        return
+    _job_mark_running(job_id)
+    pending: dict = {}
+    next_index = 0
+    completed = 0
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            while next_index < len(items) and len(pending) < workers and not cancel_event.is_set():
+                future = pool.submit(run_one, next_index, items[next_index], cancel_event)
+                pending[future] = next_index
+                next_index += 1
+
+            while pending:
+                for future in as_completed(list(pending.keys())):
+                    index = pending.pop(future)
+                    try:
+                        result = future.result()
+                        failed = bool(result.get("error"))
+                    except Exception as exc:
+                        result = cancel_result(index, items[index], str(exc))
+                        failed = True
+                    _job_append_result(job_id, result, failed=failed)
+                    completed += 1
+                    if cancel_event.is_set():
+                        break
+                    while next_index < len(items) and len(pending) < workers and not cancel_event.is_set():
+                        future2 = pool.submit(run_one, next_index, items[next_index], cancel_event)
+                        pending[future2] = next_index
+                        next_index += 1
+                if cancel_event.is_set():
+                    break
+
+        if cancel_event.is_set():
+            for index in range(next_index, len(items)):
+                _job_append_result(job_id, cancel_result(index, items[index], "cancelled"))
+                completed += 1
+            _job_finish(job_id, state="cancelled")
+            return
+        _job_finish(job_id, state="completed")
+    except Exception as exc:
+        _job_finish(job_id, state="failed", error=str(exc))
+
+
+def _start_paths_batch_job(body: dict) -> dict:
+    paths = [str(path) for path in body.get("paths", [])]
+    if not paths:
+        raise ValueError("paths must contain at least one image path")
+    max_side = int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE))
+    workers = max(1, min(int(body.get("workers", BATCH_WORKERS)), BATCH_WORKERS, len(paths)))
+    job = _job_create("calibrate-paths", total_items=len(paths), workers=workers)
+
+    def run_one(index: int, path: str, cancel_event: Event) -> dict:
+        if cancel_event.is_set():
+            return {"path": path, "cancelled": True}
+        start = time.perf_counter()
+        entry = _prepare_file_analysis(
+            path,
+            max_side=max_side,
+            reader_plugin=_plugin_reader_id(body),
+        )
+        if cancel_event.is_set():
+            return {"path": path, "cancelled": True}
+        return _calibrate_entry_payload(entry, body | {"path": path}, start)
+
+    def cancel_result(index: int, path: str, error: str) -> dict:
+        return {"path": path, "cancelled": True, "error": error}
+
+    _JOB_EXECUTOR.submit(
+        _run_async_batch_job,
+        job["job_id"],
+        paths,
+        workers=workers,
+        run_one=run_one,
+        cancel_result=cancel_result,
+    )
+    return _job_status_snapshot(job["job_id"]) or {"error": "unknown job_id"}
+
+
+def _start_upload_batch_job(body: dict) -> dict:
+    items = list(body.get("items", []))
+    if not items:
+        raise ValueError("items must contain at least one uploaded image")
+    max_side = int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE))
+    workers = max(1, min(int(body.get("workers", BATCH_WORKERS)), BATCH_WORKERS, len(items)))
+    job = _job_create("calibrate-batch", total_items=len(items), workers=workers)
+
+    def run_one(index: int, item: dict, cancel_event: Event) -> dict:
+        file_name = str(item.get("file_name", f"upload-{index}"))
+        if cancel_event.is_set():
+            return {"file_name": file_name, "cancelled": True}
+        start = time.perf_counter()
+        entry = _prepare_uploaded_analysis(
+            item["image_data"],
+            file_name=file_name,
+            max_side=max_side,
+            reader_plugin=_plugin_reader_id(body | item),
+        )
+        if cancel_event.is_set():
+            return {"file_name": file_name, "cancelled": True}
+        request_body = body | item
+        request_body.pop("items", None)
+        return _calibrate_entry_payload(entry, request_body, start)
+
+    def cancel_result(index: int, item: dict, error: str) -> dict:
+        return {
+            "file_name": str(item.get("file_name", f"upload-{index}")),
+            "cancelled": True,
+            "error": error,
+        }
+
+    _JOB_EXECUTOR.submit(
+        _run_async_batch_job,
+        job["job_id"],
+        items,
+        workers=workers,
+        run_one=run_one,
+        cancel_result=cancel_result,
+    )
+    return _job_status_snapshot(job["job_id"]) or {"error": "unknown job_id"}
+
+
+def _start_ai_evaluation_job(body: dict) -> dict:
+    job = _job_create("ai-evaluate", total_items=1, workers=1)
+
+    def runner() -> None:
+        cancel_event = _job_cancel_event(job["job_id"])
+        if cancel_event is None:
+            return
+        _job_mark_running(job["job_id"])
+        try:
+            if cancel_event.is_set():
+                _job_append_result(job["job_id"], {"cancelled": True})
+                _job_finish(job["job_id"], state="cancelled")
+                return
+            payload = _ai_evaluate_payload_sync(body, record_session=False)
+            if cancel_event.is_set():
+                _job_append_result(job["job_id"], {"cancelled": True})
+                _job_finish(job["job_id"], state="cancelled")
+                return
+            entry = _get_analysis(payload["session_id"])
+            if entry is not None:
+                _record_ai_evaluation(entry, payload["evaluator_name"], payload["evaluation"])
+                _record_ai_request(entry, payload["request"])
+            _job_append_result(job["job_id"], payload, failed=not payload.get("ok", True))
+            _job_finish(job["job_id"], state="completed" if payload.get("ok", True) else "failed", error=payload.get("error"))
+        except Exception as exc:
+            if cancel_event.is_set():
+                _job_append_result(job["job_id"], {"cancelled": True, "error": str(exc)})
+                _job_finish(job["job_id"], state="cancelled")
+            else:
+                _job_finish(job["job_id"], state="failed", error=str(exc))
+
+    _JOB_EXECUTOR.submit(runner)
+    return _job_status_snapshot(job["job_id"]) or {"error": "unknown job_id"}
 
 
 def _batch_status_payload(query: dict) -> dict:
-    batch_id = query.get("batch_id", [""])[0]
-    with _BATCH_STATUS_LOCK:
-        status = _BATCH_STATUS.get(batch_id)
-        if status is None:
-            return {"error": "unknown batch_id"}
-        return dict(status)
+    batch_id = _batch_or_job_id_from_query(query)
+    status = _job_status_snapshot(batch_id)
+    if status is None:
+        return {"error": "unknown batch_id"}
+    return status
 
 
 def _batch_cancel_payload(body: dict) -> dict:
-    batch_id = body["batch_id"]
-    with _BATCH_STATUS_LOCK:
-        status = _BATCH_STATUS.get(batch_id)
-        if status:
-            status["cancelled"] = True
-    return {"ok": True, "batch_id": batch_id}
+    batch_id = _batch_or_job_id_from_body(body)
+    cancelled = _job_request_cancel(batch_id)
+    return {"ok": True, "batch_id": batch_id, "job_id": batch_id, "cancel_requested": cancelled}
 
 
 # ---------------------------------------------------------------------------
@@ -934,8 +2716,23 @@ def _handle_analyze(body: dict) -> dict:
 
 def _get_capabilities_route(query: dict) -> dict:
     if "backend" in query:
-        return {"accelerator": _set_accelerator_payload(query["backend"][0])}
-    return {"accelerator": _accelerator_payload()}
+        accelerator = _set_accelerator_payload(query["backend"][0])
+    else:
+        accelerator = _accelerator_payload()
+    return {
+        "accelerator": accelerator,
+        "interfaces": {
+            "http": True,
+            "fastapi": True,
+            "ipc_stdio": True,
+        },
+        "persistence": {
+            "preview_cache_dir": str(PREVIEW_CACHE_DIR),
+            "session_store_dir": str(SESSION_STORE_DIR),
+            "preview_cache_exists": PREVIEW_CACHE_DIR.exists(),
+            "session_store_exists": SESSION_STORE_DIR.exists(),
+        },
+    }
 
 
 def _get_benchmark_route(query: dict) -> dict:
@@ -954,26 +2751,63 @@ def _get_benchmark_route(query: dict) -> dict:
 
 _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/analyze": _handle_analyze,
+    "/api/ai-evaluate": _ai_evaluate_payload,
     "/api/calibrate": _calibrate_payload,
     "/api/calibrate-session": _calibrate_session_payload,
+    "/api/preview": _preview_payload,
     "/api/calibrate-batch": _calibrate_batch_payload,
     "/api/calibrate-path": _calibrate_path_payload,
     "/api/calibrate-paths": _calibrate_paths_payload,
+    "/api/film-scan": _film_scan_payload,
     "/api/export": _export_payload,
     "/api/export-path": _export_path_payload,
     "/api/cache/clear": lambda _body: _cache_clear_payload(),
+    "/api/cache/cleanup": _preview_cache_cleanup_payload,
+    "/api/plugin-analyze": _plugin_analyze_payload,
     "/api/sidecar/save": _sidecar_save_payload,
+    "/api/session/save": _session_save_payload,
+    "/api/session/cleanup": _session_cleanup_payload,
+    "/api/session/delete": _session_delete_payload,
+    "/api/document": _document_payload,
+    "/api/document/render": _document_render_payload,
     "/api/batch/cancel": _batch_cancel_payload,
+    "/api/workspace/sync": _workspace_sync_payload,
+    "/api/workspace/clear": lambda _body: _workspace_clear_payload(),
 }
 
 _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
+    "/api/ai-evaluators": _ai_evaluators_payload,
     "/api/health": lambda _query: {"ok": True},
     "/api/capabilities": _get_capabilities_route,
+    "/api/plugins": _plugins_payload,
     "/api/accelerator-benchmark": _get_benchmark_route,
     "/api/cache/stats": lambda _query: _cache_stats_payload(),
     "/api/sidecar/load": lambda query: _sidecar_load_payload({"path": query["path"][0]}),
+    "/api/session/load": lambda query: _session_load_payload({"path": query["path"][0], "new_session_id": query.get("new_session_id", [None])[0]}),
+    "/api/session/list": _session_list_payload,
     "/api/batch/status": _batch_status_payload,
+    "/api/workspace/stats": lambda _query: _workspace_stats_payload(),
 }
+
+
+def dispatch_backend_request(method: str, path: str, payload: dict | None = None) -> dict:
+    normalized_method = method.upper()
+    body = payload or {}
+    if normalized_method == "POST":
+        handler = _POST_ROUTES.get(path)
+        if handler is None:
+            raise KeyError(f"Unknown POST route: {path}")
+        return handler(body)
+    if normalized_method == "GET":
+        handler = _GET_ROUTES.get(path)
+        if handler is None:
+            raise KeyError(f"Unknown GET route: {path}")
+        query = {
+            key: value if isinstance(value, list) else [value]
+            for key, value in body.items()
+        }
+        return handler(query)
+    raise ValueError(f"Unsupported method: {method}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1006,37 +2840,56 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length).decode("utf-8"))
-            handler = _POST_ROUTES.get(self.path)
-            if handler is None:
-                self.send_error(404)
-                return
-            self._send_json(handler(body))
+            self._send_json(dispatch_backend_request("POST", self.path, body))
+        except KeyError:
+            self.send_error(404)
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        handler = _GET_ROUTES.get(parsed.path)
-        if handler is not None:
+        if parsed.path in _GET_ROUTES:
             query = parse_qs(parsed.query)
-            self._send_json(handler(query))
-            return
+            try:
+                self._send_json(dispatch_backend_request("GET", parsed.path, query))
+                return
+            except KeyError:
+                self.send_error(404)
+                return
         rel = "index.html" if parsed.path in {"/", ""} else parsed.path.lstrip("/")
         candidate = (WEB_ROOT / rel).resolve()
         if not str(candidate).startswith(str(WEB_ROOT.resolve())):
             self.send_error(403)
             return
+        if not candidate.exists() or not candidate.is_file():
+            candidate = (WEB_ROOT / "index.html").resolve()
         self._send_file(candidate)
 
 
 def run(host: str = "127.0.0.1", port: int = 8765, accelerator: str = "auto") -> None:
     _set_accelerator_payload(accelerator)
+    _startup_workspace_sync()
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"Photo Calibrator UI: http://{host}:{port} ({_accelerator_payload()['active_backend']})")
     httpd.serve_forever()
 
 
+def _startup_workspace_sync() -> None:
+    """Sync file inventory on startup to invalidate stale cache entries."""
+    try:
+        db = get_workspace_db(ROOT)
+        stats = db.stats()
+        print(
+            f"Workspace DB: {stats['preview_count']} previews, "
+            f"{stats['session_count']} sessions, "
+            f"{stats['inventory_count']} tracked files"
+        )
+    except Exception as exc:
+        print(f"Workspace DB init warning: {exc}")
+
+
 def main() -> None:
+    global WEB_ROOT
     parser = argparse.ArgumentParser(description="Run the lightweight Photo Calibrator web UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -1045,7 +2898,12 @@ def main() -> None:
         default="auto",
         choices=["auto", "cpu-opencv", "opencl", "opencl-umat", "torch", "torch-cuda", "torch-mps", "metal", "metal-mps"],
     )
+    parser.add_argument("--web-root", default=None, help="Static file root directory (default: frontend/dist/ if built, else web/)")
     args = parser.parse_args()
+    if args.web_root:
+        WEB_ROOT = (ROOT / args.web_root).resolve()
+        if not WEB_ROOT.is_dir():
+            sys.exit(f"web-root directory not found: {WEB_ROOT}")
     run(args.host, args.port, args.accelerator)
 
 
