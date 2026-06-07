@@ -1,0 +1,34 @@
+{
+  "name": "photo-calibrator-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:web": "vite",
+    "dev:desktop-mock": "VITE_RUNTIME_MODE=desktop-shell VITE_SHELL_NAME='Photo Calibrator Desktop' VITE_API_BASE_URL=http://127.0.0.1:8766 VITE_SUPPORTS_NATIVE_DIALOGS=true VITE_SUPPORTS_SHELL_BRIDGE=true VITE_ENABLE_MOCK_SHELL_BRIDGE=true vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "preview:desktop-mock": "VITE_RUNTIME_MODE=desktop-shell VITE_SHELL_NAME='Photo Calibrator Desktop' VITE_API_BASE_URL=http://127.0.0.1:8766 VITE_SUPPORTS_NATIVE_DIALOGS=true VITE_SUPPORTS_SHELL_BRIDGE=true VITE_ENABLE_MOCK_SHELL_BRIDGE=true vite preview",
+    "typecheck": "tsc --noEmit",
+    "electron": "electron electron/main.mjs",
+    "electron:dev": "PHOTO_CALIBRATOR_RENDERER_MODE=dev PHOTO_CALIBRATOR_RENDERER_URL=http://127.0.0.1:5173 PHOTO_CALIBRATOR_API_BASE_URL=http://127.0.0.1:8766 electron electron/main.mjs",
+    "electron:prod": "PHOTO_CALIBRATOR_API_BASE_URL=http://127.0.0.1:8766 electron electron/main.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-resizable-panels": "^2.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "electron": "^35.7.5",
+    "playwright": "^1.60.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "main": "electron/main.mjs"
+}

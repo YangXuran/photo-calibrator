@@ -120,6 +120,7 @@ export type CalibrationPayload = {
       pixels: number;
       total: number;
     };
+    lut_analysis?: LutAnalysisPayload;
   };
   processing?: {
     analysis_width?: number;
