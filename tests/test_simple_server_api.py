@@ -1860,3 +1860,67 @@ def test_analyze_missing_data_url_key() -> None:
 
     with pytest.raises(KeyError):
         _handle_analyze({})
+
+
+# ── _calibration_params_from_body tests ───────────────────────────────
+
+def test_params_from_body_extracts_curve_fields() -> None:
+    from photo_calibrator.backend.simple_server import _calibration_params_from_body
+    from photo_calibrator.core.calibration import CalibrationMode
+
+    body = {
+        "mode": "rgb-curves",
+        "strength": 0.5,
+        "r_curve": [[0, 0], [128, 140], [255, 255]],
+        "g_curve": [[0, 0], [64, 64], [128, 128], [192, 192], [255, 255]],
+        "b_curve": [[0, 0], [128, 116], [255, 255]],
+    }
+    params = _calibration_params_from_body(body)
+    assert params.mode == CalibrationMode.RGB_CURVES
+    assert params.r_curve == [[0.0, 0.0], [128.0, 140.0], [255.0, 255.0]]
+    assert params.g_curve == [[0.0, 0.0], [64.0, 64.0], [128.0, 128.0], [192.0, 192.0], [255.0, 255.0]]
+    assert params.b_curve == [[0.0, 0.0], [128.0, 116.0], [255.0, 255.0]]
+    assert params.strength == 0.5
+
+
+def test_params_from_body_empty_curves_are_none() -> None:
+    from photo_calibrator.backend.simple_server import _calibration_params_from_body
+
+    params = _calibration_params_from_body({"mode": "global"})
+    assert params.r_curve is None
+    assert params.g_curve is None
+    assert params.b_curve is None
+
+
+def test_params_from_body_extracts_all_fields() -> None:
+    from photo_calibrator.backend.simple_server import _calibration_params_from_body
+    from photo_calibrator.core.calibration import CalibrationMode
+
+    body = {
+        "mode": "matrix",
+        "a_shift": 2.5,
+        "b_shift": -1.5,
+        "strength": 0.9,
+        "curve_low_pct": 2.0,
+        "curve_high_pct": 98.0,
+        "gamma": [1.1, 1.0, 0.9],
+        "matrix": [[1.0, 1, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        "lut_size": 33,
+    }
+    params = _calibration_params_from_body(body)
+    assert params.a_shift == 2.5
+    assert params.b_shift == -1.5
+    assert params.gamma == (1.1, 1.0, 0.9)
+    assert params.lut_size == 33
+    assert params.curve_low_pct == 2.0
+    assert params.curve_high_pct == 98.0
+
+
+def test_params_from_body_invalid_curve_returns_none() -> None:
+    from photo_calibrator.backend.simple_server import _calibration_params_from_body
+
+    params = _calibration_params_from_body({"mode": "rgb-curves", "r_curve": "bad"})
+    assert params.r_curve is None
+
+    params2 = _calibration_params_from_body({"mode": "rgb-curves", "r_curve": [[1, 2, 3]]})
+    assert params2.r_curve is None

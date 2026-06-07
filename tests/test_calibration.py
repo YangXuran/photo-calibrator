@@ -14,6 +14,7 @@ from photo_calibrator.core.calibration import (
     calibrate_rgb_curves,
     calibrate_selective,
     calibrate_tone_zone,
+    curve_interpolate,
     estimate_color_matrix,
     make_comparison,
     preserve_luminance,
@@ -232,3 +233,111 @@ def test_new_calibration_modes_are_available_through_calibrate_image() -> None:
     ]:
         result = calibrate_image(img, CalibrationParams(mode=mode, strength=0.6, lut_size=9))
         assert result.image.shape == img.shape
+
+
+# ── curve_interpolate tests ──────────────────────────────────────────
+
+def test_curve_interpolate_identity() -> None:
+    """Identity control points produce identity LUT."""
+    cp = [[0, 0], [64, 64], [128, 128], [192, 192], [255, 255]]
+    lut = curve_interpolate(cp)
+    assert len(lut) == 256
+    assert lut[0] == 0
+    assert lut[128] == 128
+    assert lut[255] == 255
+
+
+def test_curve_interpolate_boost_midtones() -> None:
+    """Boosted midtones lift the middle of the LUT."""
+    cp = [[0, 0], [64, 80], [128, 128], [192, 176], [255, 255]]
+    lut = curve_interpolate(cp)
+    assert lut[64] > 64, f"Expected boosted shadow at 64, got {lut[64]}"
+    assert lut[192] < 192, f"Expected compressed highlight at 192, got {lut[192]}"
+    assert lut[0] == 0
+    assert lut[255] == 255
+
+
+def test_curve_interpolate_monotonic() -> None:
+    """LUT values should be non-decreasing (monotonic)."""
+    cp = [[0, 10], [50, 40], [100, 180], [200, 140], [255, 240]]
+    lut = curve_interpolate(cp)
+    diffs = np.diff(lut)
+    assert np.all(diffs >= 0), f"LUT is not monotonic: min diff = {diffs.min()}"
+
+
+def test_curve_interpolate_minimum_points() -> None:
+    """Minimum 2 control points should work."""
+    cp = [[0, 0], [255, 255]]
+    lut = curve_interpolate(cp)
+    assert len(lut) == 256
+    assert lut[0] == 0 and lut[255] == 255
+
+
+def test_curve_interpolate_rejects_single_point() -> None:
+    """Less than 2 control points raises ValueError."""
+    import pytest
+    with pytest.raises(ValueError):
+        curve_interpolate([[128, 128]])
+
+
+def test_curve_interpolate_sorts_by_x() -> None:
+    """Unsorted control points should be sorted by x."""
+    cp = [[255, 255], [0, 0], [128, 128]]
+    lut = curve_interpolate(cp)
+    assert lut[0] == 0 and lut[255] == 255
+
+
+def test_calibration_params_with_curves() -> None:
+    """CalibrationParams accepts and stores curve fields."""
+    r = [[0, 0], [128, 140], [255, 255]]
+    g = [[0, 0], [64, 64], [128, 128], [192, 192], [255, 255]]
+    b = [[0, 0], [128, 116], [255, 255]]
+    params = CalibrationParams(
+        mode=CalibrationMode.RGB_CURVES,
+        r_curve=r,
+        g_curve=g,
+        b_curve=b,
+        strength=0.7,
+    )
+    assert params.r_curve == r
+    assert params.g_curve == g
+    assert params.b_curve == b
+    assert params.strength == 0.7
+
+
+def test_calibration_params_default_curves_none() -> None:
+    """Default CalibrationParams has None for curve fields."""
+    params = CalibrationParams(mode=CalibrationMode.GLOBAL)
+    assert params.r_curve is None
+    assert params.g_curve is None
+    assert params.b_curve is None
+
+
+def test_calibrate_rgb_curves_with_explicit_points() -> None:
+    """RGB curves with explicit control points should apply correctly."""
+    img = gradient_image()
+    r = [[0, 0], [128, 140], [255, 255]]
+    g = [[0, 0], [128, 128], [255, 255]]
+    b = [[0, 0], [128, 116], [255, 255]]
+    result = calibrate_rgb_curves(
+        img,
+        strength=1.0,
+        r_curve=r,
+        g_curve=g,
+        b_curve=b,
+    )
+    assert result.shape == img.shape
+    assert result.dtype == img.dtype
+
+
+def test_calibrate_rgb_curves_auto_fallback() -> None:
+    """Without explicit curves, should fall back to auto S-curve."""
+    img = gradient_image()
+    result_auto = calibrate_rgb_curves(img, strength=0.5)
+    result_manual = calibrate_rgb_curves(
+        img,
+        strength=0.5,
+        r_curve=[[0, 0], [255, 255]],
+    )
+    assert result_auto.shape == img.shape
+    assert result_manual.shape == img.shape
