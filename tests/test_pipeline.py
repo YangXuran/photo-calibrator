@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from photo_calibrator.pipeline.document import PipelineDocument
-from photo_calibrator.pipeline.operations import IdentityOp, LabShiftOp
+from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp
 
 
 def test_identity_op_returns_same_image() -> None:
@@ -77,3 +77,12 @@ def test_pipeline_document_clear() -> None:
     doc.clear()
     assert doc.op_count == 0
     assert doc.is_empty
+
+
+def test_calibration_op_replays_current_backend_mode() -> None:
+    img = np.zeros((24, 24, 3), dtype=np.uint8)
+    img[:, :] = (160, 120, 90)
+    op = CalibrationOp(params={"mode": "rgb-curves", "strength": 0.4})
+    result = op.apply(img)
+    assert result.shape == img.shape
+    assert result.dtype == np.uint8

@@ -65,6 +65,53 @@ def test_all_phase1_calibration_modes_return_same_shape() -> None:
         assert result.image.dtype == np.uint8
 
 
+def test_calibrate_image_preserves_uint16_precision() -> None:
+    img_u8 = gradient_image()
+    img = (img_u8.astype(np.uint16) * 257).astype(np.uint16)
+    result = calibrate_image(img, CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8))
+    assert result.image.shape == img.shape
+    assert result.image.dtype == np.uint16
+
+
+def test_calibrate_image_preserves_float32_precision() -> None:
+    img = gradient_image().astype(np.float32) / 255.0
+    result = calibrate_image(img, CalibrationParams(mode=CalibrationMode.RGB_CURVES, strength=0.8))
+    assert result.image.shape == img.shape
+    assert result.image.dtype == np.float32
+    assert float(result.image.max()) <= 1.0 + 1e-6
+
+
+def test_calibrate_image_uses_scene_linear_working_branch() -> None:
+    img = gradient_image().astype(np.float32) / 255.0
+    linear_img = np.power(img, 2.2).astype(np.float32)
+
+    result = calibrate_image(
+        linear_img,
+        CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8),
+        color_space="Linear",
+        data_range=(0.0, 1.0),
+    )
+
+    assert result.image.dtype == np.float32
+    assert str(result.metadata["working_branch"]).startswith("scene-linear")
+    assert result.metadata["working_color_space"] == "Linear"
+
+
+def test_calibrate_image_uses_hdr_branch_for_linear_values_above_one() -> None:
+    img = gradient_image().astype(np.float32) / 255.0
+    linear_hdr = np.power(img, 2.2).astype(np.float32) * 1.8
+
+    result = calibrate_image(
+        linear_hdr,
+        CalibrationParams(mode=CalibrationMode.GLOBAL, strength=0.8),
+        color_space="Linear",
+        data_range=(0.0, 1.8),
+    )
+
+    assert result.image.dtype == np.float32
+    assert "hdr" in str(result.metadata["working_branch"])
+
+
 def test_make_comparison_places_images_side_by_side() -> None:
     img = lab_patch()
     result = calibrate_image(img, CalibrationParams())
