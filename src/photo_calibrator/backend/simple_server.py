@@ -26,6 +26,7 @@ from photo_calibrator.core.accelerator import ACCELERATOR, accelerator_payload, 
 from photo_calibrator.core.calibration import (
     CalibrationMode,
     CalibrationParams,
+    apply_3d_lut,
     calibrate_image,
     calibrate_image_from_analysis,
 )
@@ -1178,6 +1179,68 @@ def _pci_payload(report) -> dict:
     }
 
 
+def _lut_analysis_payload(params: CalibrationParams) -> dict | None:
+    if params.mode != CalibrationMode.LUT3D:
+        return None
+    try:
+        hue_count = 24
+        sat_levels = 3
+        total = hue_count * sat_levels
+        rgb = np.zeros((total, 3), dtype=np.float32)
+        for i in range(hue_count):
+            hue = i * 360.0 / hue_count
+            for j in range(sat_levels):
+                sat = 0.35 + j * 0.3
+                rgb[i * sat_levels + j] = _hsv_to_rgb_float(hue, sat, 0.8)
+        rgb_u8 = np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+        rgb_in = rgb_u8.reshape(1, total, 3)
+        corrected = apply_3d_lut(rgb_in, strength=params.strength, size=params.lut_size)
+        corrected = np.clip(corrected, 0, 255).astype(np.uint8)
+        lab_before = rgb_to_lab_float(rgb_in)
+        lab_after = rgb_to_lab_float(corrected)
+        vectors = []
+        for i in range(total):
+            a_before = float(lab_before[0, i, 1])
+            b_before = float(lab_before[0, i, 2])
+            a_after = float(lab_after[0, i, 1])
+            b_after = float(lab_after[0, i, 2])
+            hue_idx = i // sat_levels
+            sat_idx = i % sat_levels
+            vectors.append({
+                "hue_angle": round(hue_idx * 360.0 / hue_count, 1),
+                "saturation": round(0.35 + sat_idx * 0.3, 2),
+                "a_before": round(a_before, 2),
+                "b_before": round(b_before, 2),
+                "a_after": round(a_after, 2),
+                "b_after": round(b_after, 2),
+                "delta_a": round(a_after - a_before, 2),
+                "delta_b": round(b_after - b_before, 2),
+            })
+        return {"vectors": vectors, "source_mode": params.mode.value, "lut_size": params.lut_size}
+    except Exception:
+        return None
+
+
+def _hsv_to_rgb_float(h: float, s: float, v: float) -> np.ndarray:
+    h = h % 360.0
+    c = v * s
+    x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
+    m = v - c
+    if h < 60:
+        rgb = np.array([c, x, 0.0], dtype=np.float32)
+    elif h < 120:
+        rgb = np.array([x, c, 0.0], dtype=np.float32)
+    elif h < 180:
+        rgb = np.array([0.0, c, x], dtype=np.float32)
+    elif h < 240:
+        rgb = np.array([0.0, x, c], dtype=np.float32)
+    elif h < 300:
+        rgb = np.array([x, 0.0, c], dtype=np.float32)
+    else:
+        rgb = np.array([c, 0.0, x], dtype=np.float32)
+    return rgb + m
+
+
 def _neutral_mask_payload(img_rgb: np.ndarray) -> dict:
     mask = detect_neutral_mask(img_rgb)
     pixels = int(mask.sum())
@@ -1523,6 +1586,12 @@ def _calibration_response(
         color_space=prepared.color_space,
         data_range=prepared.data_range,
     )
+    charts = _chart_payload(entry.input_report, post_report, original_preview, entry.static_charts)
+    cal_params = calibration.get("params")
+    if isinstance(cal_params, CalibrationParams):
+        lut_analysis = _lut_analysis_payload(cal_params)
+        if lut_analysis is not None:
+            charts["lut_analysis"] = lut_analysis
     payload = {
         "session_id": entry.cache_key,
         "input": _report_payload(entry.input_report),
@@ -1532,7 +1601,7 @@ def _calibration_response(
         "reduction_pct": calibration["reduction_pct"],
         "original_preview": _encode_data_url(original_preview) if include_original else None,
         "calibrated_image": _encode_data_url(calibrated_preview),
-        "charts": _chart_payload(entry.input_report, post_report, original_preview, entry.static_charts),
+        "charts": charts,
         "processing": {
             "original_width": prepared.original_width,
             "original_height": prepared.original_height,
