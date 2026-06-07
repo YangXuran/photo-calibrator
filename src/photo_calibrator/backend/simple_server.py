@@ -1633,6 +1633,7 @@ def _calibration_response(
     }
     payload["document"] = _session_document_payload(entry, {**calibration, "processing": payload["processing"]})
     _record_session_calibration(entry, payload)
+    _record_action_history(entry.cache_key, payload)
     return payload
 
 
@@ -2858,6 +2859,58 @@ def _get_benchmark_route(query: dict) -> dict:
 
 # ---------------------------------------------------------------------------
 # Route dispatch tables
+
+
+def _history_save_payload(body: dict) -> dict:
+    session_id = str(body.get("session_id", ""))
+    description = str(body.get("description", "calibration"))
+    action_type = str(body.get("action_type", "calibration"))
+    params = body.get("params")
+    if not session_id:
+        return {"ok": False, "error": "session_id required"}
+    db = get_workspace_db(ROOT)
+    row_id = db.save_action(session_id, description, action_type, params)
+    return {"ok": True, "id": row_id}
+
+
+def _history_load_payload(body: dict) -> dict:
+    session_id = str(body.get("session_id", ""))
+    if not session_id:
+        return {"ok": False, "error": "session_id required", "entries": []}
+    db = get_workspace_db(ROOT)
+    records = db.load_actions(session_id)
+    entries = [
+        {
+            "id": r.id,
+            "description": r.description,
+            "action_type": r.action_type,
+            "params": json.loads(r.params_json) if r.params_json else None,
+            "created_at": r.created_at,
+        }
+        for r in records
+    ]
+    return {"ok": True, "entries": entries}
+
+
+def _record_action_history(session_id: str, payload: dict) -> None:
+    mode = str(payload.get("mode", "global"))
+    shift = payload.get("shift", {})
+    description = f"mode: {mode}"
+    if isinstance(shift, dict):
+        a = shift.get("a")
+        b = shift.get("b")
+        if a is not None and b is not None:
+            description = f"mode: {mode}  a:{a:.1f} b:{b:.1f}"
+    try:
+        db = get_workspace_db(ROOT)
+        db.save_action(session_id, description, "calibration", {"mode": mode})
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------------
 
 _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
@@ -2884,6 +2937,7 @@ _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/batch/cancel": _batch_cancel_payload,
     "/api/workspace/sync": _workspace_sync_payload,
     "/api/workspace/clear": lambda _body: _workspace_clear_payload(),
+    "/api/history/save": _history_save_payload,
 }
 
 _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
@@ -2898,6 +2952,7 @@ _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/session/list": _session_list_payload,
     "/api/batch/status": _batch_status_payload,
     "/api/workspace/stats": lambda _query: _workspace_stats_payload(),
+    "/api/history/load": lambda query: _history_load_payload({"session_id": query["session_id"][0]} if "session_id" in query else {}),
 }
 
 
