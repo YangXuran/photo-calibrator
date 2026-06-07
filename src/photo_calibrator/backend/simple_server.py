@@ -1202,11 +1202,53 @@ def _accelerator_benchmark_payload(image_side: int = 256, lut_size: int = 17, it
 
 
 def _calibration_params_from_body(body: dict) -> CalibrationParams:
+    def _opt_float(key: str, default: float | None = None) -> float | None:
+        v = body.get(key)
+        return float(v) if v is not None else default
+
+    def _opt_curve(key: str) -> list[list[float]] | None:
+        v = body.get(key)
+        if v is None or (isinstance(v, list) and len(v) == 0):
+            return None
+        if isinstance(v, list) and all(isinstance(pt, list) and len(pt) == 2 for pt in v):
+            return [[float(x), float(y)] for x, y in v]
+        return None
+
+    def _opt_gamma(key: str) -> tuple[float, float, float] | None:
+        v = body.get(key)
+        if v is None or (isinstance(v, list) and len(v) == 0):
+            return None
+        if isinstance(v, list) and len(v) == 3:
+            return (float(v[0]), float(v[1]), float(v[2]))
+        return None
+
+    def _opt_matrix(key: str) -> tuple | None:
+        v = body.get(key)
+        if v is None or (isinstance(v, list) and len(v) == 0):
+            return None
+        if isinstance(v, list) and len(v) == 3 and all(isinstance(r, list) and len(r) == 3 for r in v):
+            return (
+                (float(v[0][0]), float(v[0][1]), float(v[0][2])),
+                (float(v[1][0]), float(v[1][1]), float(v[1][2])),
+                (float(v[2][0]), float(v[2][1]), float(v[2][2])),
+            )
+        return None
+
     return CalibrationParams(
         mode=CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value)),
+        a_shift=_opt_float("a_shift"),
+        b_shift=_opt_float("b_shift"),
         strength=float(body.get("strength", 0.8)),
         highlight_pct=float(body.get("highlight_pct", 55.0)),
         sat_pct=float(body.get("sat_pct", 25.0)),
+        curve_low_pct=float(body.get("curve_low_pct", 1.0)),
+        curve_high_pct=float(body.get("curve_high_pct", 99.0)),
+        gamma=_opt_gamma("gamma"),
+        r_curve=_opt_curve("r_curve"),
+        g_curve=_opt_curve("g_curve"),
+        b_curve=_opt_curve("b_curve"),
+        matrix=_opt_matrix("matrix"),
+        lut_size=int(body.get("lut_size", 17)),
     )
 
 

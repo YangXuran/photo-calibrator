@@ -37,6 +37,9 @@ class CalibrationParams:
     curve_low_pct: float = 1.0
     curve_high_pct: float = 99.0
     gamma: tuple[float, float, float] | None = None
+    r_curve: list[list[float]] | None = None
+    g_curve: list[list[float]] | None = None
+    b_curve: list[list[float]] | None = None
     matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None
     lut_size: int = 17
 
@@ -247,29 +250,131 @@ def calibrate_preserve_split_tone(
     return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
+def curve_interpolate(
+    control_points: list[list[float]],
+    num_entries: int = 256,
+) -> np.ndarray:
+    """Build a 256-entry uint8 LUT from control points using monotonic cubic interpolation.
+
+    Control points are ``[[x0, y0], [x1, y1], ...]`` where x is input (0-255)
+    and y is output (0-255).  At least 2 points required.  The interpolation
+    is monotonic (preserves ordering of control points) and C1 continuous.
+
+    Returns a uint8 ndarray of shape (num_entries,).
+    """
+    if len(control_points) < 2:
+        raise ValueError("curve_interpolate requires at least 2 control points")
+
+    pts = np.asarray(control_points, dtype=np.float64)
+    xs = pts[:, 0]
+    ys = pts[:, 1]
+
+    # Sort by x
+    order = np.argsort(xs)
+    xs = xs[order]
+    ys = ys[order]
+
+    # Monotonic cubic Hermite spline (Fritsch-Carlson)
+    n = len(xs)
+    dx = np.diff(xs)
+    dy = np.diff(ys)
+    slopes = dy / np.where(np.abs(dx) > 1e-12, dx, 1.0)
+
+    # Compute tangents (derivatives) at each knot
+    m = np.zeros(n, dtype=np.float64)
+    if n == 2:
+        m[0] = slopes[0]
+        m[-1] = slopes[-1]
+    else:
+        # Initialise with centred differences
+        m[1:-1] = (slopes[:-1] + slopes[1:]) / 2.0
+        m[0] = slopes[0]
+        m[-1] = slopes[-1]
+
+        # Fritsch-Carlson monotonicity enforcement
+        for i in range(n - 1):
+            if np.abs(slopes[i]) < 1e-12:
+                m[i] = 0.0
+                m[i + 1] = 0.0
+            else:
+                alpha = m[i] / slopes[i]
+                beta = m[i + 1] / slopes[i]
+                t = np.sqrt(alpha * alpha + beta * beta)
+                if t > 3.0:
+                    m[i] = 3.0 * alpha / t * slopes[i]
+                    m[i + 1] = 3.0 * beta / t * slopes[i]
+
+    # Evaluate the piecewise cubic on the output grid
+    x_out = np.linspace(0, 255, num_entries, dtype=np.float64)
+    y_out = np.zeros(num_entries, dtype=np.float64)
+
+    for i in range(n - 1):
+        t = (x_out - xs[i]) / max(dx[i], 1e-12)
+        mask = (x_out >= xs[i]) & (x_out <= xs[i + 1])
+        if not np.any(mask):
+            continue
+        tt = t[mask]
+        h00 = (1.0 + 2.0 * tt) * (1.0 - tt) ** 2
+        h10 = tt * (1.0 - tt) ** 2
+        h01 = tt ** 2 * (3.0 - 2.0 * tt)
+        h11 = tt ** 2 * (tt - 1.0)
+        y_out[mask] = (
+            h00 * ys[i]
+            + h10 * m[i] * dx[i]
+            + h01 * ys[i + 1]
+            + h11 * m[i + 1] * dx[i]
+        )
+
+    # Edge extrapolation: hold first/last values
+    y_out[x_out < xs[0]] = ys[0]
+    y_out[x_out > xs[-1]] = ys[-1]
+
+    return np.clip(np.rint(y_out), 0, 255).astype(np.uint8)
+
+
 def calibrate_rgb_curves(
     img_rgb: np.ndarray,
     strength: float = DEFAULT_STRENGTH,
     low_pct: float = 1.0,
     high_pct: float = 99.0,
     gamma: tuple[float, float, float] | None = None,
+    r_curve: list[list[float]] | None = None,
+    g_curve: list[list[float]] | None = None,
+    b_curve: list[list[float]] | None = None,
 ) -> np.ndarray:
-    """Per-channel black/white/gamma correction for film layer mismatch."""
+    """Per-channel black/white/gamma correction for film layer mismatch.
+
+    When explicit control points are provided (r_curve/g_curve/b_curve),
+    each channel uses a monotonic cubic spline LUT built from those points
+    instead of the auto-estimated black/white/gamma correction.
+    """
 
     src, dtype, scale = _working_rgb(img_rgb)
-    gamma_values = gamma or _estimate_channel_gamma(src)
-    luts = []
+    luts: list[np.ndarray] = []
+    curves = [r_curve, g_curve, b_curve]
+
     for ch in range(3):
-        low = float(np.percentile(src[:, :, ch], low_pct))
-        high = float(np.percentile(src[:, :, ch], high_pct))
-        axis = np.linspace(0, 1, 256, dtype=np.float32)
-        if high <= low + 1e-6:
-            curve = axis
+        ctrl = curves[ch]
+        if ctrl is not None and len(ctrl) >= 2:
+            # Manual curve: build LUT from control points
+            lut = curve_interpolate(ctrl).astype(np.float32)
+            identity = np.linspace(0, 255, 256, dtype=np.float32)
+            lut = identity * (1.0 - strength) + lut * strength
+            luts.append(np.clip(np.rint(lut), 0, 255).astype(np.uint8))
         else:
-            curve = np.clip((axis - low) / (high - low), 0, 1)
-        curve = np.power(curve, 1.0 / max(gamma_values[ch], 1e-3))
-        blended = axis * (1.0 - strength) + curve * strength
-        luts.append(np.clip(blended * 255.0, 0, 255).astype(np.uint8))
+            # Auto curve: existing behaviour
+            gamma_values = gamma or _estimate_channel_gamma(src)
+            low = float(np.percentile(src[:, :, ch], low_pct))
+            high = float(np.percentile(src[:, :, ch], high_pct))
+            axis = np.linspace(0, 1, 256, dtype=np.float32)
+            if high <= low + 1e-6:
+                curve = axis
+            else:
+                curve = np.clip((axis - low) / (high - low), 0, 1)
+            curve = np.power(curve, 1.0 / max(gamma_values[ch], 1e-3))
+            blended = axis * (1.0 - strength) + curve * strength
+            luts.append(np.clip(blended * 255.0, 0, 255).astype(np.uint8))
+
     corrected_u8 = ACCELERATOR.apply_channel_luts(np.clip(np.rint(src * 255.0), 0, 255).astype(np.uint8), luts)
     return _restore_dtype(corrected_u8.astype(np.float32) / 255.0, dtype, scale)
 
@@ -492,6 +597,9 @@ def calibrate_image_from_analysis(
                 params.curve_low_pct,
                 params.curve_high_pct,
                 params.gamma,
+                r_curve=params.r_curve,
+                g_curve=params.g_curve,
+                b_curve=params.b_curve,
             )
         elif params.mode == CalibrationMode.TONE_ZONE:
             calibrated_working = calibrate_tone_zone(working_img, params.strength)
@@ -533,6 +641,9 @@ def calibrate_image_from_analysis(
             params.curve_low_pct,
             params.curve_high_pct,
             params.gamma,
+            r_curve=params.r_curve,
+            g_curve=params.g_curve,
+            b_curve=params.b_curve,
         )
     elif params.mode == CalibrationMode.TONE_ZONE:
         calibrated_working = calibrate_tone_zone(working_img, params.strength)

@@ -74,8 +74,23 @@ class RgbCurvesOp(Operation):
 
     def apply(self, image: np.ndarray) -> np.ndarray:
         strength = float(self.params.get("strength", 0.8))
+        low_pct = float(self.params.get("curve_low_pct", 1.0))
+        high_pct = float(self.params.get("curve_high_pct", 99.0))
+        gamma = self.params.get("gamma")
+        r_curve = self.params.get("r_curve")
+        g_curve = self.params.get("g_curve")
+        b_curve = self.params.get("b_curve")
         from photo_calibrator.core.calibration import calibrate_rgb_curves
-        return calibrate_rgb_curves(image, strength=strength)
+        return calibrate_rgb_curves(
+            image,
+            strength=strength,
+            low_pct=low_pct,
+            high_pct=high_pct,
+            gamma=gamma,
+            r_curve=r_curve,
+            g_curve=g_curve,
+            b_curve=b_curve,
+        )
 
 
 @dataclass(frozen=True)
