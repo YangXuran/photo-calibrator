@@ -10,6 +10,7 @@ const TABS: Array<{ id: InspectorTabsProps["active"]; label: string }> = [
   { id: "analysis", label: "分析" },
   { id: "export", label: "导出" },
   { id: "session", label: "文档" },
+  { id: "settings", label: "设置" },
 ];
 
 export function InspectorTabs({ active, onChange }: InspectorTabsProps) {

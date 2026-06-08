@@ -17,6 +17,10 @@ const INSPECTOR_TAB_META: Record<InspectorTab, { title: string; meta: string }> 
     title: "Session",
     meta: "session、document 与工作流回显",
   },
+  settings: {
+    title: "Settings",
+    meta: "运行状态、插件与工具",
+  },
 };
 
 export function getInspectorTabMeta(tab: InspectorTab) {

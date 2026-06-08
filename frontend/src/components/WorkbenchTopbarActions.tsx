@@ -13,7 +13,6 @@ type WorkbenchTopbarActionsProps = {
   focusMode: boolean;
   onPickFiles: (files: PickedFiles) => void;
   onOpenLayoutSettings: () => void;
-  onOpenRuntimeSettings: () => void;
   onOpenShortcutHelp: () => void;
   workbench: Pick<WorkbenchController, "activeLayoutPreset" | "applyLayoutPreset" | "layoutState" | "redo" | "toggleLayoutElement" | "toggleViewerFocusMode" | "undo">;
 };
@@ -23,7 +22,6 @@ export function WorkbenchTopbarActions({
   focusMode,
   onPickFiles,
   onOpenLayoutSettings,
-  onOpenRuntimeSettings,
   onOpenShortcutHelp,
   workbench,
 }: WorkbenchTopbarActionsProps) {
@@ -66,15 +64,6 @@ export function WorkbenchTopbarActions({
       onClick: onOpenLayoutSettings,
       testId: "layout-settings-button",
     },
-    ...(!focusMode
-      ? [
-          {
-            label: "Runtime",
-            onClick: onOpenRuntimeSettings,
-            testId: "runtime-settings-button",
-          },
-        ]
-      : []),
     {
       label: "帮助",
       onClick: onOpenShortcutHelp,

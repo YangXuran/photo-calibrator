@@ -1,6 +1,6 @@
 export type CompareMode = "side-by-side" | "split" | "calibrated-only";
 export type ViewerZoomMode = "fit" | "fill" | "manual";
-export type InspectorTab = "adjust" | "analysis" | "export" | "session";
+export type InspectorTab = "adjust" | "analysis" | "export" | "session" | "settings";
 export type LayoutPresetId = "balanced" | "review" | "edit" | "analyze";
 export type ActiveLayoutPreset = LayoutPresetId | "custom";
 export type ViewerPan = {

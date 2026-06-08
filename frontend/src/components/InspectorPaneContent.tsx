@@ -5,6 +5,7 @@ import { InspectorAdjustPanel } from "./InspectorAdjustPanel";
 import { InspectorAnalysisPanel } from "./InspectorAnalysisPanel";
 import { InspectorExportPanel } from "./InspectorExportPanel";
 import { InspectorSessionPanel } from "./InspectorSessionPanel";
+import { InspectorSettingsPanel } from "./InspectorSettingsPanel";
 import { getInspectorTabMeta } from "./inspectorTabMeta";
 
 type InspectorPaneContentProps = {
@@ -28,6 +29,7 @@ export function InspectorPaneContent({ workbench }: InspectorPaneContentProps) {
       {workbench.activeInspectorTab === "analysis" ? <InspectorAnalysisPanel order={sectionOrder} workbench={workbench} /> : null}
       {workbench.activeInspectorTab === "export" ? <InspectorExportPanel order={sectionOrder} workbench={workbench} /> : null}
       {workbench.activeInspectorTab === "session" ? <InspectorSessionPanel order={sectionOrder} workbench={workbench} /> : null}
+      {workbench.activeInspectorTab === "settings" ? <InspectorSettingsPanel workbench={workbench} /> : null}
     </PaneGroup>
   );
 }

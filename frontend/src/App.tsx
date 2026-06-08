@@ -11,7 +11,7 @@ export default function App() {
     <AppShell
       focusMode={workbench.layoutState.viewerFocusMode}
       notifications={<NotificationCenter focusMode={workbench.layoutState.viewerFocusMode} items={workbench.notifications} onDismiss={workbench.dismissNotification} />}
-      topbar={<WorkbenchTopbar backendOk={workbench.backendOk} onPickFiles={workbench.onPickFiles} workbench={workbench} />}
+      topbar={<WorkbenchTopbar onPickFiles={workbench.onPickFiles} workbench={workbench} />}
       workbench={<WorkbenchLayout workbench={workbench} />}
     />
   );
