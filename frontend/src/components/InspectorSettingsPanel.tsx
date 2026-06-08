@@ -2,7 +2,6 @@ import type { WorkbenchController } from "../hooks/useWorkbench";
 import { resolveFileAccessPlan } from "../runtime/fileAccess";
 import { useRuntimeConfig } from "../runtime/RuntimeProvider";
 import { getShellBridge } from "../runtime/shellBridge";
-import { ActivityPanel } from "./ActivityPanel";
 import { DetailNote } from "./DetailNote";
 import { InfoGrid } from "./InfoGrid";
 import { PaneSection } from "./PaneSection";
@@ -56,10 +55,6 @@ export function InspectorSettingsPanel({ workbench }: InspectorSettingsPanelProp
 
       <PaneSection density="compact" meta="后端注册表" title="Plugins & Evaluators">
         <PluginList evaluators={workbench.evaluators} plugins={workbench.plugins} />
-      </PaneSection>
-
-      <PaneSection density="compact" meta="最近动作日志" title="Activity">
-        <ActivityPanel items={workbench.activityLog} />
       </PaneSection>
     </>
   );

@@ -6,6 +6,7 @@ type ViewerStageSplitSceneProps = {
   calibratedSrc: string;
   cropEditable?: boolean;
   cropRect?: CropRect;
+  loading?: boolean;
   onCropChange?: (cropRect: CropRect) => void;
   originalSrc: string;
   panOffset: ViewerPan;
@@ -18,6 +19,7 @@ export function ViewerStageSplitScene({
   calibratedSrc,
   cropEditable,
   cropRect,
+  loading = false,
   onCropChange,
   originalSrc,
   panOffset,
@@ -25,12 +27,16 @@ export function ViewerStageSplitScene({
   zoomMode,
   zoomScale,
 }: ViewerStageSplitSceneProps) {
+  const showOriginal = originalSrc && !loading;
+  const showCalibrated = calibratedSrc && !loading;
   return (
     <ViewerStageMedia panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale}>
-      <img alt="Original" className="pc-stage-image" src={originalSrc} />
-      <div className="pc-stage-clip" style={{ width: `${splitPosition}%` }}>
-        <img alt="Calibrated" className="pc-stage-image" src={calibratedSrc} />
-      </div>
+      {showOriginal ? <img alt="Original" className="pc-stage-image" src={originalSrc} /> : null}
+      {showCalibrated ? (
+        <div className="pc-stage-clip" style={{ width: `${splitPosition}%` }}>
+          <img alt="Calibrated" className="pc-stage-image" src={calibratedSrc} />
+        </div>
+      ) : null}
       {cropRect ? <ViewerCropOverlay cropRect={cropRect} editable={cropEditable} onCropChange={onCropChange} zoomMode={zoomMode} zoomScale={zoomScale} /> : null}
     </ViewerStageMedia>
   );

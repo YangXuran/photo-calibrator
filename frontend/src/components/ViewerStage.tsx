@@ -99,6 +99,7 @@ export function ViewerStage({
           calibratedSrc={calibrated}
           cropEditable={cropEditable}
           cropRect={cropRect}
+          loading={loading}
           onCropChange={onCropChange}
           originalSrc={original}
           panOffset={panOffset}
@@ -115,7 +116,7 @@ export function ViewerStage({
     return (
       <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
         {hud}
-        <ViewerStageImageScene cropEditable={cropEditable} cropRect={cropRect} imageAlt="Calibrated" imageSrc={calibrated} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+        <ViewerStageImageScene cropEditable={cropEditable} cropRect={cropRect} imageAlt="Calibrated" imageSrc={calibrated} loading={loading} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
       </ViewerStageSurface>
     );
   }
@@ -124,13 +125,13 @@ export function ViewerStage({
     <ViewerStageCompareBoard
       calibratedStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene imageAlt="Calibrated" imageSrc={calibrated} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene imageAlt="Calibrated" imageSrc={calibrated} loading={loading} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         </ViewerStageSurface>
       }
       hud={hud}
       originalStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene cropEditable={cropEditable} cropRect={cropRect} imageAlt="Original" imageSrc={original} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene cropEditable={cropEditable} cropRect={cropRect} imageAlt="Original" imageSrc={original} loading={loading} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         </ViewerStageSurface>
       }
     />
