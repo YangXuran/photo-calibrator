@@ -33,7 +33,6 @@ export function CropCard({ collapseScope, crop, cropEdited, onSuggest, onReset }
       defaultCollapsed
       density="compact"
       emphasis="muted"
-      meta="胶片翻拍自动水平与裁切"
       title="胶片裁切"
     >
       <div className="pc-note pc-note-compact">

@@ -1,9 +1,6 @@
-import type { ActiveLayoutPreset } from "../types";
-
 type ViewerContextHudProps = {
   primary: string[];
   secondary?: string[];
-  preset?: ActiveLayoutPreset;
 };
 
 type ContextEntry = {
@@ -27,13 +24,7 @@ function toEntries(items: string[]): ContextEntry[] {
   });
 }
 
-function getSectionOrder(preset?: ActiveLayoutPreset): string[] {
-  if (preset === "review") return ["Preview", "Image", "Crop", "Context"];
-  if (preset === "edit") return ["Crop", "Preview", "Image", "Context"];
-  return ["Image", "Preview", "Crop", "Context"]; // balanced / analyze / custom
-}
-
-function groupEntries(entries: ContextEntry[], preset?: ActiveLayoutPreset): SectionGroup[] {
+function groupEntries(entries: ContextEntry[]): SectionGroup[] {
   const image: ContextEntry[] = [];
   const preview: ContextEntry[] = [];
   const crop: ContextEntry[] = [];
@@ -59,18 +50,13 @@ function groupEntries(entries: ContextEntry[], preset?: ActiveLayoutPreset): Sec
     { title: "Context", entries: other },
   ].filter((group) => group.entries.length);
 
-  const order = getSectionOrder(preset);
-  return sections.sort((a, b) => {
-    const ai = order.indexOf(a.title);
-    const bi = order.indexOf(b.title);
-    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-  });
+  return sections;
 }
 
-export function ViewerContextHud({ primary, secondary = [], preset }: ViewerContextHudProps) {
+export function ViewerContextHud({ primary, secondary = [] }: ViewerContextHudProps) {
   const primaryEntries = toEntries(primary);
   const secondaryEntries = toEntries(secondary);
-  const groups = groupEntries([...primaryEntries, ...secondaryEntries], preset);
+  const groups = groupEntries([...primaryEntries, ...secondaryEntries]);
 
   return (
     <div className="pc-context-hud" data-testid="focus-context-hud">

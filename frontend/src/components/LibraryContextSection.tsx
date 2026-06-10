@@ -19,7 +19,7 @@ export function LibraryContextSection({
   title = "Context",
 }: LibraryContextSectionProps) {
   return (
-    <PaneGroup density={density} emphasis={emphasis} meta={meta} testId="library-context-group" title={title}>
+    <PaneGroup density={density} emphasis={emphasis} testId="library-context-group">
       {workbench.preferences.showSelectionStatus ? <SelectionStatusCard selectedFile={workbench.selectedFile} /> : null}
       {workbench.preferences.showSavedSessions ? (
         <SessionLibraryCard onDelete={workbench.deleteSavedSession} onLoad={workbench.loadSavedSession} onRefresh={workbench.refreshSavedSessions} sessions={workbench.savedSessions} />

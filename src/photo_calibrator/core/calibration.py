@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -435,7 +436,7 @@ def estimate_color_matrix(img_rgb: np.ndarray) -> np.ndarray:
     pixels = src[neutral] if int(neutral.sum()) >= 100 else src.reshape(-1, 3)
     means = pixels.astype(np.float32).mean(axis=0)
     target = float(means.mean())
-    gains = np.clip(target / np.maximum(means, 1.0), 0.7, 1.35)
+    gains = np.clip(target / np.maximum(means, 1e-6), 0.7, 1.35)
     matrix = np.diag(gains)
     # Gentle cross-talk damping to reduce excessive film dye separation.
     mix = np.array([[0.96, 0.02, 0.02], [0.02, 0.96, 0.02], [0.02, 0.02, 0.96]], dtype=np.float32)
@@ -662,6 +663,25 @@ def calibrate_image_from_analysis(
     else:
         raise ValueError(f"Unsupported calibration mode: {params.mode}")
 
+    # Post-process: apply RGB curves on top of auto-calibration result
+    if params.mode != CalibrationMode.RGB_CURVES:
+        has_curves = (
+            params.r_curve is not None
+            or params.g_curve is not None
+            or params.b_curve is not None
+        )
+        if has_curves:
+            calibrated_working = calibrate_rgb_curves(
+                calibrated_working,
+                params.strength,
+                params.curve_low_pct,
+                params.curve_high_pct,
+                params.gamma,
+                r_curve=params.r_curve,
+                g_curve=params.g_curve,
+                b_curve=params.b_curve,
+            )
+
     calibrated = _from_calibration_working_space(calibrated_working, working_context)
     post_report = analyze_image_array(calibrated)
     return CalibrationResult(
@@ -683,6 +703,40 @@ def calibrate_image_from_analysis(
             "working_pre_cast_strength": working_pre_report.lab.cast_strength,
         },
     )
+
+
+def recalibrate_curves(
+    working_img: np.ndarray,
+    working_context: dict,
+    params: CalibrationParams,
+    calibrator: Callable[[np.ndarray], np.ndarray],
+    pre_report: CastReport | None = None,
+) -> np.ndarray:
+    """Fast path: apply curves to cached working image without re-analysis.
+
+    Skips analyze_image_array, auto_detect_cast, and post_report analysis.
+    Only runs the calibration function + curve post-processing.
+    """
+    calibrated_working = calibrator(working_img)
+    if params.mode != CalibrationMode.RGB_CURVES:
+        has_curves = (
+            params.r_curve is not None
+            or params.g_curve is not None
+            or params.b_curve is not None
+        )
+        if has_curves:
+            calibrated_working = calibrate_rgb_curves(
+                calibrated_working,
+                params.strength,
+                params.curve_low_pct,
+                params.curve_high_pct,
+                params.gamma,
+                r_curve=params.r_curve,
+                g_curve=params.g_curve,
+                b_curve=params.b_curve,
+            )
+    result = _from_calibration_working_space(calibrated_working, working_context)
+    return result
 
 
 def calibrate_image(

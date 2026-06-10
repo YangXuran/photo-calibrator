@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { ViewerActionDock } from "./ViewerActionDock";
 import { ViewerContextHud } from "./ViewerContextHud";
-import type { ActiveLayoutPreset } from "../types";
 
 type ViewerHudOverlayProps = {
   primary: string[];
@@ -9,7 +8,6 @@ type ViewerHudOverlayProps = {
   status?: string;
   actions?: ReactNode;
   hudCropPriority?: "primary" | "secondary" | "hidden";
-  preset?: ActiveLayoutPreset;
   toolbar?: ReactNode;
   docked?: boolean;
   active?: boolean;
@@ -17,7 +15,7 @@ type ViewerHudOverlayProps = {
   onScheduleHide?: () => void;
 };
 
-export function ViewerHudOverlay({ primary, secondary = [], status, actions, hudCropPriority = "secondary", preset, toolbar, docked = false, active = true, onWake, onScheduleHide }: ViewerHudOverlayProps) {
+export function ViewerHudOverlay({ primary, secondary = [], status, actions, hudCropPriority = "secondary", toolbar, docked = false, active = true, onWake, onScheduleHide }: ViewerHudOverlayProps) {
   if (!primary.length && !secondary.length && !status && !actions && !toolbar) return null;
   return (
     <div
@@ -38,7 +36,7 @@ export function ViewerHudOverlay({ primary, secondary = [], status, actions, hud
           ) : null}
           {primary.length || secondary.length ? (
             <div className="pc-stage-hud-dock pc-stage-hud-dock-right" data-testid="focus-overlay-right-dock">
-              <ViewerContextHud preset={preset} primary={primary} secondary={secondary} />
+              <ViewerContextHud primary={primary} secondary={secondary} />
             </div>
           ) : null}
         </>

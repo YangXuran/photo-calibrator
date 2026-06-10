@@ -1,4 +1,5 @@
-export type ShellPickedFiles = File[] | null;
+export type ShellFileInfo = { name: string; path: string };
+export type ShellPickedFiles = ShellFileInfo[] | File[] | null;
 
 export type PhotoCalibratorShellBridge = {
   source?: "electron-preload" | "mock-browser";

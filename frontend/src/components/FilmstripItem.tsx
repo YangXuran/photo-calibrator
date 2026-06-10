@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkspaceFile } from "../types";
 import { getWorkspaceStateSummary } from "../lib/workspaceStatus";
-import { FilmstripItemMeta } from "./FilmstripItemMeta";
 
 type FilmstripItemProps = {
   item: WorkspaceFile;
   index: number;
   selected: boolean;
   onSelect: (id: string) => void;
-  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => void;
-  buttonRef: (node: HTMLButtonElement | null) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>, index: number) => void;
+  buttonRef: (node: HTMLDivElement | null) => void;
   density: "default" | "compact";
   showDetail: boolean;
   showMeta: boolean;
@@ -40,9 +39,17 @@ export function FilmstripItem({
   const summary = getWorkspaceStateSummary(item);
   const [imgError, setImgError] = useState(false);
   const src = item.thumbnailUrl || item.displayUrl;
+  const prevSrcRef = useRef(src);
+
+  useEffect(() => {
+    if (prevSrcRef.current !== src) {
+      prevSrcRef.current = src;
+      setImgError(false);
+    }
+  }, [src]);
 
   return (
-    <button
+    <div
       aria-selected={selected}
       className={`pc-thumb pc-thumb-${density} ${selected ? "is-active" : ""}`}
       data-testid="filmstrip-item"
@@ -51,7 +58,6 @@ export function FilmstripItem({
       ref={buttonRef}
       role="option"
       tabIndex={selected || index === 0 ? 0 : -1}
-      type="button"
     >
       <div className="pc-thumb-image-wrap">
         {src && !imgError ? (
@@ -64,7 +70,7 @@ export function FilmstripItem({
           />
         ) : (
           <div className="pc-thumb-placeholder" aria-label={item.name}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
               <circle cx="8.5" cy="8.5" r="1.5" />
               <polyline points="21 15 16 10 5 21" />
@@ -75,8 +81,7 @@ export function FilmstripItem({
           <span className={`pc-thumb-statechip ${itemStateTone(item)}`}>{summary.stateLabel}</span>
         ) : null}
       </div>
-      <FilmstripItemMeta item={item} showDetail={showDetail} showMeta={showMeta} />
       <span>{item.name}</span>
-    </button>
+    </div>
   );
 }

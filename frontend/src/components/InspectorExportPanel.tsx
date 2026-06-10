@@ -8,7 +8,7 @@ type InspectorExportPanelProps = {
 };
 
 export function InspectorExportPanel({ order, workbench }: InspectorExportPanelProps) {
-  const collapseScope = `preset:${workbench.activeLayoutPreset}`;
+  const collapseScope = "workbench";
   return (
     <InspectorPanelSections
       order={order}

@@ -20,7 +20,7 @@ export function LibraryToolsSection({
   title = "Tools",
 }: LibraryToolsSectionProps) {
   return (
-    <PaneGroup density={density} emphasis={emphasis} meta={meta} testId="library-tools-group" title={title}>
+    <PaneGroup density={density} emphasis={emphasis} testId="library-tools-group">
       {workbench.preferences.showPluginsPanel ? (
         <PaneSection density="compact" title="插件与评估器" meta="后端注册表">
           <PluginList evaluators={workbench.evaluators} plugins={workbench.plugins} />

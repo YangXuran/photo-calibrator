@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { PointerEventHandler, ReactNode, RefObject, WheelEventHandler } from "react";
 import type { ViewerZoomMode } from "../types";
 
@@ -14,7 +15,7 @@ type ViewerStageSurfaceProps = {
   zoomMode: ViewerZoomMode;
 };
 
-export function ViewerStageSurface({
+export const ViewerStageSurface = memo(function ViewerStageSurface({
   children,
   className,
   isPanning = false,
@@ -35,8 +36,15 @@ export function ViewerStageSurface({
       onWheel={onWheel}
       ref={stageRef}
     >
-      {loading ? <div className="pc-stage-busy">正在计算预览</div> : null}
+      {loading ? (
+        <div className="pc-stage-busy">
+          <div className="pc-stage-busy-content">
+            <span className="pc-spinner pc-spinner-sm" />
+            <span>Computing preview…</span>
+          </div>
+        </div>
+      ) : null}
       {children}
     </div>
   );
-}
+});

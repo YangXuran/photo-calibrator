@@ -29,6 +29,7 @@ export function ChromaticityChart({ vectors, loading }: ChromaticityChartProps) 
       <svg
         className="pc-chart pc-chromaticity-chart"
         viewBox={`0 0 ${SIZE} ${SIZE}`}
+        preserveAspectRatio="xMidYMid meet"
         role="img"
         aria-label="LUT vectorscope loading"
         data-testid="chromaticity-chart"
@@ -64,6 +65,7 @@ export function ChromaticityChart({ vectors, loading }: ChromaticityChartProps) 
     <svg
       className="pc-chart pc-chromaticity-chart"
       viewBox={`0 0 ${SIZE} ${SIZE}`}
+      preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label="LUT hue vectorscope"
       data-testid="chromaticity-chart"

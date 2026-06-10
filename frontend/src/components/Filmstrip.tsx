@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { WorkspaceFile } from "../types";
 import { FilmstripItem } from "./FilmstripItem";
 
@@ -21,7 +21,7 @@ export function Filmstrip({
   showMeta = true,
   showStateChip = true,
 }: FilmstripProps) {
-  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     if (!selectedId) return;
@@ -29,7 +29,11 @@ export function Filmstrip({
     node?.scrollIntoView({ block: "nearest", inline: "center" });
   }, [selectedId]);
 
-  function handleKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+  const loadingCount = useMemo(() => files.filter((f) => f.thumbnailLoading).length, [files]);
+  const totalCount = files.length;
+  const progressPercent = totalCount > 0 ? ((totalCount - loadingCount) / totalCount) * 100 : 100;
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>, index: number) {
     if (!files.length) return;
     if (event.key === "ArrowLeft") {
       event.preventDefault();
@@ -53,6 +57,14 @@ export function Filmstrip({
       data-testid="workbench-filmstrip"
       role="listbox"
     >
+      {loadingCount > 0 ? (
+        <div className="pc-filmstrip-progress" data-testid="filmstrip-progress">
+          <div className="pc-filmstrip-progress-bar">
+            <div className="pc-filmstrip-progress-fill" style={{ width: `${progressPercent}%` }} />
+          </div>
+          <span className="pc-filmstrip-progress-text">{totalCount - loadingCount}/{totalCount}</span>
+        </div>
+      ) : null}
       {files.map((item, index) => (
         <FilmstripItem
           buttonRef={(node) => {

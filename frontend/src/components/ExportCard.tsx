@@ -34,7 +34,6 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
       collapseStorageScope={collapseScope}
       collapseStorageKey="inspector-export-settings"
       collapsible
-      meta="直接调用 backend /api/export"
       testId="export-settings-section"
       title="导出设置"
     >

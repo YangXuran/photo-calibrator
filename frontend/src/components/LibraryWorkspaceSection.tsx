@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { BatchUploadPanel } from "./BatchUploadPanel";
 import { PaneGroup } from "./PaneGroup";
 import { WorkspaceBrowserCard } from "./WorkspaceBrowserCard";
 import { WorkspaceSummaryStrip } from "./WorkspaceSummaryStrip";
@@ -24,9 +25,7 @@ export function LibraryWorkspaceSection({
     <PaneGroup
       density={density}
       emphasis={emphasis}
-      meta={meta ?? `${workbench.files.length} 张照片 / ${workbench.plugins.length} 个插件`}
       testId="library-workspace-group"
-      title={title}
     >
       <WorkspaceSummaryStrip
         fileCount={workbench.files.length}
@@ -45,6 +44,19 @@ export function LibraryWorkspaceSection({
         setSourceFilter={workbench.setSourceFilter}
         sourceFilter={workbench.sourceFilter}
       />
+      {workbench.files.length > 0 ? (
+        <BatchUploadPanel
+          files={workbench.files}
+          onResult={(results) => {
+            workbench.setFiles((items) =>
+              items.map((item) => {
+                const match = results.find((r) => r.file_name === item.name);
+                return match && match.session_id ? { ...item, sessionId: match.session_id } : item;
+              }),
+            );
+          }}
+        />
+      ) : null}
     </PaneGroup>
   );
 }

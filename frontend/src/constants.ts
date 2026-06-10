@@ -4,7 +4,6 @@ export const MODE_OPTIONS = [
   ["skin-priority", "肤色优先"],
   ["highlights-only", "高光优先"],
   ["preserve-split-tone", "保留分离色调"],
-  ["rgb-curves", "RGB 曲线"],
   ["tone-zone", "分区校正"],
   ["matrix", "3x3 矩阵"],
   ["lut3d", "3D LUT"],

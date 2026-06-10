@@ -1,8 +1,7 @@
 export type CompareMode = "side-by-side" | "split" | "calibrated-only";
 export type ViewerZoomMode = "fit" | "fill" | "manual";
-export type InspectorTab = "adjust" | "analysis" | "export" | "session" | "settings";
-export type LayoutPresetId = "balanced" | "review" | "edit" | "analyze";
-export type ActiveLayoutPreset = LayoutPresetId | "custom";
+export type InspectorTab = "adjust" | "color" | "curves" | "compose" | "analysis" | "ai" | "export" | "session" | "settings";
+
 export type ViewerPan = {
   x: number;
   y: number;
@@ -106,19 +105,34 @@ export type CalibrationPayload = {
   };
   charts?: {
     rgb_histogram?: HistogramPayload;
+    calibrated_rgb_histogram?: HistogramPayload;
     lab_vectors?: LabVector[];
     strengths?: Array<{ name: string; value: number }>;
     zones?: ZoneDatum[];
     ccc?: {
+      mu_a: number;
+      mu_b: number;
+      sigma_a: number;
+      sigma_b: number;
+      mu: number;
+      sigma: number;
+      distance: number;
       d_sigma: number;
+      k: number;
     };
     pci?: {
       value: number;
+      weighted_delta?: number;
+      luminance_factor?: number;
     };
     neutral_mask?: {
       coverage: number;
       pixels: number;
       total: number;
+    };
+    rgb_means?: {
+      input: { r: number; g: number; b: number };
+      output: { r: number; g: number; b: number };
     };
     lut_analysis?: LutAnalysisPayload;
   };
@@ -162,7 +176,7 @@ export type CapabilityPayload = {
 export type WorkspaceFile = {
   id: string;
   kind: "file" | "session";
-  file?: File | null;
+  file?: File | { name: string; path: string } | null;
   name: string;
   displayUrl: string;
   thumbnailUrl: string;
@@ -171,9 +185,14 @@ export type WorkspaceFile = {
   sessionPath?: string;
   result?: CalibrationPayload;
   preview?: PreviewPayload;
+  highResPreview?: PreviewPayload;
   crop?: CropPayload;
   cropSuggestedRect?: CropRect;
   cropEdited?: boolean;
+  thumbnailLoading?: boolean;
+  rCurve?: ChannelCurve;
+  gCurve?: ChannelCurve;
+  bCurve?: ChannelCurve;
 };
 
 export type CropRect = {

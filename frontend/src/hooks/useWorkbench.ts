@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchAIEvaluators, fetchCapabilities, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postPreview, postSessionDelete, postSessionSave } from "../lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postPreview, postSessionDelete, postSessionSave, putConfig } from "../lib/api";
 import { fileToDataUrl, isBrowserDisplayable, workspaceFileId } from "../lib/files";
-import { DEFAULT_WORKBENCH_PREFERENCES, getDefaultInspectorTabForPreset, getDefaultViewerStateForPreset, getLayoutPresetDefinition, getLayoutPresetPreferences, getMatchingLayoutPreset } from "../lib/layoutPresets";
+import { DEFAULT_WORKBENCH_PREFERENCES } from "../lib/layoutPresets";
 import { suggestExportPath, suggestSessionPath } from "../lib/paths";
+import { loadAISettings, saveAISettings, type AIProviderSettings } from "../components/AIProviderCard";
 import type {
   ActionState,
   AIEvaluationPayload,
@@ -11,12 +12,12 @@ import type {
   ChannelCurve,
   CompareMode,
   CropRect,
+  CropPayload,
   DocumentRenderPayload,
   EvaluatorInfo,
   ExportPayload,
   HistoryEntry,
   InspectorTab,
-  LayoutPresetId,
   ManualCurves,
   NotificationItem,
   PluginInfo,
@@ -30,6 +31,8 @@ import type {
   WorkspaceFile,
 } from "../types";
 import { DEFAULT_IDENTITY_CURVE } from "../types";
+import { perfMark, perfReset, perfDump } from "../lib/perf";
+import { debugLog } from "../lib/debugLog";
 
 type ExportOptions = {
   format: string;
@@ -45,10 +48,13 @@ type SessionOptions = {
 };
 
 const WORKBENCH_PREFERENCES_KEY = "photo-calibrator:workbench-preferences";
-const WORKBENCH_INSPECTOR_TABS_KEY = "photo-calibrator:workbench-inspector-tabs";
-const WORKBENCH_VIEWER_STATES_KEY = "photo-calibrator:workbench-viewer-states";
+const WORKBENCH_INSPECTOR_TAB_KEY = "photo-calibrator:workbench-inspector-tab";
+const WORKBENCH_VIEWER_STATE_KEY = "photo-calibrator:workbench-viewer-state";
 
-export type PickedFiles = FileList | File[] | null;
+/** A file info from shell bridge with path (no File object for non-browser files) */
+export type PathFileInfo = { name: string; path: string };
+
+export type PickedFiles = FileList | File[] | PathFileInfo[] | null;
 
 function loadWorkbenchPreferences(): WorkbenchPreferences {
   if (typeof window === "undefined") return DEFAULT_WORKBENCH_PREFERENCES;
@@ -65,25 +71,31 @@ function loadWorkbenchPreferences(): WorkbenchPreferences {
   }
 }
 
-function loadInspectorTabsByPreset(): Partial<Record<LayoutPresetId | "custom", InspectorTab>> {
-  if (typeof window === "undefined") return {};
+function loadInspectorTab(): InspectorTab {
+  if (typeof window === "undefined") return "adjust";
   try {
-    const raw = window.localStorage.getItem(WORKBENCH_INSPECTOR_TABS_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Partial<Record<LayoutPresetId | "custom", InspectorTab>>;
+    const raw = window.localStorage.getItem(WORKBENCH_INSPECTOR_TAB_KEY);
+    if (!raw) return "adjust";
+    const parsed = JSON.parse(raw) as InspectorTab;
+    return parsed;
   } catch {
-    return {};
+    return "adjust";
   }
 }
 
-function loadViewerStatesByPreset(): Partial<Record<LayoutPresetId | "custom", ViewerWorkspaceState>> {
-  if (typeof window === "undefined") return {};
+function loadViewerState(): ViewerWorkspaceState {
+  if (typeof window === "undefined") {
+    return { compareMode: "side-by-side", splitPosition: 50, zoomMode: "fit", zoomScale: 1, pan: { x: 0, y: 0 } };
+  }
   try {
-    const raw = window.localStorage.getItem(WORKBENCH_VIEWER_STATES_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Partial<Record<LayoutPresetId | "custom", ViewerWorkspaceState>>;
+    const raw = window.localStorage.getItem(WORKBENCH_VIEWER_STATE_KEY);
+    if (!raw) {
+      return { compareMode: "side-by-side", splitPosition: 50, zoomMode: "fit", zoomScale: 1, pan: { x: 0, y: 0 } };
+    }
+    const parsed = JSON.parse(raw) as ViewerWorkspaceState;
+    return parsed;
   } catch {
-    return {};
+    return { compareMode: "side-by-side", splitPosition: 50, zoomMode: "fit", zoomScale: 1, pan: { x: 0, y: 0 } };
   }
 }
 
@@ -94,12 +106,13 @@ export function useWorkbench() {
   const [capabilities, setCapabilities] = useState<CapabilityPayload | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
-  const [viewerStatesByPreset, setViewerStatesByPreset] = useState<Partial<Record<LayoutPresetId | "custom", ViewerWorkspaceState>>>(() => loadViewerStatesByPreset());
+  const [viewerState, setViewerState] = useState<ViewerWorkspaceState>(() => loadViewerState());
   const [mode, setMode] = useState("global");
   const [strength, setStrength] = useState(0.8);
   const [accelerator, setAccelerator] = useState("auto");
   const [loading, setLoading] = useState(false);
-  const [inspectorTabsByPreset, setInspectorTabsByPreset] = useState<Partial<Record<LayoutPresetId | "custom", InspectorTab>>>(() => loadInspectorTabsByPreset());
+  const [highResLoading, setHighResLoading] = useState(false);
+  const [activeInspectorTab, setActiveInspectorTabState] = useState<InspectorTab>(() => loadInspectorTab());
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
     format: "jpeg",
     outputPath: "/tmp/photo-calibrated.jpg",
@@ -113,10 +126,12 @@ export function useWorkbench() {
   });
   const [exportResult, setExportResult] = useState<ExportPayload | null>(null);
   const [documentRender, setDocumentRender] = useState<DocumentRenderPayload | null>(null);
+  const documentRenderFileRef = useRef<string | null>(null);
   const [sessionSaveResult, setSessionSaveResult] = useState<SessionSavePayload | null>(null);
   const [savedSessions, setSavedSessions] = useState<SessionListItem[]>([]);
   const [selectedEvaluator, setSelectedEvaluator] = useState("__default__");
   const [aiContext, setAiContext] = useState("还原真实白平衡，同时保留胶片感。");
+  const [aiSettings, setAISettings] = useState<AIProviderSettings>(loadAISettings);
   const [aiResult, setAiResult] = useState<AIEvaluationPayload | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [activityLog, setActivityLog] = useState<NotificationItem[]>([]);
@@ -144,13 +159,24 @@ export function useWorkbench() {
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [preferences, setPreferences] = useState<WorkbenchPreferences>(() => loadWorkbenchPreferences());
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
+  const [stageContainerSize, setStageContainerSize] = useState<{ width: number; height: number } | null>(null);
   const requestRef = useRef(0);
-  /* undo stack for calibration parameters (mode + strength + accelerator) */
-  type UndoSnapshot = { mode: string; strength: number; accelerator: string };
+  const calibrationDepthRef = useRef(0);
+  const currentResMaxSideRef = useRef(320);
+  const prevDepsRef = useRef<{ id?: string; mode: string; strength: number }>({ mode: "global", strength: 0.8 });
+  const fileCurvesRef = useRef<Map<string, { r: ChannelCurve; g: ChannelCurve; b: ChannelCurve }>>(new Map());
+  const highResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highResRequestRef = useRef(0);
+  const highResSessionRef = useRef<string | null>(null);
+  const curveSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const curveHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
+  type UndoSnapshot = { mode: string; strength: number; accelerator: string; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
   const undoIndexRef = useRef(-1);
   const undoingRef = useRef(false);
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyIndexRef = useRef(historyIndex);
   const selectedFile = useMemo(() => files.find((item) => item.id === selectedId), [files, selectedId]);
   const filteredFiles = useMemo(() => {
     const needle = searchQuery.trim().toLowerCase();
@@ -178,20 +204,11 @@ export function useWorkbench() {
     }),
     [preferences, viewerFocusMode],
   );
-  const activeLayoutPreset = useMemo(() => getMatchingLayoutPreset(preferences), [preferences]);
-  const activeInspectorTab = useMemo(
-    () => inspectorTabsByPreset[activeLayoutPreset] ?? getDefaultInspectorTabForPreset(activeLayoutPreset),
-    [activeLayoutPreset, inspectorTabsByPreset],
-  );
-  const activeViewerState = useMemo(
-    () => viewerStatesByPreset[activeLayoutPreset] ?? getDefaultViewerStateForPreset(activeLayoutPreset),
-    [activeLayoutPreset, viewerStatesByPreset],
-  );
-  const compareMode = activeViewerState.compareMode;
-  const splitPosition = activeViewerState.splitPosition;
-  const viewerZoomMode = activeViewerState.zoomMode;
-  const viewerZoomScale = activeViewerState.zoomScale;
-  const viewerPan = activeViewerState.pan;
+  const compareMode = viewerState.compareMode;
+  const splitPosition = viewerState.splitPosition;
+  const viewerZoomMode = viewerState.zoomMode;
+  const viewerZoomScale = viewerState.zoomScale;
+  const viewerPan = viewerState.pan;
 
   function notify(tone: NotificationItem["tone"], title: string, message: string) {
     const id = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -211,19 +228,13 @@ export function useWorkbench() {
   }
 
   function setActiveInspectorTab(tab: InspectorTab) {
-    setInspectorTabsByPreset((current) => ({
-      ...current,
-      [activeLayoutPreset]: tab,
-    }));
+    setActiveInspectorTabState(tab);
   }
 
-  function updateActiveViewerState(patch: Partial<ViewerWorkspaceState>) {
-    setViewerStatesByPreset((current) => ({
+  function updateViewerState(patch: Partial<ViewerWorkspaceState>) {
+    setViewerState((current) => ({
       ...current,
-      [activeLayoutPreset]: {
-        ...(current[activeLayoutPreset] ?? getDefaultViewerStateForPreset(activeLayoutPreset)),
-        ...patch,
-      },
+      ...patch,
     }));
   }
 
@@ -256,12 +267,56 @@ export function useWorkbench() {
   }, [preferences]);
 
   useEffect(() => {
-    window.localStorage.setItem(WORKBENCH_INSPECTOR_TABS_KEY, JSON.stringify(inspectorTabsByPreset));
-  }, [inspectorTabsByPreset]);
+    window.localStorage.setItem(WORKBENCH_INSPECTOR_TAB_KEY, JSON.stringify(activeInspectorTab));
+  }, [activeInspectorTab]);
+
+  const viewerStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (viewerStateTimerRef.current) {
+      clearTimeout(viewerStateTimerRef.current);
+    }
+    viewerStateTimerRef.current = setTimeout(() => {
+      window.localStorage.setItem(WORKBENCH_VIEWER_STATE_KEY, JSON.stringify(viewerState));
+    }, 500);
+    return () => {
+      if (viewerStateTimerRef.current) {
+        clearTimeout(viewerStateTimerRef.current);
+      }
+    };
+  }, [viewerState]);
 
   useEffect(() => {
-    window.localStorage.setItem(WORKBENCH_VIEWER_STATES_KEY, JSON.stringify(viewerStatesByPreset));
-  }, [viewerStatesByPreset]);
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
+
+  /* ── Load config from backend on mount ── */
+  useEffect(() => {
+    fetchConfig()
+      .then((config) => {
+        if (config.ai) setAISettings((prev) => ({ ...prev, ...config.ai }));
+        if (config.preferences) setPreferences((prev) => ({ ...prev, ...config.preferences }));
+        if (config.viewer_state) setViewerState((prev) => ({ ...prev, ...config.viewer_state }));
+        if (config.inspector_tab) setActiveInspectorTab(config.inspector_tab);
+      })
+      .catch(() => {});
+  }, []);
+
+  /* ── Save config to backend (debounced) ── */
+  const configTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (configTimerRef.current) clearTimeout(configTimerRef.current);
+    configTimerRef.current = setTimeout(() => {
+      putConfig({
+        ai: aiSettings,
+        preferences,
+        viewer_state: viewerState,
+        inspector_tab: activeInspectorTab,
+      }).catch(() => {});
+    }, 2000);
+    return () => {
+      if (configTimerRef.current) clearTimeout(configTimerRef.current);
+    };
+  }, [aiSettings, preferences, viewerState, activeInspectorTab]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -298,6 +353,9 @@ export function useWorkbench() {
     setMode(snap.mode);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
+    setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
+    setBCurve(snap.bCurve.map((p) => [...p] as [number, number]));
     undoingRef.current = false;
   }
 
@@ -311,18 +369,36 @@ export function useWorkbench() {
     setMode(snap.mode);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
+    setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
+    setBCurve(snap.bCurve.map((p) => [...p] as [number, number]));
     undoingRef.current = false;
   }
 
   useEffect(() => {
     if (!selectedFile) return;
+    const depth = ++calibrationDepthRef.current;
+    if (depth > 3) {
+      console.error("[Calibration] recursion guard triggered at depth", depth, "- aborting");
+      calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
+      return;
+    }
+    const prev = prevDepsRef.current;
+    const fileOrParamsChanged = prev.id !== selectedFile?.id || prev.mode !== mode || prev.strength !== strength;
+    prevDepsRef.current = { id: selectedFile?.id, mode, strength };
+    debugLog("calib.effect", { fileId: selectedFile?.id?.substring(0, 20), fileChanged: fileOrParamsChanged, mode, strength });
+    const fastMode = !fileOrParamsChanged;
+    const debounceMs = fastMode ? 0 : 160;
+    if (fastMode) perfMark(`effect.fire(debounce=${debounceMs}ms)`);
     const currentRequest = ++requestRef.current;
     const run = async () => {
-      setLoading(true);
+      perfMark("run.start");
+      if (fileOrParamsChanged) setLoading(true);
       setActionState("calibration", "running", selectedFile.name);
       try {
         let payload: CalibrationPayload;
-        const curvePayload = mode === "rgb-curves" ? { r_curve: rCurve, g_curve: gCurve, b_curve: bCurve } : {};
+        const curvePayload = { r_curve: rCurve, g_curve: gCurve, b_curve: bCurve };
+        perfMark("api.start");
         if (selectedFile.sessionId) {
           payload = await postCalibrationSession({
             session_id: selectedFile.sessionId,
@@ -330,38 +406,75 @@ export function useWorkbench() {
             strength,
             accelerator,
             include_original: false,
+            fast: fastMode,
             ...curvePayload,
           });
         } else {
           if (!selectedFile.file) return;
-          const imageData = await fileToDataUrl(selectedFile.file);
-          payload = await postCalibration({
-            image_data: imageData,
+          const filePath = (selectedFile.file as any)?.path as string | undefined;
+          const body: Record<string, unknown> = {
             file_name: selectedFile.name,
             mode,
             strength,
             accelerator,
+            fast: fastMode,
             ...curvePayload,
-          });
-        }
+          };
+          if (filePath) {
+            body.path = filePath;
+          } else {
+            body.image_data = await fileToDataUrl(selectedFile.file as File);
+          }
+          payload = await postCalibration(body);
+          }
+         perfMark("api.done");
         if (currentRequest !== requestRef.current) return;
+        const backendTiming = (payload as any)?._timing;
+        if (backendTiming) perfMark(`backend(calib=${backendTiming.calibration_ms}ms resp=${backendTiming.response_ms}ms)`);
+        debugLog("calib.setFiles", { fast: fastMode, calibOk: !!payload.calibrated_image });
         setFiles((items) =>
           items.map((item) =>
             item.id === selectedFile.id
               ? {
                   ...item,
                   sessionId: payload.session_id ?? item.sessionId,
-                  result: payload,
-                  thumbnailUrl: item.browserDisplayable ? item.thumbnailUrl : payload.original_preview ?? item.thumbnailUrl,
+                  result: {
+                    ...payload,
+                    charts: fastMode && Object.keys(payload.charts ?? {}).length === 0
+                      ? item.result?.charts ?? {}
+                      : payload.charts ?? {},
+                  },
                 }
               : item,
           ),
         );
         setDocumentRender(null);
         setAiResult(null);
+        perfMark("setFiles.done");
+        if (fastMode && highResSessionRef.current) {
+          if (curveSettleTimerRef.current) clearTimeout(curveSettleTimerRef.current);
+          curveSettleTimerRef.current = setTimeout(async () => {
+            const sid = highResSessionRef.current;
+            if (!sid) return;
+            try {
+              const cal = await postCalibrationSession({
+                session_id: sid, mode, strength, accelerator,
+                include_original: false,
+                r_curve: rCurve, g_curve: gCurve, b_curve: bCurve,
+              });
+              setFiles((items) => items.map((item) =>
+                item.id === selectedFile.id ? { ...item, result: cal } : item
+              ));
+            } catch {}
+          }, 600);
+        }
         setActionState("calibration", "success", payload.session_id ?? selectedFile.name);
         const opCount = payload.processing ? 1 : 0;
         pushHistoryEntry(`${mode} / ${strength.toFixed(2)}`, opCount, mode);
+        requestAnimationFrame(() => {
+          perfMark("DOM.rendered");
+          perfDump();
+        });
       } catch (error) {
         if (currentRequest === requestRef.current) {
           console.error(error);
@@ -369,11 +482,15 @@ export function useWorkbench() {
           notify("error", "Calibration failed", String(error));
         }
       } finally {
-        if (currentRequest === requestRef.current) setLoading(false);
+        if (fileOrParamsChanged) setLoading(false);
       }
     };
-    const timer = window.setTimeout(run, 160);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(run, debounceMs);
+    return () => {
+      window.clearTimeout(timer);
+      calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
+      if (fileOrParamsChanged) setLoading(false);
+    };
   }, [selectedFile?.id, mode, strength, accelerator, rCurve, gCurve, bCurve]);
 
   /* push calibration snapshots to undo stack (debounced 600ms) */
@@ -382,7 +499,7 @@ export function useWorkbench() {
     const prevTimer = pushTimerRef.current;
     if (prevTimer) clearTimeout(prevTimer);
     pushTimerRef.current = setTimeout(() => {
-      const snap: UndoSnapshot = { mode, strength, accelerator };
+      const snap: UndoSnapshot = { mode, strength, accelerator, rCurve, gCurve, bCurve };
       const stack = undoStackRef.current;
       const idx = undoIndexRef.current;
       const last = stack[idx];
@@ -395,11 +512,11 @@ export function useWorkbench() {
       undoIndexRef.current = undoStackRef.current.length - 1;
     }, 600);
     return () => { const t = pushTimerRef.current; if (t) clearTimeout(t); };
-  }, [mode, strength, accelerator]);
+  }, [mode, strength, accelerator, rCurve, gCurve, bCurve]);
 
   useEffect(() => {
     if (!selectedFile) return;
-    updateActiveViewerState({ pan: { x: 0, y: 0 } });
+    updateViewerState({ pan: { x: 0, y: 0 } });
     setExportOptions((current) => ({
       ...current,
       outputPath: suggestExportPath(selectedFile.name, current.format),
@@ -409,9 +526,11 @@ export function useWorkbench() {
     });
     setExportResult(null);
     setSessionSaveResult(null);
-    setRCurve(DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
-    setGCurve(DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
-    setBCurve(DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
+    setDocumentRender(null);
+    const saved = fileCurvesRef.current.get(selectedFile.id);
+    setRCurve(saved?.r ?? selectedFile.rCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
+    setGCurve(saved?.g ?? selectedFile.gCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
+    setBCurve(saved?.b ?? selectedFile.bCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
     setHistory([]);
     setHistoryIndex(-1);
   }, [selectedFile?.id]);
@@ -424,43 +543,191 @@ export function useWorkbench() {
     }));
   }, [exportOptions.format, selectedFile?.id]);
 
-  async function hydrateNonDisplayablePreviews(nextFiles: WorkspaceFile[]) {
-    for (const item of nextFiles) {
-      if (item.browserDisplayable || item.preview) continue;
-      if (!item.file) continue;
+  /* ── Adaptive resolution: reset tracking when file changes ── */
+  useEffect(() => {
+    currentResMaxSideRef.current = 320;
+    highResRequestRef.current++;
+    if (highResTimerRef.current) {
+      clearTimeout(highResTimerRef.current);
+      highResTimerRef.current = null;
+    }
+  }, [selectedFile?.id]);
+
+  /* ── Adaptive resolution: request higher-res preview on zoom / resize ── */
+  useEffect(() => {
+    if (!selectedFile?.sessionId) return;
+    if (!selectedFile?.preview) return;
+    if (!stageContainerSize) return;
+    if (selectedFile?.browserDisplayable) return;
+
+    const containerWidth = stageContainerSize.width;
+    const containerHeight = stageContainerSize.height;
+    const dpr = window.devicePixelRatio || 1;
+
+    let requiredMaxSide = Math.max(containerWidth, containerHeight) * viewerZoomScale * dpr;
+    requiredMaxSide = Math.max(320, Math.min(3200, Math.round(requiredMaxSide)));
+
+    const currentMaxSide = currentResMaxSideRef.current;
+    const diff = Math.abs(requiredMaxSide - currentMaxSide) / currentMaxSide;
+    if (diff <= 0.25) return;
+
+    if (highResTimerRef.current) {
+      clearTimeout(highResTimerRef.current);
+    }
+
+    const requestId = ++highResRequestRef.current;
+    const capturedFileId = selectedFile.id;
+
+    highResTimerRef.current = setTimeout(async () => {
+      perfMark("adaptive.start");
+      setHighResLoading(true);
       try {
-        const filePath = (item.file as any)?.path as string | undefined;
-        let body: Record<string, unknown> = { file_name: item.name, analysis_max_side: 320 };
-        if (filePath) {
-          // Send file path instead of reading the full file into a data URL
-          body.path = filePath;
-        } else {
-          body.image_data = await fileToDataUrl(item.file);
-        }
-        const preview = await postPreview(body);
-        setFiles((existing) =>
-          existing.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  sessionId: preview.session_id,
-                  preview,
-                  thumbnailUrl: preview.original_preview,
-                  displayUrl: preview.original_preview,
-                }
-              : entry,
+        const preview = await postPreview({
+          session_id: selectedFile.sessionId,
+          analysis_max_side: requiredMaxSide,
+        });
+        if (requestId !== highResRequestRef.current) return;
+        currentResMaxSideRef.current = requiredMaxSide;
+
+        setFiles((items) =>
+          items.map((item) =>
+            item.id === capturedFileId
+              ? { ...item, highResPreview: preview }
+              : item,
           ),
         );
-      } catch (error) {
-        console.error(error);
+
+        const highResSessionId = preview.session_id;
+        highResSessionRef.current = highResSessionId;
+        const calibration = await postCalibrationSession({
+          session_id: highResSessionId,
+          mode,
+          strength,
+          accelerator,
+          include_original: true,
+          r_curve: rCurve,
+          g_curve: gCurve,
+          b_curve: bCurve,
+        });
+        if (requestId !== highResRequestRef.current) return;
+        setFiles((items) =>
+          items.map((item) =>
+            item.id === capturedFileId
+              ? { ...item, result: calibration }
+              : item,
+          ),
+        );
+      } catch (err) {
+        console.warn("High-res preview request failed:", err);
+      } finally {
+        if (requestId === highResRequestRef.current) setHighResLoading(false);
       }
+    }, 300);
+
+    return () => {
+      if (highResTimerRef.current) {
+        clearTimeout(highResTimerRef.current);
+        highResTimerRef.current = null;
+      }
+    };
+  }, [stageContainerSize, viewerZoomScale, viewerZoomMode, selectedFile?.sessionId, mode, strength, accelerator]);
+
+  async function hydrateNonDisplayablePreviews(nextFiles: WorkspaceFile[]) {
+    const toProcess = nextFiles.filter((item) => item.file && !item.browserDisplayable && !item.preview);
+    if (toProcess.length === 0) return;
+
+    const selectedIdx = toProcess.findIndex((f) => f.id === selectedId);
+    if (selectedIdx > 0) {
+      const [selected] = toProcess.splice(selectedIdx, 1);
+      toProcess.unshift(selected);
+    }
+
+    setFiles((existing) =>
+      existing.map((entry) => {
+        if (toProcess.some((p) => p.id === entry.id)) {
+          return { ...entry, thumbnailLoading: true };
+        }
+        return entry;
+      }),
+    );
+
+    async function loadOne(item: WorkspaceFile) {
+      const filePath = (item.file as any)?.path as string | undefined;
+      const body: Record<string, unknown> = { file_name: item.name, analysis_max_side: 320 };
+      if (filePath) {
+        body.path = filePath;
+      } else {
+        body.image_data = await fileToDataUrl(item.file as File);
+      }
+      return { item, preview: await postPreview(body) };
+    }
+
+    const promises = toProcess.map(async (item) => {
+      try {
+        const result = await loadOne(item);
+        setFiles((existing) =>
+          existing.map((entry) => {
+            if (entry.id === result.item.id) {
+              if (entry.displayUrl?.startsWith("blob:")) URL.revokeObjectURL(entry.displayUrl);
+              if (entry.thumbnailUrl?.startsWith("blob:") && entry.thumbnailUrl !== entry.displayUrl) URL.revokeObjectURL(entry.thumbnailUrl);
+              return {
+                ...entry,
+                sessionId: result.preview.session_id,
+                preview: result.preview,
+                thumbnailUrl: result.preview.original_preview,
+                displayUrl: result.preview.original_preview,
+                thumbnailLoading: false,
+              };
+            }
+            return entry;
+          }),
+        );
+        return result;
+      } catch {
+        setFiles((existing) =>
+          existing.map((entry) => {
+            if (entry.id === item.id) {
+              return { ...entry, thumbnailLoading: false };
+            }
+            return entry;
+          }),
+        );
+        return null;
+      }
+    });
+
+    await Promise.allSettled(promises);
+  }
+
+  function injectFiles(workspaceFiles: WorkspaceFile[]) {
+    setFiles(workspaceFiles);
+    if (workspaceFiles.length > 0) {
+      setSelectedId(workspaceFiles[0].id);
     }
   }
 
-  function onPickFiles(fileList: PickedFiles) {
-    const pickedFiles = fileList ? Array.from(fileList) : [];
+  async function onPickFiles(fileList: PickedFiles) {
+    const pickedFiles: (File | PathFileInfo)[] = fileList ? Array.from(fileList as unknown as ArrayLike<File | PathFileInfo>) : [];
     if (!pickedFiles.length) return;
-    const nextFiles = pickedFiles.map((file) => {
+    const nextFiles = pickedFiles.map((item) => {
+      // Handle PathFileInfo (shell bridge items with path, no browser File)
+      if (typeof item === "object" && item !== null && "path" in item && !(item instanceof File)) {
+        const pathInfo = item as PathFileInfo;
+        return {
+          id: `file:${pathInfo.path}`,
+          kind: "file",
+          file: pathInfo,
+          name: pathInfo.name,
+          displayUrl: "",
+          thumbnailUrl: "",
+          browserDisplayable: false,
+          rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+          gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+          bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+        } satisfies WorkspaceFile;
+      }
+      // Handle regular browser File objects
+      const file = item as File;
       const displayable = isBrowserDisplayable(file);
       const url = URL.createObjectURL(file);
       return {
@@ -471,9 +738,25 @@ export function useWorkbench() {
         displayUrl: url,
         thumbnailUrl: url,
         browserDisplayable: displayable,
+        rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+        gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+        bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
       } satisfies WorkspaceFile;
     });
     setFiles(nextFiles);
+    const firstFile = nextFiles[0];
+    if (firstFile && !firstFile.browserDisplayable) {
+      const filePath = (firstFile.file as any)?.path as string | undefined;
+      const body: Record<string, unknown> = { file_name: firstFile.name, analysis_max_side: 320 };
+      if (filePath) body.path = filePath;
+      else body.image_data = await fileToDataUrl(firstFile.file as File);
+      const preview = await postPreview(body);
+      setFiles((existing) => existing.map(e => {
+        if (e.id !== firstFile.id) return e;
+        if (e.displayUrl?.startsWith("blob:")) URL.revokeObjectURL(e.displayUrl);
+        return { ...e, sessionId: preview.session_id, preview, thumbnailUrl: preview.original_preview, displayUrl: preview.original_preview };
+      }));
+    }
     setSelectedId(nextFiles[0]?.id);
     void hydrateNonDisplayablePreviews(nextFiles);
   }
@@ -482,12 +765,21 @@ export function useWorkbench() {
     if (!selectedFile) return;
     try {
       setActionState("filmScan", "running", selectedFile.name);
-      const payload = selectedFile.sessionId
-        ? await postFilmScan({ session_id: selectedFile.sessionId })
-        : await postFilmScan({
-            image_data: await fileToDataUrl(selectedFile.file!),
-            file_name: selectedFile.name,
-          });
+      let payload: CropPayload;
+      if (selectedFile.sessionId) {
+        payload = await postFilmScan({ session_id: selectedFile.sessionId });
+      } else if (!selectedFile.file) {
+        return;
+      } else {
+        const filePath = (selectedFile.file as any)?.path as string | undefined;
+        const body: Record<string, unknown> = { file_name: selectedFile.name };
+        if (filePath) {
+          body.path = filePath;
+        } else {
+          body.image_data = await fileToDataUrl(selectedFile.file as File);
+        }
+        payload = await postFilmScan(body);
+      }
       setFiles((items) =>
         items.map((item) =>
           item.id === selectedFile.id
@@ -502,6 +794,7 @@ export function useWorkbench() {
         ),
       );
       setActionState("filmScan", "success", payload.film_scan?.film_format ?? payload.processing?.film_scan_source ?? "done");
+      pushHistoryEntry("胶片扫描", 1, "film-scan");
     } catch (error) {
       console.error(error);
       setActionState("filmScan", "error", String(error));
@@ -513,8 +806,8 @@ export function useWorkbench() {
     if (!selectedFile?.file) return;
     try {
       setActionState("export", "running", exportOptions.outputPath);
-      const payload = await postExport({
-        image_data: await fileToDataUrl(selectedFile.file),
+      const filePathVal = (selectedFile.file as any)?.path as string | undefined;
+      const body: Record<string, unknown> = {
         file_name: selectedFile.name,
         mode,
         strength,
@@ -525,7 +818,13 @@ export function useWorkbench() {
         embed_icc: exportOptions.embedIcc,
         preserve_metadata: exportOptions.preserveMetadata,
         export_transform: exportOptions.exportTransform,
-      });
+      };
+      if (filePathVal) {
+        body.path = filePathVal;
+      } else {
+        body.image_data = await fileToDataUrl(selectedFile.file as File);
+      }
+      const payload = await postExport(body);
       setExportResult(payload);
       setActiveInspectorTab("export");
       setActionState("export", "success", payload.path);
@@ -543,6 +842,7 @@ export function useWorkbench() {
       setActionState("document", "running", selectedFile.sessionId);
       const payload = await postDocumentRender({ session_id: selectedFile.sessionId });
       setDocumentRender(payload);
+      if (selectedFile) documentRenderFileRef.current = selectedFile.id;
       setActionState("document", "success", `${payload.processing?.document_replayable_ops ?? 0} ops`);
       notify("success", "Document rendered", `${payload.processing?.document_replayable_ops ?? 0} replayable ops`);
     } catch (error) {
@@ -602,6 +902,9 @@ export function useWorkbench() {
         sessionPath: item.path,
         result: payload,
         cropEdited: false,
+        rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+        gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
+        bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
       };
       setFiles((current) => {
         const filtered = current.filter((entry) => entry.id !== nextItem.id);
@@ -636,7 +939,7 @@ export function useWorkbench() {
     if (!selectedFile?.sessionId) return;
     try {
       setActionState("ai", "running", selectedEvaluator);
-      const payload = await postAIEvaluate({
+      const body: Record<string, unknown> = {
         session_id: selectedFile.sessionId,
         evaluator_name: selectedEvaluator,
         mode,
@@ -644,7 +947,16 @@ export function useWorkbench() {
         context: aiContext,
         timeout_ms: 15000,
         allow_failure: true,
-      });
+      };
+      if (aiSettings.type !== "mock" && aiSettings.api_key) {
+        body.provider = {
+          type: aiSettings.type,
+          base_url: aiSettings.base_url,
+          model: aiSettings.model,
+          api_key: aiSettings.api_key,
+        };
+      }
+      const payload = await postAIEvaluate(body);
       setAiResult(payload);
       setActiveInspectorTab("analysis");
       setActionState("ai", payload.ok ? "success" : "error", payload.evaluation?.summary ?? payload.error ?? payload.evaluator_name);
@@ -676,6 +988,7 @@ export function useWorkbench() {
           : item,
       ),
     );
+    pushHistoryEntry("裁切调整", 1, "crop");
   }
 
   function resetSelectedCrop() {
@@ -699,12 +1012,25 @@ export function useWorkbench() {
       ),
     );
     notify("info", "Crop reset", "恢复到自动建议框");
+    pushHistoryEntry("裁切复位", 1, "crop-reset");
   }
 
   function setCurves(next: ManualCurves) {
-    setRCurve(next.r.map((p) => [...p] as [number, number]));
-    setGCurve(next.g.map((p) => [...p] as [number, number]));
-    setBCurve(next.b.map((p) => [...p] as [number, number]));
+    perfReset("curve-drag");
+    const nr = next.r.map((p) => [...p] as [number, number]);
+    const ng = next.g.map((p) => [...p] as [number, number]);
+    const nb = next.b.map((p) => [...p] as [number, number]);
+    perfMark("setCurves.state");
+    setRCurve(nr);
+    setGCurve(ng);
+    setBCurve(nb);
+    if (selectedFile) {
+      fileCurvesRef.current.set(selectedFile.id, { r: nr, g: ng, b: nb });
+    }
+    if (curveHistoryTimerRef.current) clearTimeout(curveHistoryTimerRef.current);
+    curveHistoryTimerRef.current = setTimeout(() => {
+      pushHistoryEntry("曲线调整", 1, "curves");
+    }, 1000);
   }
 
   function pushHistoryEntry(description: string, operationCount: number, currentOpName: string) {
@@ -712,7 +1038,8 @@ export function useWorkbench() {
     const timestamp = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
     const entry: HistoryEntry = { description, timestamp, operation_count: operationCount, current_op_name: currentOpName };
     setHistory((prev) => {
-      const truncated = prev.slice(0, historyIndex + 1);
+      const idx = historyIndexRef.current;
+      const truncated = prev.slice(0, idx + 1);
       const next = [...truncated, entry].slice(-50);
       setHistoryIndex(next.length - 1);
       return next;
@@ -723,8 +1050,14 @@ export function useWorkbench() {
     setNotifications((current) => current.filter((item) => item.id !== id));
   }
 
+  function releaseFileResources(file: WorkspaceFile) {
+    if (file.displayUrl?.startsWith("blob:")) URL.revokeObjectURL(file.displayUrl);
+    if (file.thumbnailUrl?.startsWith("blob:") && file.thumbnailUrl !== file.displayUrl) URL.revokeObjectURL(file.thumbnailUrl);
+  }
+
   function removeSelectedItem() {
     if (!selectedFile) return;
+    releaseFileResources(selectedFile);
     setFiles((current) => {
       const next = current.filter((item) => item.id !== selectedFile.id);
       const replacement = next[0]?.id;
@@ -735,6 +1068,7 @@ export function useWorkbench() {
   }
 
   function clearWorkspace() {
+    files.forEach(releaseFileResources);
     setFiles([]);
     setSelectedId(undefined);
     setDocumentRender(null);
@@ -760,7 +1094,7 @@ export function useWorkbench() {
   }
 
   function setViewerZoomPreset(mode: ViewerZoomMode) {
-    updateActiveViewerState({
+    updateViewerState({
       zoomMode: mode,
       zoomScale: 1,
       pan: { x: 0, y: 0 },
@@ -768,14 +1102,14 @@ export function useWorkbench() {
   }
 
   function setViewerManualScale(scale: number) {
-    updateActiveViewerState({
+    updateViewerState({
       zoomMode: "manual",
       zoomScale: Math.max(0.5, Math.min(scale, 4)),
     });
   }
 
   function setViewerPanOffset(pan: ViewerPan) {
-    updateActiveViewerState({
+    updateViewerState({
       pan: {
         x: Math.max(-1200, Math.min(1200, pan.x)),
         y: Math.max(-1200, Math.min(1200, pan.y)),
@@ -784,21 +1118,23 @@ export function useWorkbench() {
   }
 
   function zoomIn() {
-    updateActiveViewerState({
+    setViewerState((current) => ({
+      ...current,
       zoomMode: "manual",
-      zoomScale: Math.min(4, Number((viewerZoomScale + 0.1).toFixed(2))),
-    });
+      zoomScale: Math.min(4, Number((current.zoomScale + 0.1).toFixed(2))),
+    }));
   }
 
   function zoomOut() {
-    updateActiveViewerState({
+    setViewerState((current) => ({
+      ...current,
       zoomMode: "manual",
-      zoomScale: Math.max(0.5, Number((viewerZoomScale - 0.1).toFixed(2))),
-    });
+      zoomScale: Math.max(0.5, Number((current.zoomScale - 0.1).toFixed(2))),
+    }));
   }
 
   function resetViewerZoom() {
-    updateActiveViewerState({
+    updateViewerState({
       zoomMode: "fit",
       zoomScale: 1,
       pan: { x: 0, y: 0 },
@@ -806,11 +1142,11 @@ export function useWorkbench() {
   }
 
   function setCompareMode(mode: CompareMode) {
-    updateActiveViewerState({ compareMode: mode });
+    updateViewerState({ compareMode: mode });
   }
 
   function setSplitPosition(value: number) {
-    updateActiveViewerState({ splitPosition: Math.max(10, Math.min(90, value)) });
+    updateViewerState({ splitPosition: Math.max(10, Math.min(90, value)) });
   }
 
   function updatePreference<K extends keyof WorkbenchPreferences>(key: K, value: WorkbenchPreferences[K]) {
@@ -847,39 +1183,23 @@ export function useWorkbench() {
     setViewerFocusMode((current) => !current);
   }
 
-  function applyLayoutPreset(preset: LayoutPresetId) {
-    setPreferences(getLayoutPresetPreferences(preset));
-    setViewerFocusMode(false);
-    notify("info", "Layout preset applied", getLayoutPresetDefinition(preset).label);
-  }
-
   function resetPreferences() {
     setPreferences(DEFAULT_WORKBENCH_PREFERENCES);
-    setInspectorTabsByPreset((current) => ({
-      ...current,
-      analyze: getDefaultInspectorTabForPreset("analyze"),
-      balanced: getDefaultInspectorTabForPreset("balanced"),
-      custom: getDefaultInspectorTabForPreset("custom"),
-      edit: getDefaultInspectorTabForPreset("edit"),
-      review: getDefaultInspectorTabForPreset("review"),
-    }));
-    setViewerStatesByPreset((current) => ({
-      ...current,
-      analyze: getDefaultViewerStateForPreset("analyze"),
-      balanced: getDefaultViewerStateForPreset("balanced"),
-      custom: getDefaultViewerStateForPreset("custom"),
-      edit: getDefaultViewerStateForPreset("edit"),
-      review: getDefaultViewerStateForPreset("review"),
-    }));
     setViewerFocusMode(false);
   }
 
-  return {
+  const setAISettingsAndSave = useCallback((s: AIProviderSettings) => {
+    saveAISettings(s);
+    setAISettings(s);
+  }, []);
+
+  return useMemo(() => ({
     backendOk,
     plugins,
     evaluators,
     capabilities,
     files,
+    setFiles,
     filteredFiles,
     fileCounts,
     selectedId,
@@ -905,7 +1225,9 @@ export function useWorkbench() {
     accelerator,
     setAccelerator,
     loading,
+    highResLoading,
     onPickFiles,
+    injectFiles,
     activeInspectorTab,
     setActiveInspectorTab,
     exportOptions,
@@ -920,6 +1242,8 @@ export function useWorkbench() {
     setSelectedEvaluator,
     aiContext,
     setAiContext,
+    aiSettings,
+    setAISettings: setAISettingsAndSave,
     aiResult,
     notifications,
     activityLog,
@@ -928,14 +1252,14 @@ export function useWorkbench() {
     setSourceFilter,
     searchQuery,
     setSearchQuery,
+    stageContainerSize,
+    setStageContainerSize,
     preferences,
     layoutState,
-    activeLayoutPreset,
     updatePreference,
     togglePreference,
     toggleLayoutElement,
     toggleViewerFocusMode,
-    applyLayoutPreset,
     resetPreferences,
     runFilmScan,
     runExport,
@@ -959,7 +1283,15 @@ export function useWorkbench() {
     setCurves,
     history,
     historyIndex,
-  };
+  }), [
+    backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
+    selectedId, selectedFile, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
+    viewerPan, mode, strength, accelerator, loading, activeInspectorTab, exportOptions,
+    exportResult, documentRender, sessionOptions, sessionSaveResult, savedSessions,
+    selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
+    actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,
+    rCurve, gCurve, bCurve, history, historyIndex, setAISettingsAndSave,
+  ]);
 }
 
 export type WorkbenchController = ReturnType<typeof useWorkbench>;

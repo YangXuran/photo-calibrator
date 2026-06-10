@@ -1,13 +1,18 @@
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { ChannelCurve, ManualCurves } from "../types";
+import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import type { ChannelCurve, HistogramPayload, ManualCurves } from "../types";
+import { DEFAULT_IDENTITY_CURVE } from "../types";
 
-type CurveEditorProps = {
+type CurvesEditorProps = {
   curves: ManualCurves;
   onChange: (curves: ManualCurves) => void;
   disabled?: boolean;
+  histogram?: HistogramPayload;
 };
 
-type ChannelKey = "r" | "g" | "b";
+type ChannelKey = "r" | "g" | "b" | "l";
+type RgbKey = "r" | "g" | "b";
+
+const RGB_CHANNELS: RgbKey[] = ["r", "g", "b"];
 
 const SIZE = 280;
 const DATA_MAX = 255;
@@ -18,6 +23,14 @@ const CHANNEL_COLORS: Record<ChannelKey, string> = {
   r: "#e53e3e",
   g: "#38a169",
   b: "#3182ce",
+  l: "#e2e8f0",
+};
+
+const CHANNEL_LABELS: Record<ChannelKey, string> = {
+  r: "R",
+  g: "G",
+  b: "B",
+  l: "L",
 };
 
 function toSvgX(value: number): number {
@@ -40,15 +53,37 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function curveToPath(curve: ChannelCurve): string {
+/** Build a smooth cubic bezier path through all control points (Catmull-Rom to Bezier). */
+function smoothCurvePath(curve: ChannelCurve): string {
   if (curve.length < 2) return "";
-  return curve
-    .map((point, index) => {
-      const x = toSvgX(point[0]);
-      const y = toSvgY(point[1]);
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
+  const pts = curve.map((p) => ({ x: toSvgX(p[0]), y: toSvgY(p[1]) }));
+  if (pts.length === 2) {
+    return `M ${pts[0]!.x.toFixed(1)} ${pts[0]!.y.toFixed(1)} L ${pts[1]!.x.toFixed(1)} ${pts[1]!.y.toFixed(1)}`;
+  }
+
+  let d = `M ${pts[0]!.x.toFixed(1)} ${pts[0]!.y.toFixed(1)}`;
+
+  // Centripetal Catmull-Rom → cubic Bezier
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(i - 1, 0)]!;
+    const p1 = pts[i]!;
+    const p2 = pts[i + 1]!;
+    const p3 = pts[Math.min(i + 2, pts.length - 1)]!;
+
+    const dx1 = p2.x - p0.x;
+    const dy1 = p2.y - p0.y;
+    const dx2 = p3.x - p1.x;
+    const dy2 = p3.y - p1.y;
+
+    const t = 0.3; // tension
+    const cp1x = p1.x + (dx1 * t) / 3;
+    const cp1y = p1.y + (dy1 * t) / 3;
+    const cp2x = p2.x - (dx2 * t) / 3;
+    const cp2y = p2.y - (dy2 * t) / 3;
+
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
 }
 
 function updateCurvePoint(curve: ChannelCurve, index: number, newX: number, newY: number): ChannelCurve {
@@ -63,8 +98,34 @@ function updateCurvePoint(curve: ChannelCurve, index: number, newX: number, newY
   return next;
 }
 
-export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
-  const [visibleChannels, setVisibleChannels] = useState<Record<ChannelKey, boolean>>({ r: true, g: true, b: true });
+/** Compute luminance from RGB histogram channels (per-bin). */
+function computeLuminanceData(histogram: HistogramPayload): number[] {
+  return histogram.channels.r.normalized.map((rVal, i) => {
+    const gVal = histogram.channels.g.normalized[i] ?? 0;
+    const bVal = histogram.channels.b.normalized[i] ?? 0;
+    return 0.2126 * rVal + 0.7152 * gVal + 0.0722 * bVal;
+  });
+}
+
+/** Render a histogram channel as a filled path, scaled to fit the curve editor view. */
+function histogramFillPath(data: number[], maxVal: number): string {
+  if (data.length === 0) return "";
+  const n = data.length - 1;
+  const bottom = SIZE;
+  // Scale histogram to use ~35% of the editor height
+  const scale = maxVal > 0 ? (SIZE * 0.35) / maxVal : 0;
+  let d = `M 0 ${bottom}`;
+  for (let i = 0; i <= n; i++) {
+    const x = (i / n) * SIZE;
+    const y = SIZE - data[i] * scale;
+    d += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }
+  d += ` L ${SIZE} ${bottom} Z`;
+  return d;
+}
+
+export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEditorProps) {
+  const [visibleChannels, setVisibleChannels] = useState<Record<ChannelKey, boolean>>({ r: true, g: true, b: true, l: false });
   const [selected, setSelected] = useState<{ channel: ChannelKey; index: number } | null>(null);
   const [dragTooltip, setDragTooltip] = useState<{ x: number; y: number; value: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -73,7 +134,7 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  const channels: ChannelKey[] = ["r", "g", "b"];
+  const channels: ChannelKey[] = ["r", "g", "b", "l"];
 
   function toggleChannel(channel: ChannelKey) {
     setVisibleChannels((current) => ({ ...current, [channel]: !current[channel] }));
@@ -81,7 +142,7 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
 
   const handlePointerDown = useCallback(
     (channel: ChannelKey, index: number) => (event: ReactPointerEvent<SVGCircleElement>) => {
-      if (disabled) return;
+      if (disabled || channel === "l") return;
       event.preventDefault();
       event.stopPropagation();
       setSelected({ channel, index });
@@ -119,6 +180,24 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
     [disabled],
   );
 
+  const histData: Partial<Record<ChannelKey, { path: string; color: string }>> = useMemo(() => {
+    const result: Partial<Record<ChannelKey, { path: string; color: string }>> = {};
+    if (!histogram) return result;
+    for (const ch of channels) {
+      if (!visibleChannels[ch]) continue;
+      let data: number[];
+      if (ch === "l") {
+        data = computeLuminanceData(histogram);
+      } else {
+        data = [...histogram.channels[ch].normalized];
+      }
+      if (data.length === 0) continue;
+      const maxVal = Math.max(...data, 1e-6);
+      result[ch] = { path: histogramFillPath(data, maxVal), color: CHANNEL_COLORS[ch] };
+    }
+    return result;
+  }, [histogram, visibleChannels]);
+
   return (
     <div className="pc-curve-editor" data-testid="curve-editor">
       <div className="pc-curve-channels">
@@ -131,7 +210,7 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
             type="button"
           >
             <span className="pc-curve-channel-dot" style={{ backgroundColor: CHANNEL_COLORS[channel] }} />
-            {channel.toUpperCase()}
+            {CHANNEL_LABELS[channel]}
           </button>
         ))}
       </div>
@@ -140,7 +219,7 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
         className="pc-curve-svg"
         viewBox={`0 0 ${SIZE} ${SIZE}`}
         role="img"
-        aria-label="RGB curve editor"
+        aria-label="Curve editor"
       >
         <rect x="0" y="0" width={SIZE} height={SIZE} fill="var(--bg)" />
 
@@ -156,13 +235,20 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
 
         <line x1={0} y1={SIZE} x2={SIZE} y2={0} className="pc-curve-diagonal" />
 
-        {channels.map((channel) =>
+        {/* Histogram overlays behind curves */}
+        {Object.entries(histData).map(([ch, { path, color }]) => (
+          <path key={`hist-${ch}`} d={path} fill={color} fillOpacity={0.12} stroke="none" />
+        ))}
+
+        {/* Curve paths (R/G/B only, L has no editable curve) */}
+        {RGB_CHANNELS.map((channel) =>
           visibleChannels[channel] ? (
-            <path key={`path-${channel}`} d={curveToPath(curves[channel])} fill="none" stroke={CHANNEL_COLORS[channel]} strokeWidth="2" />
+            <path key={`path-${channel}`} d={smoothCurvePath(curves[channel])} fill="none" stroke={CHANNEL_COLORS[channel]} strokeWidth="2" />
           ) : null,
         )}
 
-        {channels.map((channel) =>
+        {/* Draggable points (R/G/B only) */}
+        {RGB_CHANNELS.map((channel) =>
           visibleChannels[channel]
             ? curves[channel].map((point, index) => {
                 const isSelected = selected?.channel === channel && selected?.index === index;
@@ -178,6 +264,16 @@ export function CurveEditor({ curves, onChange, disabled }: CurveEditorProps) {
                     strokeWidth={isSelected ? 2 : 1}
                     className="pc-curve-point"
                     onPointerDown={handlePointerDown(channel, index)}
+                    onDoubleClick={() => {
+                      if (disabled) return;
+                      const def = DEFAULT_IDENTITY_CURVE[index];
+                      if (!def) return;
+                      const currentCurve = curvesRef.current[channel];
+                      if (!currentCurve) return;
+                      const next = currentCurve.map((p) => [...p] as [number, number]);
+                      next[index] = [clamp(def[0], index > 0 ? next[index - 1]![0] + 1 : 0, index < next.length - 1 ? next[index + 1]![0] - 1 : DATA_MAX), def[1]];
+                      onChangeRef.current({ ...curvesRef.current, [channel]: next });
+                    }}
                   />
                 );
               })

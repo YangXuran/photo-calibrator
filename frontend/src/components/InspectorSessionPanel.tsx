@@ -11,8 +11,8 @@ type InspectorSessionPanelProps = {
 
 export function InspectorSessionPanel({ order, workbench }: InspectorSessionPanelProps) {
   const selectedFile = workbench.selectedFile;
-  const collapseScope = `preset:${workbench.activeLayoutPreset}`;
-  const workflowFeedPresentation = getAuxiliarySectionPresentation(workbench.activeLayoutPreset, "workflow-feed");
+  const collapseScope = "workbench";
+  const workflowFeedPresentation = getAuxiliarySectionPresentation("workflow-feed");
   return (
     <InspectorPanelSections
       order={order}

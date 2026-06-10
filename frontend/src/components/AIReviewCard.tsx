@@ -37,7 +37,7 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
       collapseStorageScope={collapseScope}
       collapseStorageKey="inspector-analysis-ai-review"
       collapsible
-      meta="多模态评估只做建议，不覆盖确定性校准"
+      meta=""
       testId="ai-review-section"
       title="AI Review"
     >

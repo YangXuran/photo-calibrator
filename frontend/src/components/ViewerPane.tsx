@@ -10,16 +10,22 @@ import { getViewerPresentation } from "./viewerPresentation";
 import { getViewerStatusPresentation } from "./viewerStatusPresentation";
 import type { WorkbenchController } from "../hooks/useWorkbench";
 
+type ContainerSize = {
+  width: number;
+  height: number;
+};
+
 type ViewerPaneProps = {
   workbench: WorkbenchController;
   originalSrc?: string;
   calibratedSrc?: string;
+  onContainerResize?: (size: ContainerSize) => void;
 };
 
-export function ViewerPane({ workbench, originalSrc, calibratedSrc }: ViewerPaneProps) {
-  const { filmScanStatus, focusMode, hudPrimary, hudSecondary, hudCropPriority, selectedFile, showFilmstrip, showHud, statusBarMode } = getViewerPresentation(workbench, workbench.activeLayoutPreset);
-  const statusPresentation = getViewerStatusPresentation(selectedFile, workbench.viewerZoomMode, workbench.viewerZoomScale);
-  const viewerPanePresentation = getViewerPanePresentation(workbench.activeLayoutPreset);
+export function ViewerPane({ workbench, originalSrc, calibratedSrc, onContainerResize }: ViewerPaneProps) {
+  const { filmScanStatus, focusMode, hudPrimary, hudSecondary, hudCropPriority, selectedFile, showFilmstrip, showHud, statusBarMode } = getViewerPresentation(workbench);
+  const statusPresentation = getViewerStatusPresentation(selectedFile, workbench.viewerZoomMode, workbench.viewerZoomScale, workbench.stageContainerSize ?? undefined);
+  const viewerPanePresentation = getViewerPanePresentation();
 
   useViewerKeyboardShortcuts(workbench);
 
@@ -54,30 +60,33 @@ export function ViewerPane({ workbench, originalSrc, calibratedSrc }: ViewerPane
       }
       title={selectedFile?.name ?? viewerPanePresentation.title}
       stage={
-        <ViewerStagePane
-          calibratedSrc={calibratedSrc}
-          compareTone={viewerPanePresentation.compareTone}
-          filmScanStatus={filmScanStatus}
-          focusMode={focusMode}
-          hudCropPriority={hudCropPriority}
-          hudPrimary={hudPrimary}
-          hudSecondary={hudSecondary}
-          originalSrc={originalSrc}
-          preset={workbench.activeLayoutPreset}
-          selectedFile={selectedFile}
-          showHud={showHud}
-          showZoomReset={viewerPanePresentation.showZoomReset}
-          showZoomStepper={viewerPanePresentation.showZoomStepper}
-          visibleCompareModes={viewerPanePresentation.visibleCompareModes}
-          visibleZoomPresets={viewerPanePresentation.visibleZoomPresets}
-          workbench={workbench}
-          zoomTone={viewerPanePresentation.zoomTone}
-        />
+        <>
+          {workbench.highResLoading ? <progress className="pc-highres-progress" /> : null}
+          <ViewerStagePane
+            calibratedSrc={calibratedSrc}
+            compareTone={viewerPanePresentation.compareTone}
+            filmScanStatus={filmScanStatus}
+            focusMode={focusMode}
+            hudCropPriority={hudCropPriority}
+            hudPrimary={hudPrimary}
+            hudSecondary={hudSecondary}
+            onContainerResize={onContainerResize}
+            originalSrc={originalSrc}
+            selectedFile={selectedFile}
+            showHud={showHud}
+            showZoomReset={viewerPanePresentation.showZoomReset}
+            showZoomStepper={viewerPanePresentation.showZoomStepper}
+            visibleCompareModes={viewerPanePresentation.visibleCompareModes}
+            visibleZoomPresets={viewerPanePresentation.visibleZoomPresets}
+            workbench={workbench}
+            zoomTone={viewerPanePresentation.zoomTone}
+          />
+        </>
       }
     />
   );
 
   return (
-    <ViewerStackLayout filmstrip={showFilmstrip ? <ViewerFilmstripPane workbench={workbench} /> : undefined} layoutKey={workbench.activeLayoutPreset} main={viewerMain} />
+    <ViewerStackLayout filmstrip={showFilmstrip ? <ViewerFilmstripPane workbench={workbench} /> : undefined} layoutKey="unified" main={viewerMain} />
   );
 }

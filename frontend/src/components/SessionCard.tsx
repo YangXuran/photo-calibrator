@@ -42,7 +42,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageScope={collapseScope}
         collapseStorageKey="inspector-session-document-context"
         collapsible
-        meta="session / document / replay"
+        meta=""
         testId="document-context-section"
         title="文档上下文"
       >
@@ -83,7 +83,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageKey="inspector-session-document-preview"
         collapsible
         defaultCollapsed
-        meta="document replay preview"
+        meta=""
         testId="document-preview-section"
         title="文档预览"
       >
@@ -97,7 +97,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageKey="inspector-session-document-operations"
         collapsible
         defaultCollapsed
-        meta="pipeline document render"
+        meta=""
         testId="document-operations-section"
         title="文档操作"
       >

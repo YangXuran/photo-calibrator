@@ -29,6 +29,11 @@ class PreparedImage:
     downsample_ratio: float
     source_dtype: str
     preview_source: str
+    color_space: str = "sRGB"
+    data_range: tuple[float, float] | None = None
+    cached_working_img: np.ndarray | None = None
+    cached_working_context: dict | None = None
+    cached_calibrated: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,7 @@ class AnalysisEntry:
     static_charts: dict
     cache_key: str
     created_at: float
+    session_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +81,12 @@ class ExportRequest:
     output_path: str = ""
     format: str = "jpeg"
     quality: int = 92
+    export_profile: str = "srgb"
+    embed_icc: bool = True
+    preserve_metadata: bool = True
+    ocio_config_path: str | None = None
+    ocio_display_space: str = "sRGB - Display"
+    ocio_scene_linear_space: str = "scene_linear"
 
 
 @dataclass

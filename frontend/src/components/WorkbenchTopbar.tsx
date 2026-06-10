@@ -9,7 +9,7 @@ import { WorkbenchTopbarActions } from "./WorkbenchTopbarActions";
 type WorkbenchTopbarProps = {
   backendOk: boolean | null;
   onPickFiles: (files: PickedFiles) => void;
-  workbench: Pick<WorkbenchController, "activeLayoutPreset" | "applyLayoutPreset" | "layoutState" | "redo" | "toggleLayoutElement" | "toggleViewerFocusMode" | "undo">;
+  workbench: Pick<WorkbenchController, "layoutState" | "preferences" | "redo" | "resetPreferences" | "toggleLayoutElement" | "toggleViewerFocusMode" | "undo" | "updatePreference">;
 };
 
 export function WorkbenchTopbar({ onPickFiles, workbench }: WorkbenchTopbarProps) {
@@ -23,7 +23,6 @@ export function WorkbenchTopbar({ onPickFiles, workbench }: WorkbenchTopbarProps
         <WorkbenchBrand runtime={runtime} />
         <WorkbenchTopbarActions
           focusMode={focusMode}
-          onOpenLayoutSettings={dialogs.openLayoutSettings}
           onOpenShortcutHelp={dialogs.openShortcutHelp}
           onPickFiles={onPickFiles}
           runtime={runtime}
@@ -31,11 +30,8 @@ export function WorkbenchTopbar({ onPickFiles, workbench }: WorkbenchTopbarProps
         />
       </header>
       <WorkbenchDialogs
-        onCloseLayoutSettings={dialogs.closeLayoutSettings}
         onCloseShortcutHelp={dialogs.closeShortcutHelp}
-        showLayoutSettings={dialogs.showLayoutSettings}
         showShortcutHelp={dialogs.showShortcutHelp}
-        workbench={workbench}
       />
     </>
   );

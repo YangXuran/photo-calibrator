@@ -50,7 +50,7 @@ export function getWorkspaceStateSummary(item?: WorkspaceFile): WorkspaceStateSu
     previewLabel: previewSource ?? "-",
     cropLabel: item?.cropEdited ? "Crop adjusted" : item?.crop ? "Crop suggested" : "No crop",
     sizeLabel: width && height ? `${width}×${height}` : "-",
-    sessionLabel: item?.sessionId ?? "-",
+    sessionLabel: item?.sessionId ? (item.sessionId.length > 20 ? item.sessionId.slice(0, 18) + "…" : item.sessionId) : "-",
     hasSession: Boolean(item?.sessionId),
     hasOriginalFile: Boolean(item?.file),
   };

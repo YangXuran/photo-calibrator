@@ -22,7 +22,6 @@ export function AnalysisContextSection({ collapseScope, selectedFile, result, ca
       defaultCollapsed
       testId="analysis-context-section"
       title="处理上下文"
-      meta="当前 session 与加速能力"
     >
       <InfoGrid
         items={[

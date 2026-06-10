@@ -1,6 +1,6 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
 import { InspectorPaneContent } from "./InspectorPaneContent";
-import { InspectorPaneHeader } from "./InspectorPaneHeader";
+import { InspectorTabs } from "./InspectorTabs";
 import { SidePaneShell } from "./SidePaneShell";
 
 type InspectorPaneProps = {
@@ -12,11 +12,16 @@ export function InspectorPane({ workbench }: InspectorPaneProps) {
 
   return (
     <SidePaneShell
-      header={<InspectorPaneHeader activeTab={workbench.activeInspectorTab} onChangeTab={workbench.setActiveInspectorTab} selectedFile={selectedFile} />}
+      header={null}
       side="right"
       testId="inspector-pane"
     >
-      <InspectorPaneContent workbench={workbench} />
+      <div className="pc-inspector-body">
+        <InspectorTabs active={workbench.activeInspectorTab} onChange={workbench.setActiveInspectorTab} />
+        <div className="pc-inspector-content">
+          <InspectorPaneContent workbench={workbench} />
+        </div>
+      </div>
     </SidePaneShell>
   );
 }

@@ -21,7 +21,8 @@ export async function openFilesWithRuntime(
   fallback: () => PickedFiles | Promise<PickedFiles>,
 ): Promise<PickedFiles> {
   if (runtime.supportsShellBridge && bridge?.pickFiles) {
-    return bridge.pickFiles();
+    const result = await bridge.pickFiles();
+    return result as unknown as PickedFiles;
   }
   return fallback();
 }
@@ -32,7 +33,8 @@ export async function openDirectoryWithRuntime(
   fallback: () => PickedFiles | Promise<PickedFiles>,
 ): Promise<PickedFiles> {
   if (runtime.supportsShellBridge && bridge?.pickDirectory) {
-    return bridge.pickDirectory();
+    const result = await bridge.pickDirectory();
+    return result as unknown as PickedFiles;
   }
   return fallback();
 }

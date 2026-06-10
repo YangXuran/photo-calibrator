@@ -25,7 +25,7 @@ export function QuickActionsCard({
   onExport,
 }: QuickActionsCardProps) {
   return (
-    <PaneSection density={density} emphasis={emphasis} meta="常用操作入口" testId="quick-actions-section" title="Quick Actions">
+    <PaneSection density={density} emphasis={emphasis} testId="quick-actions-section" title="Quick Actions">
       <div className="pc-action-grid">
         <SpotlightCard className="pc-action-button-wrapper">
           <button className="pc-action-button" onClick={onSuggestCrop} type="button">

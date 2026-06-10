@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { WorkbenchController } from "../hooks/useWorkbench";
 import { InspectorPane } from "./InspectorPane";
 import { LibraryPane } from "./LibraryPane";
@@ -10,14 +11,21 @@ type WorkbenchLayoutProps = {
 };
 
 export function WorkbenchLayout({ workbench }: WorkbenchLayoutProps) {
-  const { originalSrc, calibratedSrc } = getWorkbenchViewerSources(workbench.selectedFile, workbench.documentRender);
+  const lastFileId = useRef<string>();
+  const fileId = workbench.selectedFile?.id;
+  const fileSwitched = lastFileId.current !== undefined && lastFileId.current !== fileId;
+  if (fileId) lastFileId.current = fileId;
+  const docRender = fileSwitched ? null : workbench.documentRender;
+  const { originalSrc, calibratedSrc } = getWorkbenchViewerSources(workbench.selectedFile, docRender);
 
   return (
     <ThreePaneWorkbenchLayout
-      center={<ViewerPane calibratedSrc={calibratedSrc} originalSrc={originalSrc} workbench={workbench} />}
-      layoutKey={workbench.activeLayoutPreset}
-      left={workbench.layoutState.showLibraryPane ? <LibraryPane workbench={workbench} /> : undefined}
-      right={workbench.layoutState.showInspectorPane ? <InspectorPane workbench={workbench} /> : undefined}
+      center={<ViewerPane calibratedSrc={calibratedSrc} onContainerResize={workbench.setStageContainerSize} originalSrc={originalSrc} workbench={workbench} />}
+      layoutKey="unified"
+      left={<LibraryPane workbench={workbench} />}
+      right={<InspectorPane workbench={workbench} />}
+      showLeft={workbench.layoutState.showLibraryPane}
+      showRight={workbench.layoutState.showInspectorPane}
     />
   );
 }

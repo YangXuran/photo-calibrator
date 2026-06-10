@@ -2,7 +2,7 @@ import { ViewerCropActions } from "./ViewerCropActions";
 import { ViewerFocusToolbar } from "./ViewerFocusToolbar";
 import { ViewerStage } from "./ViewerStage";
 import type { WorkbenchController } from "../hooks/useWorkbench";
-import type { ActiveLayoutPreset, WorkspaceFile } from "../types";
+import type { WorkspaceFile } from "../types";
 
 type ViewerStagePaneWorkbench = Pick<
   WorkbenchController,
@@ -26,15 +26,20 @@ type ViewerStagePaneWorkbench = Pick<
   | "resetViewerZoom"
 >;
 
+type ContainerSize = {
+  width: number;
+  height: number;
+};
+
 type ViewerStagePaneProps = {
   hudCropPriority?: "primary" | "secondary" | "hidden";
-  preset?: ActiveLayoutPreset;
   calibratedSrc?: string;
   compareTone?: "default" | "primary" | "muted";
   filmScanStatus: string;
   focusMode: boolean;
   hudPrimary: string[];
   hudSecondary: string[];
+  onContainerResize?: (size: ContainerSize) => void;
   originalSrc?: string;
   selectedFile?: WorkspaceFile;
   showHud: boolean;
@@ -48,13 +53,13 @@ type ViewerStagePaneProps = {
 
 export function ViewerStagePane({
   hudCropPriority = "secondary",
-  preset,
   calibratedSrc,
   compareTone = "primary",
   filmScanStatus,
   focusMode,
   hudPrimary,
   hudSecondary,
+  onContainerResize,
   originalSrc,
   selectedFile,
   showHud,
@@ -93,13 +98,14 @@ export function ViewerStagePane({
         hudStatus={showHud ? filmScanStatus : undefined}
         hudToolbar={focusToolbar}
         loading={workbench.loading}
+        onContainerResize={onContainerResize}
         onCropChange={workbench.updateSelectedCrop}
         onPanChange={workbench.setViewerPanOffset}
         onZoomChange={workbench.setViewerManualScale}
         originalSrc={originalSrc}
         panOffset={workbench.viewerPan}
-        preset={preset}
         splitPosition={workbench.splitPosition}
+        onSplitChange={workbench.setSplitPosition}
         zoomMode={workbench.viewerZoomMode}
         zoomScale={workbench.viewerZoomScale}
       />

@@ -143,3 +143,27 @@ export async function postAIEvaluate(body: object): Promise<AIEvaluationPayload>
     }),
   );
 }
+
+export async function postBatchCalibrate(body: object): Promise<{ workers: number; results: { file_name: string; session_id?: string; ok?: boolean; error?: string }[] }> {
+  return expectJson(
+    await fetch(apiUrl("/api/calibrate-batch"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function fetchConfig(): Promise<Record<string, any>> {
+  return expectJson(await fetch(apiUrl("/api/config")));
+}
+
+export async function putConfig(config: Record<string, any>): Promise<{ ok: boolean }> {
+  return expectJson(
+    await fetch(apiUrl("/api/config"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    }),
+  );
+}

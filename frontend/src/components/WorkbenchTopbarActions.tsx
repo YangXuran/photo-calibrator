@@ -12,16 +12,14 @@ type WorkbenchTopbarActionsProps = {
   runtime: RuntimeConfig;
   focusMode: boolean;
   onPickFiles: (files: PickedFiles) => void;
-  onOpenLayoutSettings: () => void;
   onOpenShortcutHelp: () => void;
-  workbench: Pick<WorkbenchController, "activeLayoutPreset" | "applyLayoutPreset" | "layoutState" | "redo" | "toggleLayoutElement" | "toggleViewerFocusMode" | "undo">;
+  workbench: Pick<WorkbenchController, "layoutState" | "redo" | "toggleLayoutElement" | "toggleViewerFocusMode" | "undo">;
 };
 
 export function WorkbenchTopbarActions({
   runtime,
   focusMode,
   onPickFiles,
-  onOpenLayoutSettings,
   onOpenShortcutHelp,
   workbench,
 }: WorkbenchTopbarActionsProps) {
@@ -58,11 +56,6 @@ export function WorkbenchTopbarActions({
           openBrowserDirectory: () => directoryInputRef.current?.click(),
         }),
       testId: "open-directory-button",
-    },
-    {
-      label: "布局",
-      onClick: onOpenLayoutSettings,
-      testId: "layout-settings-button",
     },
     {
       label: "帮助",

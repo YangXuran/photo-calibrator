@@ -32,19 +32,32 @@ export function useViewerStageInteractions({
 }: ViewerStageInteractionsOptions) {
   const [isPanning, setIsPanning] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const wheelAccRef = useRef(0);
+  const wheelRafRef = useRef<number | null>(null);
+  const panRafRef = useRef<number | null>(null);
 
   function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
     if (!onZoomChange) return;
     event.preventDefault();
     wakeHud();
-    const nextScale = event.deltaY < 0 ? zoomScale + 0.1 : zoomScale - 0.1;
-    onZoomChange(Math.max(0.5, Math.min(4, Number(nextScale.toFixed(2)))));
+    wheelAccRef.current += event.deltaY;
+    if (wheelRafRef.current === null) {
+      wheelRafRef.current = requestAnimationFrame(() => {
+        const accumulated = wheelAccRef.current;
+        wheelAccRef.current = 0;
+        wheelRafRef.current = null;
+        const step = accumulated > 0 ? -0.1 : 0.1;
+        const nextScale = zoomScale + step;
+        onZoomChange(Math.max(0.5, Math.min(4, Number(nextScale.toFixed(2)))));
+      });
+    }
   }
 
   function handleDoubleClick(event: ReactPointerEvent<HTMLDivElement>) {
     if (!onZoomChange) return;
     if ((event.target as HTMLElement).closest(".pc-crop-overlay, .pc-crop-handle")) return;
     wakeHud();
+    if (wheelRafRef.current) { cancelAnimationFrame(wheelRafRef.current); wheelRafRef.current = null; }
     if (zoomMode === "manual" && zoomScale > 1.05) {
       onZoomChange(1);
       onPanChange?.({ x: 0, y: 0 });
@@ -66,13 +79,15 @@ export function useViewerStageInteractions({
     setIsPanning(true);
 
     const move = (pointerEvent: PointerEvent) => {
-      wakeHud();
-      onPanChange(
-        clampPanOffset(stageBounds, zoomScale, {
-          x: origin.x + (pointerEvent.clientX - startX),
-          y: origin.y + (pointerEvent.clientY - startY),
-        }),
-      );
+      const next = clampPanOffset(stageBounds, zoomScale, {
+        x: origin.x + (pointerEvent.clientX - startX),
+        y: origin.y + (pointerEvent.clientY - startY),
+      });
+      if (panRafRef.current) cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = requestAnimationFrame(() => {
+        panRafRef.current = null;
+        onPanChange(next);
+      });
     };
 
     const stop = () => {

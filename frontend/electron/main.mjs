@@ -1,17 +1,119 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
-import { readdir } from "node:fs/promises";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
-const distIndex = path.join(projectRoot, "dist", "index.html");
+const repoRoot = path.resolve(projectRoot, "..");
+const distIndex = path.join(projectRoot, "out", "index.html");
 const preloadPath = path.join(__dirname, "preload.mjs");
 
-const rendererUrl = process.env.PHOTO_CALIBRATOR_RENDERER_URL || "http://127.0.0.1:5173";
+const rendererUrl = process.env.PHOTO_CALIBRATOR_RENDERER_URL || "http://127.0.0.1:3000";
 const apiBaseUrl = process.env.PHOTO_CALIBRATOR_API_BASE_URL || "http://127.0.0.1:8766";
 const isDev = process.env.PHOTO_CALIBRATOR_RENDERER_MODE === "dev";
+const isMac = process.platform === "darwin";
+const isLinux = process.platform === "linux";
+const backendPort = Number(process.env.PHOTO_CALIBRATOR_BACKEND_PORT || 8766);
+const backendHost = process.env.PHOTO_CALIBRATOR_BACKEND_HOST || "127.0.0.1";
+
+// ---------------------------------------------------------------------------
+// Platform detection
+// ---------------------------------------------------------------------------
+const APP_NAME = "Photo Calibrator";
+const PYTHON_CMD = process.env.PHOTO_CALIBRATOR_PYTHON || (isMac ? "python3" : "python3");
+
+// ---------------------------------------------------------------------------
+// Backend lifecycle
+// ---------------------------------------------------------------------------
+let backendProcess = null;
+
+function findAvailablePort(startPort) {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(startPort, backendHost, () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function waitForBackend(url, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(`${url}/api/accelerator-benchmark?backend=auto&image_side=32&lut_size=5&iterations=1`);
+      if (response.ok) return true;
+    } catch {
+      // backend not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+async function startBackend() {
+  const port = await findAvailablePort(backendPort);
+  const healthUrl = `http://${backendHost}:${port}`;
+
+  const pythonPath = process.env.PHOTO_CALIBRATOR_PYTHON || PYTHON_CMD;
+  const serverModule = "photo_calibrator.backend.simple_server";
+  const args = ["-m", serverModule, "--port", String(port), "--accelerator", "auto"];
+
+  if (isDev) {
+    args.push("--web-root", path.join(projectRoot, "public"));
+  }
+
+  const env = {
+    ...process.env,
+    PYTHONPATH: path.join(repoRoot, "src"),
+    PYTHONUNBUFFERED: "1",
+  };
+
+  backendProcess = spawn(pythonPath, args, {
+    cwd: repoRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  backendProcess.stdout?.on("data", (chunk) => {
+    process.stdout.write(`[backend] ${chunk}`);
+  });
+  backendProcess.stderr?.on("data", (chunk) => {
+    process.stderr.write(`[backend:err] ${chunk}`);
+  });
+  backendProcess.on("exit", (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`Backend exited with code ${code}`);
+    }
+    backendProcess = null;
+  });
+
+  const ready = await waitForBackend(healthUrl);
+  if (!ready) {
+    console.error("Backend failed to start within timeout");
+    stopBackend();
+    throw new Error("Backend startup timeout");
+  }
+
+  return healthUrl;
+}
+
+function stopBackend() {
+  if (backendProcess) {
+    backendProcess.kill("SIGTERM");
+    backendProcess = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Window management
+// ---------------------------------------------------------------------------
 
 async function listFilesRecursively(rootDir) {
   const output = [];
@@ -19,14 +121,18 @@ async function listFilesRecursively(rootDir) {
 
   while (queue.length) {
     const current = queue.pop();
-    const entries = await readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-      const resolved = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        queue.push(resolved);
-      } else {
-        output.push(resolved);
+    try {
+      const entries = await readdir(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const resolved = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          queue.push(resolved);
+        } else {
+          output.push(resolved);
+        }
       }
+    } catch {
+      // Skip unreadable directories (permission errors, broken symlinks, etc.)
     }
   }
 
@@ -74,30 +180,120 @@ ipcMain.handle("photo-calibrator:pick-directory", async () => {
 
 ipcMain.handle("photo-calibrator:list-directory-files", async (_event, directoryPath) => {
   if (!directoryPath) return [];
-  return listFilesRecursively(directoryPath);
+  const resolved = path.resolve(directoryPath);
+  try {
+    const stats = await stat(resolved);
+    if (!stats.isDirectory()) return [];
+  } catch {
+    return [];
+  }
+  return listFilesRecursively(resolved);
 });
 
 ipcMain.handle("photo-calibrator:get-runtime", async () => ({
   mode: "desktop-shell",
   shellName: "Photo Calibrator Desktop",
-  apiBaseUrl,
+  apiBaseUrl: currentBackendUrl || apiBaseUrl,
   supportsNativeDialogs: true,
   supportsShellBridge: true,
   enableMockShellBridge: false,
 }));
 
-// Disable Chromium sandbox for containerized/dev environments
-app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-gpu-sandbox");
-app.commandLine.appendSwitch("disable-seccomp-filter-sandbox");
+// ---------------------------------------------------------------------------
+// macOS: native menu bar
+// ---------------------------------------------------------------------------
+if (isMac) {
+  const template = [
+    {
+      label: APP_NAME,
+      submenu: [
+        { label: `About ${APP_NAME}`, role: "about" },
+        { type: "separator" },
+        { label: "Quit", accelerator: "Cmd+Q", click: () => app.quit() },
+      ],
+    },
+    {
+      label: "File",
+      submenu: [
+        { label: "Open Photos...", accelerator: "Cmd+O", click: async () => {
+          const win = BrowserWindow.getFocusedWindow();
+          if (!win) return;
+          const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+            properties: ["openFile", "multiSelections"],
+            filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "tif", "tiff", "dng", "cr2", "nef", "arw", "hdr", "exr"] }],
+          });
+          if (!canceled && filePaths.length > 0) {
+            win.webContents.send("menu:files-picked", filePaths.map((p) => ({ name: path.basename(p), path: p })));
+          }
+        } },
+        { label: "Open Folder...", accelerator: "Cmd+Shift+O", click: async () => {
+          const win = BrowserWindow.getFocusedWindow();
+          if (!win) return;
+          const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+            properties: ["openDirectory"],
+          });
+          if (!canceled && filePaths.length > 0) {
+            const dir = filePaths[0];
+            try {
+              const entries = await listFilesRecursively(dir);
+              win.webContents.send("menu:files-picked", entries.map((p) => ({ name: path.basename(p), path: p })));
+            } catch {
+              // Silently fail if directory listing fails
+            }
+          }
+        } },
+      ],
+    },
+    { label: "Edit", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }] },
+    { label: "View", submenu: [{ role: "reload" }, { role: "toggleDevTools" }, { type: "separator" }, { role: "togglefullscreen" }] },
+    {
+      label: "Help",
+      submenu: [
+        { label: "GitHub Repository", click: () => shell.openExternal("https://github.com") },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+} else {
+  // Linux/Windows: no menu bar (use in-window toolbar)
+  Menu.setApplicationMenu(null);
+}
 
-app.whenReady().then(() => {
+// ---------------------------------------------------------------------------
+// Sandbox: Linux only — disable only in CI/Docker where sandbox is unavailable
+// ---------------------------------------------------------------------------
+if (isLinux && (process.env.CI || process.env.PHOTO_CALIBRATOR_DISABLE_SANDBOX)) {
+  app.commandLine.appendSwitch("no-sandbox");
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle (cross-platform)
+// ---------------------------------------------------------------------------
+let currentBackendUrl = null;
+
+app.whenReady().then(async () => {
+  try {
+    currentBackendUrl = await startBackend();
+    console.log(`Backend ready at ${currentBackendUrl}`);
+  } catch (err) {
+    console.error("Backend startup failed, using external backend:", err.message);
+    currentBackendUrl = apiBaseUrl;
+  }
   createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
 });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+// macOS: re-create window when dock icon clicked
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+
+// macOS: keep app running when all windows closed
+app.on("window-all-closed", () => {
+  if (!isMac) {
+    stopBackend();
+    app.quit();
+  }
+});
+
+app.on("before-quit", () => stopBackend());
+app.on("will-quit", () => stopBackend());
