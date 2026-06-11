@@ -10,7 +10,7 @@ type CurvesToolPanelProps = {
 export function CurvesToolPanel({ workbench }: CurvesToolPanelProps) {
   const collapseScope = "workbench";
   const lutVectors = workbench.selectedFile?.result?.charts?.lut_analysis?.vectors;
-  const rgbHistogram = workbench.selectedFile?.result?.charts?.rgb_histogram;
+  const rgbHistogram = workbench.localCurvePreviewHistogram ?? workbench.selectedFile?.result?.charts?.calibrated_rgb_histogram ?? workbench.selectedFile?.result?.charts?.rgb_histogram;
 
   return (
     <div className="pc-tool-panel" data-testid="curves-tool-panel">
@@ -24,7 +24,7 @@ export function CurvesToolPanel({ workbench }: CurvesToolPanelProps) {
         meta=""
       >
         <CurveEditor
-          curves={{ r: workbench.rCurve, g: workbench.gCurve, b: workbench.bCurve }}
+          curves={{ l: workbench.lCurve, r: workbench.rCurve, g: workbench.gCurve, b: workbench.bCurve }}
           histogram={rgbHistogram}
           onChange={workbench.setCurves}
         />

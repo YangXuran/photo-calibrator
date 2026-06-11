@@ -1,22 +1,22 @@
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import type { CropRect, ViewerPan, ViewerZoomMode } from "../types";
-import { debugLog } from "../lib/debugLog";
 import { ViewerCropOverlay } from "./ViewerCropOverlay";
+import { ViewerStageBitmapCanvas } from "./ViewerStageBitmapCanvas";
 import { ViewerStageMedia } from "./ViewerStageMedia";
 
-type ContainerSize = {
-  width: number;
-  height: number;
-};
+type ContainerSize = { width: number; height: number };
 
 type ViewerStageSplitSceneProps = {
   calibratedSrc: string;
+  calibratedPreviewBitmap?: ImageBitmap | null;
   children?: ReactNode;
   cropEditable?: boolean;
   cropRect?: CropRect;
+  imageKey?: string;
   loading?: boolean;
   onContainerResize?: (size: ContainerSize) => void;
   onCropChange?: (cropRect: CropRect) => void;
+  onSettledCalibratedImage?: () => void;
   originalSrc: string;
   panOffset: ViewerPan;
   splitPosition: number;
@@ -25,38 +25,68 @@ type ViewerStageSplitSceneProps = {
 };
 
 export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
-  calibratedSrc,
-  children,
-  cropEditable,
-  cropRect,
-  loading = false,
-  onContainerResize,
-  onCropChange,
-  originalSrc,
-  panOffset,
-  splitPosition,
-  zoomMode,
-  zoomScale,
+  calibratedPreviewBitmap, calibratedSrc, children, cropEditable, cropRect, imageKey, loading = false,
+  onContainerResize, onCropChange, onSettledCalibratedImage, originalSrc, panOffset, splitPosition, zoomMode, zoomScale,
 }: ViewerStageSplitSceneProps) {
-  const [originalLoaded, setOriginalLoaded] = useState(false);
-  const [calibratedLoaded, setCalibratedLoaded] = useState(false);
+  const [displayOriginal, setDisplayOriginal] = useState(originalSrc);
+  const [displayCalibrated, setDisplayCalibrated] = useState(calibratedSrc);
   const [originalError, setOriginalError] = useState(false);
   const [calibratedError, setCalibratedError] = useState(false);
-  
+  const prevOriginalRef = useRef(originalSrc);
+  const prevCalibratedRef = useRef(calibratedSrc);
+  const prevImageKeyRef = useRef(imageKey);
+
   useEffect(() => {
-    setOriginalLoaded(false);
+    if (!originalSrc) {
+      prevOriginalRef.current = originalSrc;
+      prevImageKeyRef.current = imageKey;
+      setDisplayOriginal("");
+      setOriginalError(false);
+      return;
+    }
+    if (prevOriginalRef.current === originalSrc) return;
+    const fileChanged = prevImageKeyRef.current !== imageKey;
+    prevOriginalRef.current = originalSrc;
+    prevImageKeyRef.current = imageKey;
+    if (fileChanged) {
+      setDisplayOriginal("");
+    }
     setOriginalError(false);
-    debugLog("SplitScene.originalSrcChanged", originalSrc?.substring(0, 60));
-  }, [originalSrc]);
-  
+    const img = new Image();
+    img.onload = () => setDisplayOriginal(originalSrc);
+    img.onerror = () => setOriginalError(true);
+    img.src = originalSrc;
+  }, [imageKey, originalSrc]);
+
   useEffect(() => {
-    setCalibratedLoaded(false);
+    if (!calibratedSrc) {
+      prevCalibratedRef.current = calibratedSrc;
+      prevImageKeyRef.current = imageKey;
+      setDisplayCalibrated("");
+      setCalibratedError(false);
+      return;
+    }
+    if (prevCalibratedRef.current === calibratedSrc) return;
+    const fileChanged = prevImageKeyRef.current !== imageKey;
+    prevCalibratedRef.current = calibratedSrc;
+    prevImageKeyRef.current = imageKey;
+    if (fileChanged) {
+      setDisplayCalibrated("");
+    }
     setCalibratedError(false);
-    debugLog("SplitScene.calibratedSrcChanged", calibratedSrc?.substring(0, 60));
-  }, [calibratedSrc]);
-  
-  const showOriginal = originalSrc && !originalError;
-  const showCalibrated = calibratedSrc && !calibratedError;
+    const img = new Image();
+    img.onload = () => {
+      setDisplayCalibrated(calibratedSrc);
+      if (calibratedPreviewBitmap) {
+        onSettledCalibratedImage?.();
+      }
+    };
+    img.onerror = () => setCalibratedError(true);
+    img.src = calibratedSrc;
+  }, [calibratedPreviewBitmap, calibratedSrc, imageKey, onSettledCalibratedImage]);
+
+  const showOriginal = !!displayOriginal && !originalError;
+  const showCalibrated = !!displayCalibrated && !calibratedError;
   const showLoading = loading;
 
   return (
@@ -70,24 +100,16 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
         </div>
       ) : null}
       {showCalibrated ? (
-        <img 
-          alt="Calibrated" 
-          className="pc-stage-image" 
-          src={calibratedSrc}
-          onLoad={() => setCalibratedLoaded(true)}
-          onError={() => setCalibratedError(true)}
-        />
+        <img alt="Calibrated" className="pc-stage-image" src={displayCalibrated} onError={() => setCalibratedError(true)} />
+      ) : null}
+      {calibratedPreviewBitmap ? (
+        <ViewerStageBitmapCanvas alt="Calibrated" bitmap={calibratedPreviewBitmap} className="pc-stage-image pc-stage-canvas pc-stage-preview-overlay" />
       ) : null}
       {showOriginal ? (
         <div className="pc-stage-clip" style={{ width: `${splitPosition}%` }}>
-          <img 
-            alt="Original" 
-            className="pc-stage-image" 
-            src={originalSrc}
+          <img alt="Original" className="pc-stage-image" src={displayOriginal}
             style={{ width: `${(100 / splitPosition) * 100}%`, maxWidth: "none" }}
-            onLoad={() => setOriginalLoaded(true)}
-            onError={() => setOriginalError(true)}
-          />
+            onError={() => setOriginalError(true)} />
         </div>
       ) : null}
       {cropRect ? <ViewerCropOverlay cropRect={cropRect} editable={cropEditable} onCropChange={onCropChange} zoomMode={zoomMode} zoomScale={zoomScale} /> : null}

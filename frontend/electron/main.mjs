@@ -154,11 +154,28 @@ function createWindow() {
     },
   });
 
-  if (isDev) {
-    win.loadURL(rendererUrl);
-  } else {
-    win.loadFile(distIndex);
-  }
+  const loadPromise = isDev ? win.loadURL(rendererUrl) : win.loadFile(distIndex);
+  loadPromise.catch((error) => {
+    console.error("[electron] failed to load renderer:", error);
+  });
+
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error("[electron] did-fail-load", { errorCode, errorDescription, validatedURL, isMainFrame });
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[electron] render-process-gone", details);
+  });
+  win.on("unresponsive", () => {
+    console.error("[electron] window-unresponsive");
+  });
+
+  // Forward renderer console to terminal for debugging
+  win.webContents.on("console-message", (_event, _level, message) => {
+    if (message.includes("[curve-preview]") || message.includes("CANVAS PAINT") || message.includes("[perf]")) {
+      console.log("[renderer]", message);
+    }
+  });
+
 }
 
 ipcMain.handle("photo-calibrator:pick-files", async () => {
@@ -260,8 +277,23 @@ if (isMac) {
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox: Linux only — disable only in CI/Docker where sandbox is unavailable
+// Sandbox / Linux rendering strategy
+// Prefer the platform default (typically X11/XWayland in desktop terminals).
+// Only force Wayland when explicitly requested, because some drivers/compositors
+// present a blank client surface even though the renderer has painted content.
 // ---------------------------------------------------------------------------
+if (isLinux) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("use-gl", "swiftshader");
+  if (process.env.PHOTO_CALIBRATOR_FORCE_WAYLAND === "1") {
+    app.commandLine.appendSwitch("enable-features", "UseOzonePlatform");
+    app.commandLine.appendSwitch("ozone-platform", "wayland");
+    app.commandLine.appendSwitch("disable-features", "WaylandLinuxDrmSyncobj,Vulkan");
+  }
+}
+
 if (isLinux && (process.env.CI || process.env.PHOTO_CALIBRATOR_DISABLE_SANDBOX)) {
   app.commandLine.appendSwitch("no-sandbox");
 }

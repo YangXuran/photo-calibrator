@@ -16,6 +16,7 @@ import type {
   DocumentRenderPayload,
   EvaluatorInfo,
   ExportPayload,
+  HistogramPayload,
   HistoryEntry,
   InspectorTab,
   ManualCurves,
@@ -47,9 +48,18 @@ type SessionOptions = {
   savePath: string;
 };
 
+type CurveInteraction = "idle" | "drag";
+type CurvePreviewWorkerMessage =
+  | { type: "prepared"; requestId: number; cacheKey: string }
+  | { type: "rendered"; requestId: number; cacheKey: string; bitmap: ImageBitmap; histogram: HistogramPayload }
+  | { type: "error"; requestId: number; cacheKey: string; error: string };
+
 const WORKBENCH_PREFERENCES_KEY = "photo-calibrator:workbench-preferences";
 const WORKBENCH_INSPECTOR_TAB_KEY = "photo-calibrator:workbench-inspector-tab";
 const WORKBENCH_VIEWER_STATE_KEY = "photo-calibrator:workbench-viewer-state";
+const CURVE_PREVIEW_MAX_SIDE = 1280;
+const CURVE_PREVIEW_MIN_SIDE = 320;
+const CURVE_PREVIEW_DRAG_FPS = 30;
 
 /** A file info from shell bridge with path (no File object for non-browser files) */
 export type PathFileInfo = { name: string; path: string };
@@ -77,7 +87,7 @@ function loadInspectorTab(): InspectorTab {
     const raw = window.localStorage.getItem(WORKBENCH_INSPECTOR_TAB_KEY);
     if (!raw) return "adjust";
     const parsed = JSON.parse(raw) as InspectorTab;
-    return parsed;
+    return parsed === "color" ? "adjust" : parsed;
   } catch {
     return "adjust";
   }
@@ -97,6 +107,97 @@ function loadViewerState(): ViewerWorkspaceState {
   } catch {
     return { compareMode: "side-by-side", splitPosition: 50, zoomMode: "fit", zoomScale: 1, pan: { x: 0, y: 0 } };
   }
+}
+
+function cloneCurve(curve: ChannelCurve): ChannelCurve {
+  return curve.map((point) => [...point] as [number, number]);
+}
+
+function buildCurveLut(curve: ChannelCurve): Uint8Array {
+  const lut = new Uint8Array(256);
+  const points = curve.length >= 2 ? curve : [[0, 0], [255, 255]];
+  let segment = 0;
+  for (let x = 0; x <= 255; x += 1) {
+    while (segment < points.length - 2 && x > points[segment + 1]![0]) {
+      segment += 1;
+    }
+    const p0 = points[segment]!;
+    const p1 = points[Math.min(segment + 1, points.length - 1)]!;
+    const span = Math.max(1, p1[0] - p0[0]);
+    const t = Math.max(0, Math.min(1, (x - p0[0]) / span));
+    lut[x] = Math.round(p0[1] + (p1[1] - p0[1]) * t);
+  }
+  return lut;
+}
+
+function cloneManualCurves(curves: ManualCurves): ManualCurves {
+  return {
+    l: cloneCurve(curves.l),
+    r: cloneCurve(curves.r),
+    g: cloneCurve(curves.g),
+    b: cloneCurve(curves.b),
+  };
+}
+
+function createIdentityManualCurves(): ManualCurves {
+  return cloneManualCurves({
+    l: DEFAULT_IDENTITY_CURVE,
+    r: DEFAULT_IDENTITY_CURVE,
+    g: DEFAULT_IDENTITY_CURVE,
+    b: DEFAULT_IDENTITY_CURVE,
+  });
+}
+
+function serializeCurve(curve: ChannelCurve): string {
+  return curve.map(([x, y]) => `${x}:${y}`).join("|");
+}
+
+function curvesFromState(l: ChannelCurve, r: ChannelCurve, g: ChannelCurve, b: ChannelCurve): ManualCurves {
+  return { l, r, g, b };
+}
+
+function composeManualCurves(curves: ManualCurves): { r: ChannelCurve; g: ChannelCurve; b: ChannelCurve } {
+  const master = buildCurveLut(curves.l);
+  const red = buildCurveLut(curves.r);
+  const green = buildCurveLut(curves.g);
+  const blue = buildCurveLut(curves.b);
+  const toCurve = (lut: Uint8Array): ChannelCurve => Array.from({ length: 256 }, (_, index) => [index, lut[index] ?? index] as [number, number]);
+  const composeChannel = (lut: Uint8Array) => {
+    const out = new Uint8Array(256);
+    for (let index = 0; index < 256; index += 1) {
+      out[index] = lut[master[index] ?? index] ?? index;
+    }
+    return out;
+  };
+  return {
+    r: toCurve(composeChannel(red)),
+    g: toCurve(composeChannel(green)),
+    b: toCurve(composeChannel(blue)),
+  };
+}
+
+function buildCalibrationSignature(
+  mode: string,
+  strength: number,
+  accelerator: string,
+  curves: ManualCurves,
+): string {
+  return [
+    mode,
+    strength.toFixed(4),
+    accelerator,
+    serializeCurve(curves.l),
+    serializeCurve(curves.r),
+    serializeCurve(curves.g),
+    serializeCurve(curves.b),
+  ].join("::");
+}
+
+function resolvePreviewMaxSide(preview?: WorkspaceFile["highResPreview"] | WorkspaceFile["preview"]): number | null {
+  const width = preview?.processing?.analysis_width ?? 0;
+  const height = preview?.processing?.analysis_height ?? 0;
+  const side = Math.max(width, height);
+  return side > 0 ? side : null;
 }
 
 export function useWorkbench() {
@@ -152,32 +253,55 @@ export function useWorkbench() {
   });
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [lCurve, setLCurve] = useState<ChannelCurve>([...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])]);
   const [rCurve, setRCurve] = useState<ChannelCurve>([...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])]);
   const [gCurve, setGCurve] = useState<ChannelCurve>([...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])]);
   const [bCurve, setBCurve] = useState<ChannelCurve>([...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])]);
+  const [committedCurves, setCommittedCurves] = useState<ManualCurves>(() => createIdentityManualCurves());
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [preferences, setPreferences] = useState<WorkbenchPreferences>(() => loadWorkbenchPreferences());
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
   const [stageContainerSize, setStageContainerSize] = useState<{ width: number; height: number } | null>(null);
+  const [curveInteraction, setCurveInteraction] = useState<CurveInteraction>("idle");
+  const [localCurvePreviewBitmap, setLocalCurvePreviewBitmap] = useState<ImageBitmap | null>(null);
+  const [localCurvePreviewHistogram, setLocalCurvePreviewHistogram] = useState<HistogramPayload | null>(null);
+  const [curveStateFileId, setCurveStateFileId] = useState<string>();
   const requestRef = useRef(0);
   const calibrationDepthRef = useRef(0);
   const currentResMaxSideRef = useRef(320);
   const prevDepsRef = useRef<{ id?: string; mode: string; strength: number }>({ mode: "global", strength: 0.8 });
-  const fileCurvesRef = useRef<Map<string, { r: ChannelCurve; g: ChannelCurve; b: ChannelCurve }>>(new Map());
+  const fileCurvesRef = useRef<Map<string, ManualCurves>>(new Map());
   const highResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highResRequestRef = useRef(0);
   const highResSessionRef = useRef<string | null>(null);
   const curveSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const curveHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const curvePreviewFrameRef = useRef<number | null>(null);
+  const curvePreviewRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const curvePreviewBitmapRef = useRef<ImageBitmap | null>(null);
+  const curvePreviewWorkerRef = useRef<Worker | null>(null);
+  const curvePreviewCacheKeyRef = useRef<string | null>(null);
+  const curvePreviewFallbackCacheRef = useRef<{
+    key: string;
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+  } | null>(null);
+  const curvePreviewFallbackRef = useRef(false);
+  const curvePreviewSequenceRef = useRef(0);
+  const curvePreviewLastDragMsRef = useRef(0);
+  const curveInteractionRef = useRef<CurveInteraction>("idle");
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
-  type UndoSnapshot = { mode: string; strength: number; accelerator: string; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
+  type UndoSnapshot = { mode: string; strength: number; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
   const undoIndexRef = useRef(-1);
   const undoingRef = useRef(false);
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyIndexRef = useRef(historyIndex);
   const selectedFile = useMemo(() => files.find((item) => item.id === selectedId), [files, selectedId]);
+  const displayedSelectedFile = selectedFile;
+  const selectionDisplayReady = true;
   const filteredFiles = useMemo(() => {
     const needle = searchQuery.trim().toLowerCase();
     return files.filter((item) => {
@@ -228,7 +352,7 @@ export function useWorkbench() {
   }
 
   function setActiveInspectorTab(tab: InspectorTab) {
-    setActiveInspectorTabState(tab);
+    setActiveInspectorTabState(tab === "color" ? "adjust" : tab);
   }
 
   function updateViewerState(patch: Partial<ViewerWorkspaceState>) {
@@ -237,6 +361,305 @@ export function useWorkbench() {
       ...patch,
     }));
   }
+
+  const resolveCurvePreviewSource = useCallback((targetFile: WorkspaceFile | undefined) => (
+    targetFile?.highResPreview?.original_preview
+      ?? targetFile?.preview?.original_preview
+      ?? targetFile?.displayUrl
+  ), []);
+
+  const resolveCurvePreviewTargetSide = useCallback(() => {
+    if (typeof window === "undefined") return CURVE_PREVIEW_MIN_SIDE;
+    const dpr = window.devicePixelRatio || 1;
+    return stageContainerSize
+      ? Math.max(
+          CURVE_PREVIEW_MIN_SIDE,
+          Math.min(CURVE_PREVIEW_MAX_SIDE, Math.round(Math.max(stageContainerSize.width, stageContainerSize.height) * dpr)),
+        )
+      : CURVE_PREVIEW_MIN_SIDE;
+  }, [stageContainerSize]);
+
+  const resolveCurvePreviewCacheKey = useCallback((targetFile: WorkspaceFile | undefined) => {
+    const sourceUrl = resolveCurvePreviewSource(targetFile);
+    if (!targetFile || !sourceUrl) return null;
+    return `${targetFile.id}:${sourceUrl}:${resolveCurvePreviewTargetSide()}`;
+  }, [resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+
+  const buildCurvePreviewHistogram = useCallback((rgba: Uint8ClampedArray): HistogramPayload => {
+    const countsR = new Array<number>(256).fill(0);
+    const countsG = new Array<number>(256).fill(0);
+    const countsB = new Array<number>(256).fill(0);
+    const pixels = Math.max(1, rgba.length / 4);
+
+    for (let index = 0; index < rgba.length; index += 4) {
+      countsR[rgba[index]!] += 1;
+      countsG[rgba[index + 1]!] += 1;
+      countsB[rgba[index + 2]!] += 1;
+    }
+
+    const toChannel = (counts: number[]) => {
+      let peakBin = 0;
+      let peakCount = counts[0] ?? 0;
+      for (let index = 1; index < counts.length; index += 1) {
+        if ((counts[index] ?? 0) > peakCount) {
+          peakCount = counts[index]!;
+          peakBin = index;
+        }
+      }
+      return {
+        counts,
+        normalized: counts.map((value) => value / pixels),
+        peak_bin: peakBin,
+      };
+    };
+
+    return {
+      bins: 256,
+      channels: {
+        r: toChannel(countsR),
+        g: toChannel(countsG),
+        b: toChannel(countsB),
+      },
+    };
+  }, []);
+
+  const disposeCurvePreviewBitmap = useCallback((bitmap: ImageBitmap | null) => {
+    if (!bitmap) return;
+    if (typeof window === "undefined") {
+      bitmap.close();
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        bitmap.close();
+      });
+    });
+  }, []);
+
+  const clearLocalCurvePreview = useCallback(() => {
+    debugLog("curve.preview.clear");
+    if (curvePreviewFrameRef.current) {
+      window.cancelAnimationFrame(curvePreviewFrameRef.current);
+      curvePreviewFrameRef.current = null;
+    }
+    if (curvePreviewRenderTimerRef.current) {
+      clearTimeout(curvePreviewRenderTimerRef.current);
+      curvePreviewRenderTimerRef.current = null;
+    }
+    curvePreviewSequenceRef.current += 1;
+    curvePreviewCacheKeyRef.current = null;
+    curvePreviewFallbackCacheRef.current = null;
+    const previousBitmap = curvePreviewBitmapRef.current;
+    curvePreviewBitmapRef.current = null;
+    curvePreviewFallbackRef.current = false;
+    setLocalCurvePreviewBitmap(null);
+    setLocalCurvePreviewHistogram(null);
+    disposeCurvePreviewBitmap(previousBitmap);
+  }, [disposeCurvePreviewBitmap]);
+
+  const settleLocalCurvePreview = useCallback(() => {
+    if (curveInteractionRef.current === "drag") {
+      return;
+    }
+    const previousBitmap = curvePreviewBitmapRef.current;
+    curvePreviewBitmapRef.current = null;
+    setLocalCurvePreviewBitmap(null);
+    setLocalCurvePreviewHistogram(null);
+    disposeCurvePreviewBitmap(previousBitmap);
+  }, [disposeCurvePreviewBitmap]);
+
+  const ensureCurvePreviewWorker = useCallback(() => {
+    if (typeof window === "undefined") return null;
+    if (curvePreviewFallbackRef.current || typeof Worker === "undefined") return null;
+    if (curvePreviewWorkerRef.current) return curvePreviewWorkerRef.current;
+    const workerUrl = new URL("../workers/curvePreview.worker.ts", import.meta.url);
+    console.log("[curve-preview] creating worker:", workerUrl.href);
+    const worker = new Worker(workerUrl, { type: "module" });
+    worker.onerror = (event) => {
+      console.error("[curve-preview] worker onerror:", event.message, "filename:", event.filename);
+      curvePreviewWorkerRef.current = null;
+      curvePreviewFallbackRef.current = true;
+      worker.terminate?.();
+    };
+    worker.onmessageerror = (event) => {
+      console.error("[curve-preview] worker onmessageerror:", event);
+    };
+    worker.onmessage = (event: MessageEvent<CurvePreviewWorkerMessage>) => {
+      const message = event.data;
+      if (message.type === "prepared") {
+        debugLog("curve.preview.prepared", { cacheKey: message.cacheKey });
+        curvePreviewCacheKeyRef.current = message.cacheKey;
+        return;
+      }
+      if (message.type === "rendered") {
+        if (message.requestId !== curvePreviewSequenceRef.current) {
+          debugLog("curve.preview.drop", { requestId: message.requestId, current: curvePreviewSequenceRef.current });
+          message.bitmap.close();
+          return;
+        }
+        debugLog("curve.preview.rendered", { cacheKey: message.cacheKey, requestId: message.requestId, width: message.bitmap.width, height: message.bitmap.height });
+        const previousBitmap = curvePreviewBitmapRef.current;
+        curvePreviewBitmapRef.current = message.bitmap;
+        curvePreviewCacheKeyRef.current = message.cacheKey;
+        setLocalCurvePreviewBitmap(message.bitmap);
+        setLocalCurvePreviewHistogram(message.histogram);
+        disposeCurvePreviewBitmap(previousBitmap);
+        return;
+      }
+      if (message.requestId === curvePreviewSequenceRef.current) {
+        console.warn("[curve-preview] worker reported error:", message.error);
+        curvePreviewFallbackRef.current = true;
+        debugLog("curve.preview.error", { error: message.error, requestId: message.requestId });
+      }
+    };
+    curvePreviewWorkerRef.current = worker;
+    return worker;
+  }, []);
+
+  const renderLocalCurvePreviewFallback = useCallback(async (targetFile: WorkspaceFile, nextCurves: ManualCurves) => {
+    const sourceUrl = resolveCurvePreviewSource(targetFile);
+    const cacheKey = resolveCurvePreviewCacheKey(targetFile);
+    if (!sourceUrl || !cacheKey || typeof window === "undefined") return;
+    const effectiveCurves = composeManualCurves(nextCurves);
+    debugLog("curve.preview.fallback.start", { fileId: targetFile.id, cacheKey });
+
+    let cached = curvePreviewFallbackCacheRef.current;
+    if (!cached || cached.key !== cacheKey) {
+      const response = await fetch(sourceUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+      const scale = Math.min(1, resolveCurvePreviewTargetSide() / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        bitmap.close();
+        throw new Error("Curve preview fallback canvas context is unavailable");
+      }
+      context.drawImage(bitmap, 0, 0, width, height);
+      const imageData = context.getImageData(0, 0, width, height);
+      bitmap.close();
+      cached = {
+        key: cacheKey,
+        width,
+        height,
+        data: new Uint8ClampedArray(imageData.data),
+      };
+      curvePreviewFallbackCacheRef.current = cached;
+    }
+
+    const lutR = buildCurveLut(effectiveCurves.r);
+    const lutG = buildCurveLut(effectiveCurves.g);
+    const lutB = buildCurveLut(effectiveCurves.b);
+    const rgba = new Uint8ClampedArray(cached.data);
+    for (let index = 0; index < rgba.length; index += 4) {
+      rgba[index] = lutR[rgba[index]!];
+      rgba[index + 1] = lutG[rgba[index + 1]!];
+      rgba[index + 2] = lutB[rgba[index + 2]!];
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = cached.width;
+    canvas.height = cached.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Curve preview fallback output context is unavailable");
+    }
+    context.putImageData(new ImageData(rgba, cached.width, cached.height), 0, 0);
+    const bitmap = await createImageBitmap(canvas);
+    const previousBitmap = curvePreviewBitmapRef.current;
+    curvePreviewBitmapRef.current = bitmap;
+    setLocalCurvePreviewBitmap(bitmap);
+    setLocalCurvePreviewHistogram(buildCurvePreviewHistogram(rgba));
+    disposeCurvePreviewBitmap(previousBitmap);
+    debugLog("curve.preview.fallback.done", { fileId: targetFile.id, cacheKey });
+  }, [buildCurvePreviewHistogram, disposeCurvePreviewBitmap, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+
+  const prewarmLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined) => {
+    const worker = ensureCurvePreviewWorker();
+    const sourceUrl = resolveCurvePreviewSource(targetFile);
+    const cacheKey = resolveCurvePreviewCacheKey(targetFile);
+    if (!sourceUrl || !cacheKey) return;
+    if (!worker) {
+      curvePreviewFallbackRef.current = true;
+      return;
+    }
+    worker.postMessage({
+      type: "prepare",
+      requestId: ++curvePreviewSequenceRef.current,
+      cacheKey,
+      sourceUrl,
+      targetSide: resolveCurvePreviewTargetSide(),
+    });
+  }, [ensureCurvePreviewWorker, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+
+  const renderLocalCurvePreview = useCallback((targetFile: WorkspaceFile, nextCurves: ManualCurves) => {
+    const worker = ensureCurvePreviewWorker();
+    const sourceUrl = resolveCurvePreviewSource(targetFile);
+    const cacheKey = resolveCurvePreviewCacheKey(targetFile);
+    const effectiveCurves = composeManualCurves(nextCurves);
+    if (!sourceUrl || !cacheKey) return;
+    if (!worker) {
+      curvePreviewFallbackRef.current = true;
+      void renderLocalCurvePreviewFallback(targetFile, nextCurves).catch((error) => {
+        console.warn("[curve-preview] fallback failed:", error);
+      });
+      return;
+    }
+    debugLog("curve.preview.worker.start", { fileId: targetFile.id, cacheKey, requestId: curvePreviewSequenceRef.current });
+    worker.postMessage({
+      type: "render",
+      requestId: curvePreviewSequenceRef.current,
+      cacheKey,
+      sourceUrl,
+      targetSide: resolveCurvePreviewTargetSide(),
+      curves: effectiveCurves,
+    });
+  }, [ensureCurvePreviewWorker, renderLocalCurvePreviewFallback, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+
+  const scheduleLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined, nextCurves: ManualCurves, interaction: CurveInteraction) => {
+    if (!targetFile) return;
+    debugLog("curve.preview.schedule", { fileId: targetFile.id, interaction });
+
+    const schedule = () => {
+      const renderSeq = ++curvePreviewSequenceRef.current;
+      if (curvePreviewFrameRef.current) {
+        window.cancelAnimationFrame(curvePreviewFrameRef.current);
+      }
+      curvePreviewFrameRef.current = window.requestAnimationFrame(() => {
+        curvePreviewFrameRef.current = null;
+        if (renderSeq !== curvePreviewSequenceRef.current) return;
+        renderLocalCurvePreview(targetFile, nextCurves);
+      });
+    };
+
+    if (interaction === "drag") {
+      const intervalMs = Math.round(1000 / CURVE_PREVIEW_DRAG_FPS);
+      const elapsed = performance.now() - curvePreviewLastDragMsRef.current;
+      if (elapsed >= intervalMs) {
+        curvePreviewLastDragMsRef.current = performance.now();
+        schedule();
+        return;
+      }
+      if (curvePreviewRenderTimerRef.current) {
+        clearTimeout(curvePreviewRenderTimerRef.current);
+      }
+      curvePreviewRenderTimerRef.current = setTimeout(() => {
+        curvePreviewRenderTimerRef.current = null;
+        curvePreviewLastDragMsRef.current = performance.now();
+        schedule();
+      }, intervalMs - elapsed);
+      return;
+    }
+
+    if (curvePreviewRenderTimerRef.current) {
+      clearTimeout(curvePreviewRenderTimerRef.current);
+      curvePreviewRenderTimerRef.current = null;
+    }
+    schedule();
+  }, [renderLocalCurvePreview]);
 
   useEffect(() => {
     fetchHealth()
@@ -288,6 +711,10 @@ export function useWorkbench() {
   useEffect(() => {
     historyIndexRef.current = historyIndex;
   }, [historyIndex]);
+
+  useEffect(() => {
+    curveInteractionRef.current = curveInteraction;
+  }, [curveInteraction]);
 
   /* ── Load config from backend on mount ── */
   useEffect(() => {
@@ -353,9 +780,16 @@ export function useWorkbench() {
     setMode(snap.mode);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
     setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
     setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
     setBCurve(snap.bCurve.map((p) => [...p] as [number, number]));
+    setCommittedCurves({
+      l: snap.lCurve.map((p) => [...p] as [number, number]),
+      r: snap.rCurve.map((p) => [...p] as [number, number]),
+      g: snap.gCurve.map((p) => [...p] as [number, number]),
+      b: snap.bCurve.map((p) => [...p] as [number, number]),
+    });
     undoingRef.current = false;
   }
 
@@ -369,14 +803,32 @@ export function useWorkbench() {
     setMode(snap.mode);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
     setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
     setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
     setBCurve(snap.bCurve.map((p) => [...p] as [number, number]));
+    setCommittedCurves({
+      l: snap.lCurve.map((p) => [...p] as [number, number]),
+      r: snap.rCurve.map((p) => [...p] as [number, number]),
+      g: snap.gCurve.map((p) => [...p] as [number, number]),
+      b: snap.bCurve.map((p) => [...p] as [number, number]),
+    });
     undoingRef.current = false;
   }
 
   useEffect(() => {
     if (!selectedFile) return;
+    if (curveStateFileId !== selectedFile.id) return;
+    if (curveInteraction === "drag") {
+      debugLog("calib.skip.drag", { fileId: selectedFile.id });
+      return;
+    }
+    const manualCurves = committedCurves;
+    const effectiveCurves = composeManualCurves(manualCurves);
+    const signature = buildCalibrationSignature(mode, strength, accelerator, manualCurves);
+    if (selectedFile.result?.calibrated_image && selectedFile.calibrationSignature === signature) {
+      return;
+    }
     const depth = ++calibrationDepthRef.current;
     if (depth > 3) {
       console.error("[Calibration] recursion guard triggered at depth", depth, "- aborting");
@@ -397,7 +849,7 @@ export function useWorkbench() {
       setActionState("calibration", "running", selectedFile.name);
       try {
         let payload: CalibrationPayload;
-        const curvePayload = { r_curve: rCurve, g_curve: gCurve, b_curve: bCurve };
+        const curvePayload = { r_curve: effectiveCurves.r, g_curve: effectiveCurves.g, b_curve: effectiveCurves.b };
         perfMark("api.start");
         if (selectedFile.sessionId) {
           payload = await postCalibrationSession({
@@ -437,6 +889,7 @@ export function useWorkbench() {
             item.id === selectedFile.id
               ? {
                   ...item,
+                  calibrationSignature: signature,
                   sessionId: payload.session_id ?? item.sessionId,
                   result: {
                     ...payload,
@@ -460,14 +913,15 @@ export function useWorkbench() {
               const cal = await postCalibrationSession({
                 session_id: sid, mode, strength, accelerator,
                 include_original: false,
-                r_curve: rCurve, g_curve: gCurve, b_curve: bCurve,
+                r_curve: effectiveCurves.r, g_curve: effectiveCurves.g, b_curve: effectiveCurves.b,
               });
               setFiles((items) => items.map((item) =>
-                item.id === selectedFile.id ? { ...item, result: cal } : item
+                item.id === selectedFile.id ? { ...item, calibrationSignature: signature, result: cal } : item
               ));
             } catch {}
           }, 600);
         }
+        setCurveInteraction("idle");
         setActionState("calibration", "success", payload.session_id ?? selectedFile.name);
         const opCount = payload.processing ? 1 : 0;
         pushHistoryEntry(`${mode} / ${strength.toFixed(2)}`, opCount, mode);
@@ -491,7 +945,7 @@ export function useWorkbench() {
       calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
       if (fileOrParamsChanged) setLoading(false);
     };
-  }, [selectedFile?.id, mode, strength, accelerator, rCurve, gCurve, bCurve]);
+  }, [selectedFile?.id, curveStateFileId, mode, strength, accelerator, committedCurves, curveInteraction]);
 
   /* push calibration snapshots to undo stack (debounced 600ms) */
   useEffect(() => {
@@ -499,7 +953,7 @@ export function useWorkbench() {
     const prevTimer = pushTimerRef.current;
     if (prevTimer) clearTimeout(prevTimer);
     pushTimerRef.current = setTimeout(() => {
-      const snap: UndoSnapshot = { mode, strength, accelerator, rCurve, gCurve, bCurve };
+      const snap: UndoSnapshot = { mode, strength, accelerator, lCurve, rCurve, gCurve, bCurve };
       const stack = undoStackRef.current;
       const idx = undoIndexRef.current;
       const last = stack[idx];
@@ -512,10 +966,13 @@ export function useWorkbench() {
       undoIndexRef.current = undoStackRef.current.length - 1;
     }, 600);
     return () => { const t = pushTimerRef.current; if (t) clearTimeout(t); };
-  }, [mode, strength, accelerator, rCurve, gCurve, bCurve]);
+  }, [mode, strength, accelerator, lCurve, rCurve, gCurve, bCurve]);
 
   useEffect(() => {
+    setCurveStateFileId(undefined);
     if (!selectedFile) return;
+    clearLocalCurvePreview();
+    setCurveInteraction("idle");
     updateViewerState({ pan: { x: 0, y: 0 } });
     setExportOptions((current) => ({
       ...current,
@@ -528,12 +985,34 @@ export function useWorkbench() {
     setSessionSaveResult(null);
     setDocumentRender(null);
     const saved = fileCurvesRef.current.get(selectedFile.id);
-    setRCurve(saved?.r ?? selectedFile.rCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
-    setGCurve(saved?.g ?? selectedFile.gCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
-    setBCurve(saved?.b ?? selectedFile.bCurve ?? DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number]));
+    const nextCurves = cloneManualCurves(saved ?? {
+      l: selectedFile.lCurve ?? DEFAULT_IDENTITY_CURVE,
+      r: selectedFile.rCurve ?? DEFAULT_IDENTITY_CURVE,
+      g: selectedFile.gCurve ?? DEFAULT_IDENTITY_CURVE,
+      b: selectedFile.bCurve ?? DEFAULT_IDENTITY_CURVE,
+    });
+    setLCurve(nextCurves.l);
+    setRCurve(nextCurves.r);
+    setGCurve(nextCurves.g);
+    setBCurve(nextCurves.b);
+    setCommittedCurves(nextCurves);
     setHistory([]);
     setHistoryIndex(-1);
-  }, [selectedFile?.id]);
+    setCurveStateFileId(selectedFile.id);
+  }, [selectedFile?.id, clearLocalCurvePreview]);
+
+  useEffect(() => {
+    if (!selectedFile) return;
+    prewarmLocalCurvePreview(selectedFile);
+  }, [
+    selectedFile?.id,
+    selectedFile?.highResPreview?.original_preview,
+    selectedFile?.preview?.original_preview,
+    selectedFile?.displayUrl,
+    stageContainerSize?.width,
+    stageContainerSize?.height,
+    prewarmLocalCurvePreview,
+  ]);
 
   useEffect(() => {
     if (!selectedFile) return;
@@ -543,9 +1022,19 @@ export function useWorkbench() {
     }));
   }, [exportOptions.format, selectedFile?.id]);
 
+  useEffect(() => () => {
+    clearLocalCurvePreview();
+    curvePreviewWorkerRef.current?.terminate();
+    curvePreviewWorkerRef.current = null;
+  }, [clearLocalCurvePreview]);
+
   /* ── Adaptive resolution: reset tracking when file changes ── */
   useEffect(() => {
-    currentResMaxSideRef.current = 320;
+    const existingMaxSide = resolvePreviewMaxSide(selectedFile?.highResPreview)
+      ?? resolvePreviewMaxSide(selectedFile?.preview)
+      ?? 320;
+    currentResMaxSideRef.current = existingMaxSide;
+    highResSessionRef.current = selectedFile?.highResPreview?.session_id ?? selectedFile?.sessionId ?? null;
     highResRequestRef.current++;
     if (highResTimerRef.current) {
       clearTimeout(highResTimerRef.current);
@@ -557,6 +1046,7 @@ export function useWorkbench() {
   useEffect(() => {
     if (!selectedFile?.sessionId) return;
     if (!selectedFile?.preview) return;
+    if (curveStateFileId !== selectedFile.id) return;
     if (!stageContainerSize) return;
     if (selectedFile?.browserDisplayable) return;
 
@@ -582,6 +1072,7 @@ export function useWorkbench() {
       perfMark("adaptive.start");
       setHighResLoading(true);
       try {
+        const effectiveCurves = composeManualCurves(committedCurves);
         const preview = await postPreview({
           session_id: selectedFile.sessionId,
           analysis_max_side: requiredMaxSide,
@@ -605,9 +1096,9 @@ export function useWorkbench() {
           strength,
           accelerator,
           include_original: true,
-          r_curve: rCurve,
-          g_curve: gCurve,
-          b_curve: bCurve,
+          r_curve: effectiveCurves.r,
+          g_curve: effectiveCurves.g,
+          b_curve: effectiveCurves.b,
         });
         if (requestId !== highResRequestRef.current) return;
         setFiles((items) =>
@@ -630,7 +1121,7 @@ export function useWorkbench() {
         highResTimerRef.current = null;
       }
     };
-  }, [stageContainerSize, viewerZoomScale, viewerZoomMode, selectedFile?.sessionId, mode, strength, accelerator]);
+  }, [stageContainerSize, viewerZoomScale, viewerZoomMode, selectedFile?.id, selectedFile?.sessionId, curveStateFileId, mode, strength, accelerator, committedCurves]);
 
   async function hydrateNonDisplayablePreviews(nextFiles: WorkspaceFile[]) {
     const toProcess = nextFiles.filter((item) => item.file && !item.browserDisplayable && !item.preview);
@@ -721,6 +1212,7 @@ export function useWorkbench() {
           displayUrl: "",
           thumbnailUrl: "",
           browserDisplayable: false,
+          lCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
           rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
           gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
           bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
@@ -738,6 +1230,7 @@ export function useWorkbench() {
         displayUrl: url,
         thumbnailUrl: url,
         browserDisplayable: displayable,
+        lCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
@@ -902,6 +1395,7 @@ export function useWorkbench() {
         sessionPath: item.path,
         result: payload,
         cropEdited: false,
+        lCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
@@ -1015,17 +1509,29 @@ export function useWorkbench() {
     pushHistoryEntry("裁切复位", 1, "crop-reset");
   }
 
-  function setCurves(next: ManualCurves) {
+  function setCurves(next: ManualCurves, options?: { interaction?: "drag" | "commit" | "edit" }) {
     perfReset("curve-drag");
-    const nr = next.r.map((p) => [...p] as [number, number]);
-    const ng = next.g.map((p) => [...p] as [number, number]);
-    const nb = next.b.map((p) => [...p] as [number, number]);
+    const interaction = options?.interaction ?? "edit";
+    const nl = cloneCurve(next.l);
+    const nr = cloneCurve(next.r);
+    const ng = cloneCurve(next.g);
+    const nb = cloneCurve(next.b);
+    const manualCurves = { l: nl, r: nr, g: ng, b: nb };
     perfMark("setCurves.state");
+    debugLog("setCurves", { interaction, hasPreview: !!localCurvePreviewBitmap, fileId: selectedFile?.id });
+    setLCurve(nl);
     setRCurve(nr);
     setGCurve(ng);
     setBCurve(nb);
+    setCurveInteraction(interaction === "drag" ? "drag" : "idle");
+    if (interaction !== "drag") {
+      setCommittedCurves(cloneManualCurves(manualCurves));
+    }
     if (selectedFile) {
-      fileCurvesRef.current.set(selectedFile.id, { r: nr, g: ng, b: nb });
+      fileCurvesRef.current.set(selectedFile.id, manualCurves);
+      scheduleLocalCurvePreview(selectedFile, manualCurves, interaction === "drag" ? "drag" : "idle");
+    } else {
+      console.warn("[curve-preview] SKIP: selectedFile is null, cannot schedule preview. files:", files.length, "selectedId:", selectedId);
     }
     if (curveHistoryTimerRef.current) clearTimeout(curveHistoryTimerRef.current);
     curveHistoryTimerRef.current = setTimeout(() => {
@@ -1205,6 +1711,8 @@ export function useWorkbench() {
     selectedId,
     setSelectedId,
     selectedFile,
+    displayedSelectedFile,
+    selectionDisplayReady,
     compareMode,
     setCompareMode,
     splitPosition,
@@ -1226,6 +1734,9 @@ export function useWorkbench() {
     setAccelerator,
     loading,
     highResLoading,
+    localCurvePreviewBitmap,
+    localCurvePreviewHistogram,
+    settleLocalCurvePreview,
     onPickFiles,
     injectFiles,
     activeInspectorTab,
@@ -1277,6 +1788,7 @@ export function useWorkbench() {
     selectRelativeItem,
     undo,
     redo,
+    lCurve,
     rCurve,
     gCurve,
     bCurve,
@@ -1285,12 +1797,12 @@ export function useWorkbench() {
     historyIndex,
   }), [
     backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
-    selectedId, selectedFile, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
-    viewerPan, mode, strength, accelerator, loading, activeInspectorTab, exportOptions,
+    selectedId, selectedFile, displayedSelectedFile, selectionDisplayReady, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
+    viewerPan, mode, strength, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
     exportResult, documentRender, sessionOptions, sessionSaveResult, savedSessions,
     selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
     actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,
-    rCurve, gCurve, bCurve, history, historyIndex, setAISettingsAndSave,
+    lCurve, rCurve, gCurve, bCurve, history, historyIndex, setAISettingsAndSave, settleLocalCurvePreview,
   ]);
 }
 
