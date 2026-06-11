@@ -1,8 +1,8 @@
 # Photo Calibrator — Development Status
 
-> Last updated: 2026-06-10  
-> Branch: `dev-codex`  
-> Verified locally: Python `413 passed, 2 skipped` | Frontend build: ✅ | Electron: ✅ installed, backend lifecycle wired | UI tests: Chromium sandbox blocks Playwright (pass on native host)
+> Last updated: 2026-06-11  
+> Branch: `dev`  
+> Verified locally: Python ✅ | Frontend build: ✅ | Electron: ✅ running | Backend: HTTP URL image serving + CORS | UI: preload-based image display
 
 ---
 
@@ -229,6 +229,19 @@ All 4 P1 items verified as code-complete. Only AI eval end-to-end needs real pro
 #### 11. 最小 CI
 - [x] GitHub Actions: typecheck → build → core tests → visual tests
 - [ ] Python lint + test CI
+
+---
+
+## Recently Completed (2026-06-11)
+
+| Item | Status |
+|------|--------|
+| **Code walkthrough** | Full pipeline audit: file load → calibration → file switch → curve edit → image display. All 6 flows verified correct. ✅ |
+| **Image preloading** | `ViewerStageImageScene` + `ViewerStageSplitScene` rewritten: `new Image()` preloads in background, `displaySrc` only updates when loaded. Eliminates blank flash. ✅ |
+| **Quick Actions removed** | Panel removed from InspectorAdjustPanel ✅ |
+| **Analysis charts + CCC/PCI/RGB** | Backend always generates 9 chart types; frontend now displays all 8 visible (CCC, PCI, RGB means cards added) ✅ |
+| **Branch rename** | `dev-codex` → `dev` ✅ |
+| **Known issue** | Image flicker on file switch (browser-level `<img>` caching) — deferred ⚠️ |
 
 ---
 

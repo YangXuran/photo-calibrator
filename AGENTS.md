@@ -4,7 +4,7 @@
 
 ## 0. 当前状态
 
-仓库已经从早期三脚本形态进入了可运行 MVP。需要注意：**“代码已实现” 不等于 “已接入主流程”**。目前 Phase 1-3 和 Phase 4 P0/P1 的大量基础设施已经落地，但其中一部分仍停留在库层或后端局部能力，尚未完成前后端集成。历史核心文件仍可作为算法来源参考：
+仓库已经从早期脚本形态进入可运行 Electron 桌面应用（React + Python backend）。Electron 窗口通过 dev 分支构建，后端 HTTP API 端口 8766，预览图片 HTTP URL 传输。2026-06-11 已完成性能优化（0ms debounce + per-file curves）、HTTP URL 替代 base64、CORS headers、CCC/PCI/RGB 图表恢复、Catmull-Rom 曲线编辑器。已知问题: 文件切换图片闪烁(deferred)。需要注意：代码已实现不等于已接入主流程。目前 Phase 1-3 和 Phase 4 P0/P1 大量基础设施已落地，部分尚未完成前后端集成。历史核心文件仍可作为算法来源参考：
 
 - `color_cast_detector.py`: 偏色检测、肤色/亮度分区、CCC、PCI、诱导效应、Matplotlib 报告图。
 - `color_cast_calibrator.py`: 基于 Lab a*/b* 偏移的全局/中间调/肤色/高光/保留分离色调校准。
@@ -873,15 +873,24 @@ ls /tmp/electron-screenshots/
 
 ### 18.4 多模态视觉分析
 
-截图完成后，使用 `multimodal-looker` agent（配置为 `alibaba-cn/qwen3.7-plus`）进行视觉分析：
+截图完成后，使用 `look_at` 工具进行视觉分析（底层调用 `multimodal-looker` agent，配置为 `alibaba-cn/qwen3-vl-plus`）：
 
 ```
-task(
-  subagent_type="multimodal-looker",
-  prompt="分析 /tmp/electron-screenshots/ 下的所有截图...",
-  run_in_background=true,
-  load_skills=[]
+look_at(
+  file_path="/tmp/electron-screenshots/workbench-1440x900.png",
+  goal="描述布局、UI 元素、颜色、文字、是否有任何渲染问题"
 )
+```
+
+**重要：必须使用 `look_at` 工具，不要用 `task(subagent_type="multimodal-looker")`。**
+后者无法传递图片附件给 agent，agent 调用 `read` 工具后，Go binary 的 Alibaba provider adapter 存在 bug（`read` 工具返回图片后，消息格式化错误：`{'text': None, 'image': None}`），导致 API 拒绝请求。该 bug 已反馈给 opencode 开发者，修复前只能用 `look_at`。
+
+对于多张截图，并行发起多个 `look_at` 调用（每张图一次）：
+
+```
+look_at(file_path="/tmp/electron-screenshots/analysis-tab-1440x900.png", goal="...")
+look_at(file_path="/tmp/electron-screenshots/settings-tab-1440x900.png", goal="...")
+// ...
 ```
 
 检查项：
