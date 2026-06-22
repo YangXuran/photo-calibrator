@@ -1,5 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -9,11 +11,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(projectRoot, "..");
-const distIndex = path.join(projectRoot, "out", "index.html");
+const distIndex = path.join(projectRoot, "dist", "index.html");
 const preloadPath = path.join(__dirname, "preload.mjs");
 
 const rendererUrl = process.env.PHOTO_CALIBRATOR_RENDERER_URL || "http://127.0.0.1:3000";
-const apiBaseUrl = process.env.PHOTO_CALIBRATOR_API_BASE_URL || "http://127.0.0.1:8766";
+const configuredApiBaseUrl = process.env.PHOTO_CALIBRATOR_API_BASE_URL;
+const apiBaseUrl = configuredApiBaseUrl || "http://127.0.0.1:8766";
 const isDev = process.env.PHOTO_CALIBRATOR_RENDERER_MODE === "dev";
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -24,7 +27,8 @@ const backendHost = process.env.PHOTO_CALIBRATOR_BACKEND_HOST || "127.0.0.1";
 // Platform detection
 // ---------------------------------------------------------------------------
 const APP_NAME = "Photo Calibrator";
-const PYTHON_CMD = process.env.PHOTO_CALIBRATOR_PYTHON || (isMac ? "python3" : "python3");
+const venvPython = path.join(repoRoot, ".venv", "bin", "python");
+const PYTHON_CMD = process.env.PHOTO_CALIBRATOR_PYTHON || (existsSync(venvPython) ? venvPython : "python3");
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -32,22 +36,29 @@ const PYTHON_CMD = process.env.PHOTO_CALIBRATOR_PYTHON || (isMac ? "python3" : "
 let backendProcess = null;
 
 function findAvailablePort(startPort) {
-  return new Promise((resolve, reject) => {
+  const tryPort = (port) => new Promise((resolve) => {
     const server = createServer();
     server.unref();
-    server.on("error", reject);
-    server.listen(startPort, backendHost, () => {
-      const { port } = server.address();
+    server.on("error", () => resolve(null));
+    server.listen(port, backendHost, () => {
       server.close(() => resolve(port));
     });
   });
+
+  return (async () => {
+    for (let port = startPort; port < startPort + 20; port += 1) {
+      const available = await tryPort(port);
+      if (available !== null) return available;
+    }
+    throw new Error(`No available backend port in range ${startPort}-${startPort + 19}`);
+  })();
 }
 
 async function waitForBackend(url, timeoutMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const response = await fetch(`${url}/api/accelerator-benchmark?backend=auto&image_side=32&lut_size=5&iterations=1`);
+      const response = await fetch(`${url}/api/health`);
       if (response.ok) return true;
     } catch {
       // backend not ready yet
@@ -58,25 +69,28 @@ async function waitForBackend(url, timeoutMs = 15000) {
 }
 
 async function startBackend() {
+  if (configuredApiBaseUrl && await waitForBackend(apiBaseUrl, 1200)) {
+    return apiBaseUrl;
+  }
   const port = await findAvailablePort(backendPort);
   const healthUrl = `http://${backendHost}:${port}`;
 
-  const pythonPath = process.env.PHOTO_CALIBRATOR_PYTHON || PYTHON_CMD;
-  const serverModule = "photo_calibrator.backend.simple_server";
-  const args = ["-m", serverModule, "--port", String(port), "--accelerator", "auto"];
+  const packagedBackend = path.join(process.resourcesPath, "backend", "photo-calibrator-backend");
+  const pythonPath = app.isPackaged ? packagedBackend : (process.env.PHOTO_CALIBRATOR_PYTHON || PYTHON_CMD);
+  const args = app.isPackaged
+    ? ["--port", String(port), "--accelerator", "auto"]
+    : ["-m", "photo_calibrator.backend.simple_server", "--port", String(port), "--accelerator", "auto"];
 
-  if (isDev) {
-    args.push("--web-root", path.join(projectRoot, "public"));
+  const devWebRoot = path.join(projectRoot, "public");
+  if (isDev && existsSync(devWebRoot)) {
+    args.push("--web-root", devWebRoot);
   }
 
-  const env = {
-    ...process.env,
-    PYTHONPATH: path.join(repoRoot, "src"),
-    PYTHONUNBUFFERED: "1",
-  };
+  const env = { ...process.env, PYTHONUNBUFFERED: "1" };
+  if (!app.isPackaged) env.PYTHONPATH = path.join(repoRoot, "src");
 
   backendProcess = spawn(pythonPath, args, {
-    cwd: repoRoot,
+    cwd: app.isPackaged ? path.dirname(packagedBackend) : repoRoot,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -170,8 +184,9 @@ function createWindow() {
   });
 
   // Forward renderer console to terminal for debugging
-  win.webContents.on("console-message", (_event, _level, message) => {
-    if (message.includes("[curve-preview]") || message.includes("CANVAS PAINT") || message.includes("[perf]")) {
+  win.webContents.on("console-message", (details) => {
+    const message = details?.message ?? "";
+    if (message.includes("[curve-preview]") || message.includes("curve.preview") || message.includes("setCurves") || message.includes("CANVAS PAINT") || message.includes("[perf]")) {
       console.log("[renderer]", message);
     }
   });
@@ -195,6 +210,22 @@ ipcMain.handle("photo-calibrator:pick-directory", async () => {
   return result.filePaths;
 });
 
+ipcMain.handle("photo-calibrator:pick-output-directory", async (event, currentOutputPath) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const currentPath = typeof currentOutputPath === "string" ? currentOutputPath.trim() : "";
+  const options = {
+    title: "选择导出文件夹",
+    buttonLabel: "选择",
+    properties: ["openDirectory", "createDirectory"],
+    ...(currentPath ? { defaultPath: path.dirname(currentPath) } : {}),
+  };
+  const result = owner
+    ? await dialog.showOpenDialog(owner, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
 ipcMain.handle("photo-calibrator:list-directory-files", async (_event, directoryPath) => {
   if (!directoryPath) return [];
   const resolved = path.resolve(directoryPath);
@@ -214,6 +245,7 @@ ipcMain.handle("photo-calibrator:get-runtime", async () => ({
   supportsNativeDialogs: true,
   supportsShellBridge: true,
   enableMockShellBridge: false,
+  tempDir: os.tmpdir(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -240,7 +272,7 @@ if (isMac) {
             filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "tif", "tiff", "dng", "cr2", "nef", "arw", "hdr", "exr"] }],
           });
           if (!canceled && filePaths.length > 0) {
-            win.webContents.send("menu:files-picked", filePaths.map((p) => ({ name: path.basename(p), path: p })));
+            win.webContents.send("menu:files-picked", filePaths.map((p) => ({ name: path.basename(p), path: p, workspaceRoot: path.dirname(p) })));
           }
         } },
         { label: "Open Folder...", accelerator: "Cmd+Shift+O", click: async () => {
@@ -253,7 +285,7 @@ if (isMac) {
             const dir = filePaths[0];
             try {
               const entries = await listFilesRecursively(dir);
-              win.webContents.send("menu:files-picked", entries.map((p) => ({ name: path.basename(p), path: p })));
+              win.webContents.send("menu:files-picked", entries.map((p) => ({ name: path.basename(p), path: p, workspaceRoot: dir })));
             } catch {
               // Silently fail if directory listing fails
             }

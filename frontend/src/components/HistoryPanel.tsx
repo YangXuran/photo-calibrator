@@ -16,6 +16,7 @@ const OPERATION_COLORS: Record<string, string> = {
   matrix: "#a78bfa",
   lut3d: "#f472b6",
   film: "#38bdf8",
+  "negative-film": "#22d3ee",
 };
 
 function resolveDotColor(entry: HistoryEntry): string {

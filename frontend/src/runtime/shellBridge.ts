@@ -1,10 +1,11 @@
-export type ShellFileInfo = { name: string; path: string };
+export type ShellFileInfo = { name: string; path: string; workspaceRoot?: string };
 export type ShellPickedFiles = ShellFileInfo[] | File[] | null;
 
 export type PhotoCalibratorShellBridge = {
   source?: "electron-preload" | "mock-browser";
   pickFiles?: () => Promise<ShellPickedFiles>;
   pickDirectory?: () => Promise<ShellPickedFiles>;
+  pickOutputDirectory?: (currentOutputPath?: string) => Promise<string | null>;
 };
 
 declare global {

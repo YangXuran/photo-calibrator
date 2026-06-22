@@ -33,7 +33,6 @@ test.describe("react workbench workflow", () => {
       await expect(page.getByTestId("main-calibration-section")).toBeVisible();
       await expect(page.getByTestId("mode-select")).toBeVisible();
       await expect(page.getByTestId("strength-input")).toBeVisible();
-      await expect(page.getByTestId("accelerator-select")).toBeVisible();
       await expect(page.getByTestId("filmstrip-pane")).toBeVisible();
       await expect(page.getByTestId("viewer-statusbar")).toBeVisible();
       await expect(page.getByTestId("viewer-status-state")).toContainText(/Imported|Prepared|Calibrated|Crop suggested|Crop adjusted/);
@@ -41,40 +40,6 @@ test.describe("react workbench workflow", () => {
       await expect(page.getByTestId("viewer-status-zoom")).toContainText("Fit view");
       await expect(page.getByTestId("viewer-compare-controls")).toHaveClass(/pc-viewer-control-block-default/);
       await expect(page.getByTestId("viewer-stage-toolbar")).toHaveClass(/pc-viewer-control-block-default/);
-
-      await page.getByTestId("layout-settings-button").click();
-      await page.getByTestId("layout-preset-review-card").click();
-      await expect(page.getByTestId("compare-mode-dual")).toBeVisible();
-      await expect(page.getByTestId("compare-mode-calibrated")).toHaveCount(0);
-      await expect(page.getByTestId("viewer-compare-controls")).toHaveClass(/pc-viewer-control-block-primary/);
-      await expect(page.getByTestId("viewer-stage-toolbar")).toHaveClass(/pc-viewer-control-block-muted/);
-      await expect(page.getByTestId("viewer-zoom-stepper")).toHaveCount(0);
-      await expect(page.getByTestId("viewer-zoom-reset")).toHaveCount(0);
-
-      await page.getByTestId("layout-preset-edit-card").click();
-      await expect(page.getByTestId("compare-mode-dual")).toHaveCount(0);
-      await expect(page.getByTestId("compare-mode-calibrated")).toBeVisible();
-      await expect(page.getByTestId("viewer-compare-controls")).toHaveClass(/pc-viewer-control-block-muted/);
-      await expect(page.getByTestId("viewer-stage-toolbar")).toHaveClass(/pc-viewer-control-block-primary/);
-      await expect(page.getByTestId("viewer-zoom-stepper")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-reset")).toBeVisible();
-
-      await page.getByTestId("layout-preset-analyze-card").click();
-      await expect(page.getByTestId("compare-mode-dual")).toHaveCount(0);
-      await expect(page.getByTestId("compare-mode-calibrated")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-fit")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-fill")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-stepper")).toHaveCount(0);
-      await expect(page.getByTestId("viewer-zoom-reset")).toHaveCount(0);
-
-      await page.getByTestId("layout-preset-balanced-card").click();
-      await expect(page.getByTestId("compare-mode-dual")).toBeVisible();
-      await expect(page.getByTestId("compare-mode-calibrated")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-fit")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-fill")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-stepper")).toBeVisible();
-      await expect(page.getByTestId("viewer-zoom-reset")).toBeVisible();
-      await page.getByTestId("layout-settings-dialog").getByRole("button", { name: "关闭" }).click();
 
       await page.getByTestId("compare-mode-calibrated").click();
       await expect(page.getByTestId("compare-mode-calibrated")).toHaveClass(/is-active/);
@@ -94,10 +59,10 @@ test.describe("react workbench workflow", () => {
       await page.getByTestId("viewer-zoom-reset").click();
       await expect(page.getByTestId("viewer-status-zoom")).toContainText("Fit view");
 
-      await page.getByTestId("toggle-library-pane").click();
-      await expect(page.getByTestId("library-pane")).toHaveCount(0);
-      await page.getByTestId("toggle-library-pane").click();
-      await expect(page.getByTestId("library-pane")).toBeVisible();
+      await page.getByTestId("toggle-analysis-pane").click();
+      await expect(page.getByTestId("analysis-pane")).not.toBeVisible();
+      await page.getByTestId("toggle-analysis-pane").click();
+      await expect(page.getByTestId("analysis-pane")).toBeVisible();
 
       await page.getByTestId("toggle-viewer-focus").click();
       await expect(page.getByTestId("focus-overlay-toolbar")).toBeVisible();
@@ -151,7 +116,7 @@ test.describe("react workbench workflow", () => {
       await expect(page.getByTestId("session-save-path")).toContainText("/tmp/");
       await expect(page.getByTestId("document-context-section")).toContainText("8.0 KB");
 
-      await page.getByTestId("inspector-tab-analysis").click();
+      await page.getByTestId("inspector-tab-ai").click();
       await expect(page.getByTestId("ai-review-section")).toBeVisible();
       await page.getByTestId("ai-evaluator-select").selectOption("builtin.noopaievaluator");
       await page.getByTestId("ai-evaluate-button").click();
@@ -173,7 +138,60 @@ test.describe("react workbench workflow", () => {
     }
   });
 
-  test("manages saved sessions and workspace filters from the library pane", async ({ page }) => {
+  test("exports all workspace files in batch with per-file output paths", async ({ page }) => {
+    const sampleDir = createTempImageDir("photo-calibrator-batch-export-ui-");
+    const one = `${sampleDir}/batch-a.png`;
+    const two = `${sampleDir}/batch-b.tif`;
+    makeImage(one, [160, 120, 90]);
+    makeImage(two, [90, 120, 160]);
+
+    const exportBodies = [];
+    const { backend, frontend, frontendUrl } = await startServers();
+    try {
+      await page.setViewportSize({ width: 1280, height: 840 });
+      await stubCompactWorkflowRoutes(page);
+      await page.unroute("**/api/export");
+      await page.route("**/api/export", async (route) => {
+        const body = route.request().postDataJSON();
+        exportBodies.push(body);
+        await fulfillJsonAfterDelay(route, {
+          ok: true,
+          path: body.output_path,
+          format: body.format,
+          size: 20480,
+          elapsed_ms: 44.2,
+          export_settings: {
+            color_space: "sRGB",
+            bit_depth: 8,
+            metadata_keys: ["camera_model"],
+            icc_embedded: true,
+          },
+        }, 80);
+      });
+      await page.goto(frontendUrl);
+
+      await page.getByTestId("topbar-file-input").setInputFiles([one, two]);
+      await expect(page.getByTestId("filmstrip-item")).toHaveCount(2);
+
+      await page.getByTestId("inspector-tab-export").click();
+      await expect(page.getByTestId("batch-export-section")).toBeVisible();
+      await page.getByTestId("batch-export-run-button").click();
+
+      await expect(page.getByTestId("batch-export-results")).toContainText("batch-a.png", { timeout: 15000 });
+      await expect(page.getByTestId("batch-export-results")).toContainText("batch-b.tif");
+      await expect(page.getByTestId("batch-export-results")).toContainText("✅ 2 / ❌ 0");
+      expect(exportBodies).toHaveLength(2);
+      expect(exportBodies.map((item) => item.file_name)).toEqual(["batch-a.png", "batch-b.tif"]);
+      expect(exportBodies[0].output_path).toContain("/batch-a-calibrated.jpg");
+      expect(exportBodies[1].output_path).toContain("/batch-b-calibrated.jpg");
+    } finally {
+      stopServer(frontend);
+      stopServer(backend);
+      removeTempDir(sampleDir);
+    }
+  });
+
+  test("manages saved sessions from the session inspector", async ({ page }) => {
     const sampleDir = createTempImageDir("photo-calibrator-library-ui-");
     const one = `${sampleDir}/local-a.png`;
     const two = `${sampleDir}/local-b.png`;
@@ -267,28 +285,13 @@ test.describe("react workbench workflow", () => {
 
       await page.goto(frontendUrl);
       await page.getByTestId("topbar-file-input").setInputFiles([one, two]);
+      await page.getByTestId("inspector-tab-session").click();
 
       await expect(page.getByTestId("saved-sessions-section")).toBeVisible();
       await expect(page.getByTestId("saved-session-item")).toHaveCount(2);
-      await expect(page.getByTestId("workspace-filter-all")).toContainText("2");
-      await expect(page.getByTestId("workspace-filter-file")).toContainText("2");
-      await expect(page.getByTestId("workspace-filter-session")).toContainText("0");
 
       await page.getByTestId("saved-session-load").first().click();
-      await expect(page.getByTestId("selection-status-section")).toContainText("sess-managed-001");
-      await expect(page.getByTestId("selection-status-section")).toContainText("/tmp/saved-session-001.json");
       await expect(page.getByTestId("activity-item").first()).toContainText("Session loaded");
-      await expect(page.getByTestId("filmstrip-item")).toHaveCount(3);
-      await expect(page.getByTestId("workspace-filter-session")).toContainText("1");
-
-      await page.getByTestId("workspace-filter-session").click();
-      await expect(page.getByTestId("filmstrip-item")).toHaveCount(1);
-      await page.getByTestId("workspace-search-input").fill("managed");
-      await expect(page.getByTestId("filmstrip-item")).toHaveCount(1);
-      await page.getByTestId("workspace-search-input").fill("local");
-      await expect(page.getByTestId("filmstrip-item")).toHaveCount(0);
-      await page.getByTestId("workspace-search-input").fill("");
-      await page.getByTestId("workspace-filter-all").click();
       await expect(page.getByTestId("filmstrip-item")).toHaveCount(3);
 
       await page.getByTestId("saved-session-delete").nth(1).click();
@@ -299,11 +302,6 @@ test.describe("react workbench workflow", () => {
       await page.getByTestId("saved-sessions-refresh").click();
       await expect(page.getByTestId("saved-session-item")).toHaveCount(1);
       await expect(page.getByTestId("saved-session-id")).toHaveText(["sess-managed-001"]);
-      await expect(page.getByTestId("workspace-remove-selected")).toBeEnabled();
-      await page.getByTestId("workspace-remove-selected").click();
-      await expect(page.getByTestId("filmstrip-item")).toHaveCount(2);
-      await expect(page.getByTestId("workspace-filter-session")).toContainText("0");
-      await expect(page.getByTestId("selection-status-section")).toContainText("-");
     } finally {
       stopServer(frontend);
       stopServer(backend);

@@ -21,18 +21,22 @@ export function getWorkspaceStateSummary(item?: WorkspaceFile): WorkspaceStateSu
   const height = item?.result?.processing?.original_height ?? item?.preview?.processing?.original_height;
   const previewSource = item?.result?.processing?.preview_source ?? item?.preview?.processing?.preview_source;
   const colorSpace = item?.result?.processing?.color_space;
+  const cropApplied = Boolean(item?.cropApplied || item?.result?.processing?.crop_applied);
 
   let stateLabel = "Not prepared";
   let stateTone: WorkspaceStateTone = "neutral";
-  if (item?.cropEdited) {
+  if (cropApplied) {
+    stateLabel = "Crop applied";
+    stateTone = "success";
+  } else if (item?.result) {
+    stateLabel = "Calibrated";
+    stateTone = "success";
+  } else if (item?.cropEdited) {
     stateLabel = "Crop adjusted";
     stateTone = "accent";
   } else if (item?.crop) {
     stateLabel = "Crop suggested";
     stateTone = "warning";
-  } else if (item?.result) {
-    stateLabel = "Calibrated";
-    stateTone = "success";
   } else if (item?.sessionId) {
     stateLabel = "Prepared";
     stateTone = "neutral";
@@ -48,7 +52,7 @@ export function getWorkspaceStateSummary(item?: WorkspaceFile): WorkspaceStateSu
     exportLabel: item?.file ? "Full-resolution export ready" : "No original file export",
     colorSpaceLabel: colorSpace ?? "-",
     previewLabel: previewSource ?? "-",
-    cropLabel: item?.cropEdited ? "Crop adjusted" : item?.crop ? "Crop suggested" : "No crop",
+    cropLabel: cropApplied ? "Crop applied" : item?.cropEdited ? "Crop adjusted" : item?.crop ? "Crop suggested" : "No crop",
     sizeLabel: width && height ? `${width}×${height}` : "-",
     sessionLabel: item?.sessionId ? (item.sessionId.length > 20 ? item.sessionId.slice(0, 18) + "…" : item.sessionId) : "-",
     hasSession: Boolean(item?.sessionId),

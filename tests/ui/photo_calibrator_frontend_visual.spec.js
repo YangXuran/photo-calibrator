@@ -23,7 +23,7 @@ test.describe("react workbench visual", () => {
       await page.getByTestId("topbar-file-input").setInputFiles([one]);
       await expect(page.locator(".pc-stage-busy")).toHaveCount(0, { timeout: 15000 });
 
-      await expect(page.getByTestId("library-pane")).toBeVisible();
+      await expect(page.getByTestId("analysis-pane")).toBeVisible();
       await expect(page.getByTestId("viewer-pane")).toBeVisible();
       await expect(page.getByTestId("inspector-pane")).toBeVisible();
       await expect(page.getByTestId("workbench-filmstrip")).toBeVisible();
@@ -37,7 +37,7 @@ test.describe("react workbench visual", () => {
         caret: "hide",
         maxDiffPixelRatio: 0.02,
       });
-      await expect(page.getByTestId("library-pane")).toHaveScreenshot("wide-library-pane.png", {
+      await expect(page.getByTestId("analysis-pane")).toHaveScreenshot("wide-analysis-pane.png", {
         animations: "disabled",
         caret: "hide",
         maxDiffPixelRatio: 0.02,

@@ -7,7 +7,7 @@ type ActivityPanelProps = {
 
 export function ActivityPanel({ items }: ActivityPanelProps) {
   return (
-    <PaneSection density="compact" testId="activity-section" title="Activity">
+    <PaneSection density="compact" testId="activity-section" title="活动记录">
       <div className="pc-list">
         {items.map((item) => (
           <article className="pc-list-item" data-testid="activity-item" key={item.id}>

@@ -8,21 +8,7 @@ export type LayoutPresetDefinition = {
   preferences: WorkbenchPreferences;
 };
 
-export type AuxiliarySectionPresentation = {
-  density: "default" | "compact";
-  emphasis: "default" | "primary" | "muted";
-};
-
 export type InspectorPanePresentation = {
-  density: "default" | "compact";
-  emphasis: "default" | "primary" | "muted";
-  meta?: string;
-  title?: string;
-};
-
-export type LibraryPaneSectionId = "workspace" | "context" | "tools";
-
-export type LibraryPanePresentation = {
   density: "default" | "compact";
   emphasis: "default" | "primary" | "muted";
   meta?: string;
@@ -56,32 +42,13 @@ export type ViewerPanePresentation = {
 };
 
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = {
-  showLibraryPane: true,
+  showAnalysisPane: true,
   showInspectorPane: true,
-  showPluginsPanel: true,
-  showSelectionStatus: true,
-  showSavedSessions: true,
-  showActivityPanel: true,
   showFilmstrip: true,
   showViewerHud: true,
-  showAdjustStatus: true,
-  showAdjustQuickActions: true,
-  showCropPanel: true,
-  showAnalysisMetrics: true,
-  showAnalysisCharts: true,
-  showAnalysisContext: true,
-  showAnalysisAIReview: true,
-  showSessionCard: true,
-  showWorkflowFeed: true,
 };
 
 /* All presentation functions now return the "balanced" (unified) variant */
-
-export function getAuxiliarySectionPresentation(
-  _section: "quick-actions" | "action-status" | "workflow-feed",
-): AuxiliarySectionPresentation {
-  return { density: "compact", emphasis: "muted" };
-}
 
 export function getInspectorPanePresentation(_tab: string): InspectorPanePresentation {
   return {
@@ -93,20 +60,6 @@ export function getInspectorPanePresentation(_tab: string): InspectorPanePresent
 
 export function getInspectorSectionOrder(_tab: string): string[] | undefined {
   return undefined;
-}
-
-export function getLibraryPanePresentation(
-  _section: LibraryPaneSectionId,
-): LibraryPanePresentation {
-  return {
-    density: "default",
-    emphasis: "default",
-    meta: "项目浏览、筛选与缩略图导航",
-  };
-}
-
-export function getLibrarySectionOrder(): LibraryPaneSectionId[] {
-  return ["workspace", "context", "tools"];
 }
 
 export function getFilmstripPresentation(): FilmstripPresentation {

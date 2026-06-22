@@ -11,6 +11,7 @@ from photo_calibrator.core.calibration import (
     build_auto_lut,
     calibrate_film,
     calibrate_image,
+    calibrate_negative_film,
     calibrate_rgb_curves,
     calibrate_selective,
     calibrate_tone_zone,
@@ -200,6 +201,17 @@ def test_film_mode_combines_multiple_correction_layers() -> None:
     assert_valid_changed(out, img)
 
 
+def test_negative_film_mode_inverts_a_negative_image() -> None:
+    positive = gradient_image()
+    negative = 255 - positive
+    out = calibrate_negative_film(negative, strength=0.8)
+
+    assert out.shape == negative.shape
+    assert out.dtype == np.uint8
+    assert float(out.mean()) > float(negative.mean())
+    assert np.mean(np.abs(out.astype(np.float32) - negative.astype(np.float32))) > 20.0
+
+
 def test_preserve_luminance_restores_original_lightness() -> None:
     img = gradient_image()
     darkened = np.clip(img.astype(np.float32) * 0.55, 0, 255).astype(np.uint8)
@@ -230,6 +242,7 @@ def test_new_calibration_modes_are_available_through_calibrate_image() -> None:
         CalibrationMode.LUT3D,
         CalibrationMode.SELECTIVE,
         CalibrationMode.FILM,
+        CalibrationMode.NEGATIVE_FILM,
     ]:
         result = calibrate_image(img, CalibrationParams(mode=mode, strength=0.6, lut_size=9))
         assert result.image.shape == img.shape

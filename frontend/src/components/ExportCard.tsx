@@ -1,4 +1,6 @@
 import type { ExportPayload } from "../types";
+import { replaceDirectoryInPath } from "../lib/paths";
+import { getShellBridge } from "../runtime/shellBridge";
 import { InfoGrid } from "./InfoGrid";
 import { PaneSection } from "./PaneSection";
 import { ResultSummary } from "./ResultSummary";
@@ -24,6 +26,18 @@ type ExportCardProps = {
 
 export function ExportCard({ collapseScope, options, setOptions, result, actionState, onExport }: ExportCardProps) {
   const summaryStatus = result ? "success" : actionState.status;
+  const outputDirectoryPicker = getShellBridge()?.pickOutputDirectory;
+
+  async function pickOutputDirectory() {
+    if (!outputDirectoryPicker) return;
+    const directory = await outputDirectoryPicker(options.outputPath);
+    if (!directory) return;
+    setOptions((current) => ({
+      ...current,
+      outputPath: replaceDirectoryInPath(current.outputPath, directory),
+    }));
+  }
+
   return (
     <PaneSection
       actions={
@@ -52,7 +66,26 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
         </label>
         <label className="pc-field">
           <span>输出路径</span>
-          <input onChange={(event) => setOptions((current) => ({ ...current, outputPath: event.target.value }))} type="text" value={options.outputPath} />
+          <div className="pc-field-row">
+            <input
+              className="pc-field-input-flex"
+              data-testid="export-output-path"
+              onChange={(event) => setOptions((current) => ({ ...current, outputPath: event.target.value }))}
+              type="text"
+              value={options.outputPath}
+            />
+            {outputDirectoryPicker ? (
+              <button
+                aria-label="选择导出文件夹"
+                className="pc-button pc-button-secondary pc-button-small"
+                data-testid="export-output-directory-picker"
+                onClick={pickOutputDirectory}
+                type="button"
+              >
+                选择…
+              </button>
+            ) : null}
+          </div>
         </label>
         <label className="pc-field">
           <span>质量 {options.quality}</span>

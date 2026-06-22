@@ -9,6 +9,7 @@ export const MODE_OPTIONS = [
   ["lut3d", "3D LUT"],
   ["selective", "选择性色彩"],
   ["film", "胶片校准"],
+  ["negative-film", "负片校准"],
 ] as const;
 
 export const ACCELERATOR_OPTIONS = [
@@ -32,4 +33,5 @@ export const MODE_DESCRIPTIONS: Record<string, string> = {
   lut3d: "通过 3D LUT 对 RGB 空间进行非线性映射，可实现复杂的色彩变换。",
   selective: "针对特定色彩区域的 a*/b* 偏移，保留图像其余部分不变。",
   film: "面向胶片扫描特征的专用校准，适合胶片翻拍场景的颜色还原。",
+  "negative-film": "针对彩色负片的反相、橙罩抑制和正片化校准，适合 Capture One 翻拍负片。",
 };

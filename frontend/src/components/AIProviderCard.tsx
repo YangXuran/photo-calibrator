@@ -43,7 +43,7 @@ export function AIProviderCard({ settings, onChange }: AIProviderCardProps) {
   }
 
   return (
-    <PaneSection density="compact" title="AI Provider">
+    <PaneSection density="compact" testId="ai-provider-section" title="AI Provider">
       <div className="pc-form-stack">
         <label className="pc-field">
           <span>类型</span>

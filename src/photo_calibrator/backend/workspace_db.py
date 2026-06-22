@@ -6,7 +6,7 @@ Stores:
 - Analysis cache (input reports, zones, static charts)
 - File inventory (tracks source files for cache invalidation)
 
-Location: ``{ROOT}/.cache/workspace.db``
+Location: ``{photo directory}/photo-calibrator.db`` for user workspaces.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 DB_FILENAME = "workspace.db"
-DB_VERSION = 2
+DB_VERSION = 4
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS metadata (
@@ -109,6 +109,26 @@ _MIGRATIONS = {
         CREATE INDEX IF NOT EXISTS idx_action_history_session ON action_history(session_id);
         CREATE INDEX IF NOT EXISTS idx_action_history_created ON action_history(created_at);
         """,
+    3: """
+        ALTER TABLE sessions ADD COLUMN history_cursor INTEGER NOT NULL DEFAULT -1;
+        ALTER TABLE sessions ADD COLUMN calibrated_preview_blob BLOB;
+        ALTER TABLE sessions ADD COLUMN calibrated_preview_mime TEXT;
+        ALTER TABLE action_history ADD COLUMN sequence_no INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE action_history ADD COLUMN before_state_json TEXT;
+        ALTER TABLE action_history ADD COLUMN after_state_json TEXT;
+        UPDATE action_history
+        SET sequence_no = (
+            SELECT COUNT(*) - 1 FROM action_history AS previous
+            WHERE previous.session_id = action_history.session_id
+              AND previous.id <= action_history.id
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_action_history_sequence
+            ON action_history(session_id, sequence_no);
+        """,
+    4: """
+        ALTER TABLE action_history ADD COLUMN preview_blob BLOB;
+        ALTER TABLE action_history ADD COLUMN preview_mime TEXT;
+        """,
 }
 
 
@@ -138,6 +158,9 @@ class SessionRecord:
     ai_evaluations_json: str | None
     created_at: float
     updated_at: float
+    history_cursor: int = -1
+    calibrated_preview_blob: bytes | None = None
+    calibrated_preview_mime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +190,11 @@ class ActionHistoryRecord:
     action_type: str
     params_json: str | None
     created_at: float
+    sequence_no: int = 0
+    before_state_json: str | None = None
+    after_state_json: str | None = None
+    preview_blob: bytes | None = None
+    preview_mime: str | None = None
 
 
 @dataclass
@@ -373,8 +401,9 @@ class WorkspaceDB:
                 INSERT OR REPLACE INTO sessions
                     (session_id, source_path, session_data_json,
                      document_json, ai_evaluations_json,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     created_at, updated_at, history_cursor,
+                     calibrated_preview_blob, calibrated_preview_mime)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.session_id,
@@ -384,6 +413,9 @@ class WorkspaceDB:
                     record.ai_evaluations_json,
                     created_at,
                     record.updated_at,
+                    record.history_cursor,
+                    record.calibrated_preview_blob,
+                    record.calibrated_preview_mime,
                 ),
             )
 
@@ -447,6 +479,9 @@ class WorkspaceDB:
             ai_evaluations_json=row[4],
             created_at=row[5],
             updated_at=row[6],
+            history_cursor=row[7] if len(row) > 7 else -1,
+            calibrated_preview_blob=row[8] if len(row) > 8 else None,
+            calibrated_preview_mime=row[9] if len(row) > 9 else None,
         )
 
     # -- Analysis cache ---------------------------------------------------------
@@ -568,6 +603,17 @@ class WorkspaceDB:
     def invalidate_source(self, source_path: str) -> dict[str, int]:
         """Remove all cache entries (previews, sessions, analysis) for a source file."""
         with self._transaction() as conn:
+            session_ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT session_id FROM sessions WHERE source_path = ?", (source_path,)
+                ).fetchall()
+            ]
+            history_count = 0
+            for session_id in session_ids:
+                history_count += conn.execute(
+                    "DELETE FROM action_history WHERE session_id = ?", (session_id,)
+                ).rowcount
             preview_cursor = conn.execute(
                 "DELETE FROM previews WHERE source_path = ?", (source_path,)
             )
@@ -583,6 +629,7 @@ class WorkspaceDB:
         return {
             "previews": preview_cursor.rowcount,
             "sessions": session_cursor.rowcount,
+            "history": history_count,
             "analysis": analysis_cursor.rowcount,
             "inventory": inv_cursor.rowcount,
         }
@@ -728,17 +775,142 @@ class WorkspaceDB:
             )
             return cur.lastrowid or 0
 
+    def commit_action(
+        self,
+        *,
+        session_id: str,
+        source_path: str,
+        description: str,
+        action_type: str,
+        before_state: dict[str, Any],
+        after_state: dict[str, Any],
+        document: dict[str, Any] | None = None,
+        preview_blob: bytes | None = None,
+        preview_mime: str | None = None,
+        max_actions: int = 50,
+    ) -> tuple[int, int]:
+        """Append one committed edit and atomically update the restored state."""
+        now = time.time()
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT history_cursor, created_at FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            cursor = int(row[0]) if row else -1
+            created_at = float(row[1]) if row else now
+            conn.execute(
+                "DELETE FROM action_history WHERE session_id = ? AND sequence_no > ?",
+                (session_id, cursor),
+            )
+            next_sequence = cursor + 1
+            conn.execute(
+                """INSERT INTO action_history
+                   (session_id, description, action_type, params_json, sequence_no,
+                    before_state_json, after_state_json, preview_blob, preview_mime, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    description,
+                    action_type,
+                    json.dumps(after_state, ensure_ascii=False),
+                    next_sequence,
+                    json.dumps(before_state, ensure_ascii=False),
+                    json.dumps(after_state, ensure_ascii=False),
+                    preview_blob,
+                    preview_mime,
+                    now,
+                ),
+            )
+            conn.execute(
+                """INSERT OR REPLACE INTO sessions
+                   (session_id, source_path, session_data_json, document_json,
+                    ai_evaluations_json, created_at, updated_at, history_cursor,
+                    calibrated_preview_blob, calibrated_preview_mime)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    source_path,
+                    json.dumps(after_state, ensure_ascii=False),
+                    json.dumps(document, ensure_ascii=False) if document is not None else None,
+                    created_at,
+                    now,
+                    next_sequence,
+                    preview_blob,
+                    preview_mime,
+                ),
+            )
+            rows = conn.execute(
+                "SELECT sequence_no FROM action_history WHERE session_id = ? ORDER BY sequence_no DESC",
+                (session_id,),
+            ).fetchall()
+            if len(rows) > max_actions:
+                cutoff = int(rows[max_actions - 1][0])
+                conn.execute(
+                    "DELETE FROM action_history WHERE session_id = ? AND sequence_no < ?",
+                    (session_id, cutoff),
+                )
+        return next_sequence, next_sequence
+
+    def move_history_cursor(self, session_id: str, direction: int) -> tuple[int, dict[str, Any], bytes | None, str | None] | None:
+        with self._transaction() as conn:
+            session = conn.execute(
+                "SELECT history_cursor, session_data_json FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return None
+            cursor = int(session[0])
+            target = cursor + direction
+            row = conn.execute(
+                """SELECT before_state_json, after_state_json, preview_blob, preview_mime FROM action_history
+                   WHERE session_id = ? AND sequence_no = ?""",
+                (session_id, cursor if direction < 0 else target),
+            ).fetchone()
+            if row is None:
+                return None
+            state_json = row[0] if direction < 0 else row[1]
+            if not state_json:
+                return None
+            preview_row = conn.execute(
+                "SELECT preview_blob, preview_mime FROM action_history WHERE session_id = ? AND sequence_no = ?",
+                (session_id, target),
+            ).fetchone()
+            conn.execute(
+                """UPDATE sessions
+                   SET history_cursor = ?, session_data_json = ?, updated_at = ?,
+                       calibrated_preview_blob = ?, calibrated_preview_mime = ?
+                   WHERE session_id = ?""",
+                (
+                    target,
+                    state_json,
+                    time.time(),
+                    preview_row[0] if preview_row else None,
+                    preview_row[1] if preview_row else None,
+                    session_id,
+                ),
+            )
+        return (
+            target,
+            json.loads(state_json),
+            preview_row[0] if preview_row else None,
+            preview_row[1] if preview_row else None,
+        )
+
     def load_actions(self, session_id: str, limit: int = 50) -> list[ActionHistoryRecord]:
         with self._lock:
             assert self._conn is not None
             rows = self._conn.execute(
-                "SELECT id, session_id, description, action_type, params_json, created_at FROM action_history WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                """SELECT id, session_id, description, action_type, params_json, created_at,
+                          sequence_no, before_state_json, after_state_json, preview_blob, preview_mime
+                   FROM action_history WHERE session_id = ? ORDER BY sequence_no ASC LIMIT ?""",
                 (session_id, limit),
             ).fetchall()
         return [
             ActionHistoryRecord(
                 id=r[0], session_id=r[1], description=r[2], action_type=r[3],
-                params_json=r[4], created_at=r[5],
+                params_json=r[4], created_at=r[5], sequence_no=r[6],
+                before_state_json=r[7], after_state_json=r[8],
+                preview_blob=r[9], preview_mime=r[10],
             )
             for r in rows
         ]
@@ -758,29 +930,26 @@ class WorkspaceDB:
                 self._conn = None
 
 
-_DB_INSTANCE: WorkspaceDB | None = None
+_DB_INSTANCES: dict[str, WorkspaceDB] = {}
 _DB_LOCK = threading.Lock()
 
 
 def get_workspace_db(root: Path | None = None) -> WorkspaceDB:
-    """Return the singleton WorkspaceDB, creating it if needed."""
-    global _DB_INSTANCE
-    if _DB_INSTANCE is not None:
-        return _DB_INSTANCE
+    """Return a WorkspaceDB keyed by normalized workspace root."""
     with _DB_LOCK:
-        if _DB_INSTANCE is not None:
-            return _DB_INSTANCE
         if root is None:
             root = Path(__file__).resolve().parents[3]
-        db_path = root / ".cache" / DB_FILENAME
-        _DB_INSTANCE = WorkspaceDB(db_path)
-    return _DB_INSTANCE
+        resolved = root.expanduser().resolve()
+        db_path = resolved / (".cache/workspace.db" if resolved == Path(__file__).resolve().parents[3] else "photo-calibrator.db")
+        key = str(db_path)
+        if key not in _DB_INSTANCES:
+            _DB_INSTANCES[key] = WorkspaceDB(db_path)
+        return _DB_INSTANCES[key]
 
 
 def reset_workspace_db() -> None:
-    """Close and discard the singleton (for testing)."""
-    global _DB_INSTANCE
+    """Close and discard all cached database instances (for testing)."""
     with _DB_LOCK:
-        if _DB_INSTANCE is not None:
-            _DB_INSTANCE.close()
-            _DB_INSTANCE = None
+        for instance in _DB_INSTANCES.values():
+            instance.close()
+        _DB_INSTANCES.clear()

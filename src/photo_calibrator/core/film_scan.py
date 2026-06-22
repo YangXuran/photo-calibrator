@@ -10,9 +10,13 @@ All functions are pure — no disk I/O.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
+from typing import Any
 
 import cv2
 import numpy as np
+
+from .accelerator import ACCELERATOR
 
 
 # ── Data model ─────────────────────────────────────────────────────
@@ -53,6 +57,9 @@ class FilmScanResult:
 
     evaluation: FilmScanEval | None = None
     """Quality evaluation of the film frame detection and correction."""
+
+    debug: dict[str, Any] | None = None
+    """Optional crop-detection diagnostics for UI overlays and tuning."""
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,8 @@ _HOUGH_MAX_LINE_GAP = 20
 
 _ANGLE_TOLERANCE_DEG = 8.0  # cluster lines within ±8° (allows perspective slant)
 _MIN_CONFIDENCE_LINES = 4  # need at least 4 long lines for a quad
+_SAFE_CROP_INSET_RATIO = 0.01
+_SAFE_CROP_INSET_MAX_PX = 24
 
 # ── Known film formats ─────────────────────────────────────────────
 
@@ -136,31 +145,41 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
         FilmScanResult with angle, corners, crop, and confidence.
     """
     h, w = img_rgb.shape[:2]
+    normalized = _normalize_negative_crop_view(img_rgb)
 
-    edges = _canny_adaptive(img_rgb)
+    edges = _canny_adaptive(normalized)
     lines = _detect_lines(edges)
+    h_group, v_group = _group_lines(lines) if lines else ([], [])
 
-    if len(lines) < _MIN_CONFIDENCE_LINES:
-        return _low_confidence_result(w, h)
+    corners: list[tuple[int, int]] | None = None
+    angle = 0.0
+    confidence = 0.0
+    if len(h_group) >= 2 and len(v_group) >= 2:
+        corners, confidence = _fit_quad(h_group, v_group, w, h)
+        if corners is not None:
+            angle = _compute_angle(h_group, v_group)
 
-    h_group, v_group = _group_lines(lines)
-
-    if len(h_group) < 2 or len(v_group) < 2:
-        return _low_confidence_result(w, h)
-
-    corners, confidence = _fit_quad(h_group, v_group, w, h)
+    hough_crop = _corners_to_crop(corners, img_w=w, img_h=h) if corners else (0, 0, w, h)
+    crop_candidates, crop_debug = _edge_crop_candidates(normalized, hough_crop)
+    scored_crop, crop_score = _select_best_crop(normalized, crop_candidates, hough_crop)
+    crop = scored_crop or hough_crop
+    crop = _refine_crop_to_content(img_rgb, crop)
 
     if corners is None:
-        return _low_confidence_result(w, h)
+        if crop_score < 0.28:
+            return _low_confidence_result(w, h)
+        corners = _crop_to_corners(crop)
+        confidence = crop_score
+    else:
+        confidence = max(confidence, crop_score)
 
-    angle = _compute_angle(h_group, v_group)
-    crop = _corners_to_crop(corners, img_w=w, img_h=h)
+    detected_crop = crop
+    crop, safe_inset = _inset_crop_for_safety(crop, w, h)
+
     border_type = _classify_border(img_rgb, corners)
 
-    is_persp = _detect_perspective(corners)
-    transform = None
-    if is_persp:
-        transform = _perspective_transform(corners)
+    is_persp = _detect_perspective(corners) if len(corners) == 4 else False
+    transform = _perspective_transform(corners) if is_persp else None
 
     film_fmt = identify_film_format(corners) if confidence > 0.4 else None
     evaluation = evaluate_film_correction(corners, crop, film_fmt, (w, h))
@@ -172,12 +191,13 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
         crop_y=crop[1],
         crop_w=crop[2],
         crop_h=crop[3],
-        confidence=round(confidence, 3),
+        confidence=round(float(np.clip(confidence, 0.0, 1.0)), 3),
         border_type=border_type,
         is_perspective=is_persp,
         transform_matrix=transform,
         film_format=film_fmt,
         evaluation=evaluation,
+        debug=_finalize_crop_debug(crop_debug, crop, detected_crop, safe_inset, hough_crop, w, h),
     )
 
 
@@ -186,12 +206,29 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
 
 def _canny_adaptive(img_rgb: np.ndarray) -> np.ndarray:
     """Canny edge detection with thresholds adapted to image statistics."""
-    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    gray = img_rgb if img_rgb.ndim == 2 else ACCELERATOR.rgb_to_gray_u8(img_rgb)
     median = np.median(gray)
     sigma = 0.33
     low = int(max(0, (1.0 - sigma) * median))
     high = int(min(255, (1.0 + sigma) * median))
     return cv2.Canny(gray, low, high)
+
+
+def _normalize_negative_crop_view(img_rgb: np.ndarray) -> np.ndarray:
+    """Build a fast crop-detection grayscale view tailored for color negatives."""
+    rgb = img_rgb.astype(np.float32, copy=False)
+    reshaped = rgb.reshape(-1, 3)
+    low = np.percentile(reshaped, 2.0, axis=0)
+    high = np.percentile(reshaped, 98.0, axis=0)
+    span = np.maximum(high - low, 1.0)
+    normalized = np.clip((rgb - low) / span, 0.0, 1.0)
+    # Invert into a rough positive and suppress the orange mask bias.
+    inv = 1.0 - normalized
+    luma = inv[:, :, 1] * 0.50 + inv[:, :, 0] * 0.25 + inv[:, :, 2] * 0.25
+    gray = np.clip(luma * 255.0, 0.0, 255.0).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    return ACCELERATOR.gaussian_blur(enhanced, (5, 5), 0)
 
 
 def _detect_lines(edges: np.ndarray) -> list[tuple[float, float, float, float]]:
@@ -364,6 +401,582 @@ def _corners_to_crop(corners: list[tuple[int, int]], img_w: int = 10000, img_h: 
     x_max = min(img_w, max(xs))
     y_max = min(img_h, max(ys))
     return (x_min, y_min, x_max - x_min, y_max - y_min)
+
+
+def _crop_to_corners(crop: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+    x, y, w, h = crop
+    return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+
+def _inset_crop_for_safety(
+    crop: tuple[int, int, int, int],
+    img_w: int,
+    img_h: int,
+) -> tuple[tuple[int, int, int, int], tuple[int, int]]:
+    """Inset a detected content box slightly so uncertain border pixels stay out."""
+    x, y, w, h = crop
+    if w < 16 or h < 16:
+        return crop, (0, 0)
+
+    inset_x = min(_SAFE_CROP_INSET_MAX_PX, max(2, int(round(w * _SAFE_CROP_INSET_RATIO))))
+    inset_y = min(_SAFE_CROP_INSET_MAX_PX, max(2, int(round(h * _SAFE_CROP_INSET_RATIO))))
+    if w - inset_x * 2 < 12 or h - inset_y * 2 < 12:
+        return crop, (0, 0)
+
+    safe_crop = (
+        int(np.clip(x + inset_x, 0, max(0, img_w - 1))),
+        int(np.clip(y + inset_y, 0, max(0, img_h - 1))),
+        w - inset_x * 2,
+        h - inset_y * 2,
+    )
+    return safe_crop, (inset_x, inset_y)
+
+
+def _refine_crop_to_content(
+    img_rgb: np.ndarray,
+    crop: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    """Trim uniform border strips inside an already detected crop.
+
+    Some film scans expose a clear frame first, with the real image area inset
+    by a thin black/white/orange rebate. The quad detection above is good at
+    finding that outer frame, but for interactive crop suggestions we want the
+    inner image content instead of the rebate itself.
+    """
+    x, y, w, h = crop
+    if w < 48 or h < 48:
+        return crop
+
+    roi = img_rgb[y : y + h, x : x + w]
+    if roi.size == 0:
+        return crop
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    inner = gray[h // 4 : max(h // 4 + 1, (h * 3) // 4), w // 4 : max(w // 4 + 1, (w * 3) // 4)]
+    if inner.size == 0:
+        return crop
+
+    interior_mean = float(np.mean(inner))
+    interior_std = float(np.std(inner))
+    mean_threshold = max(14.0, interior_std * 0.55)
+    std_threshold = max(8.0, interior_std * 0.45)
+    gradient_threshold = max(4.0, interior_std * 0.18)
+
+    def _smooth(values: np.ndarray) -> np.ndarray:
+        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float32)
+        kernel /= float(kernel.sum())
+        return np.convolve(values.astype(np.float32), kernel, mode="same")
+
+    def _border_trim(means: np.ndarray, stds: np.ndarray, reverse: bool = False) -> int:
+        n = int(means.shape[0])
+        if n < 16:
+            return 0
+        seq_means = means[::-1] if reverse else means
+        seq_stds = stds[::-1] if reverse else stds
+        search = max(8, min(n // 5, 160))
+        edge_span = max(4, min(search // 3, 24))
+        for pivot in range(edge_span, search - edge_span):
+            pre_mean = float(np.mean(seq_means[pivot - edge_span : pivot]))
+            pre_std = float(np.mean(seq_stds[pivot - edge_span : pivot]))
+            post_mean = float(np.mean(seq_means[pivot : pivot + edge_span]))
+            post_std = float(np.mean(seq_stds[pivot : pivot + edge_span]))
+            border_like = pre_std < std_threshold and (
+                pre_mean < 60.0
+                or pre_mean > 195.0
+                or abs(pre_mean - interior_mean) > max(28.0, mean_threshold * 1.8)
+            )
+            content_like = abs(post_mean - interior_mean) < mean_threshold or post_std > pre_std + 3.0
+            strong_transition = abs(post_mean - pre_mean) > mean_threshold
+            if border_like and content_like and strong_transition:
+                return min(pivot, int(n * 0.18))
+        edge_mean = float(np.median(seq_means[:edge_span]))
+        edge_std = float(np.median(seq_stds[:edge_span]))
+        edge_diff = abs(edge_mean - interior_mean)
+        if edge_std > std_threshold or (edge_mean >= 60.0 and edge_mean <= 195.0 and edge_diff <= max(28.0, mean_threshold * 1.8)):
+            return 0
+        smoothed = _smooth(seq_means[:search])
+        gradients = np.abs(np.diff(smoothed))
+        if gradients.size == 0:
+            return 0
+        pivot = int(np.argmax(gradients)) + 1
+        if float(gradients[pivot - 1]) < gradient_threshold:
+            return 0
+        pre_start = max(0, pivot - edge_span)
+        post_end = min(n, pivot + edge_span)
+        pre_mean = float(np.mean(seq_means[pre_start:pivot]))
+        pre_std = float(np.mean(seq_stds[pre_start:pivot]))
+        post_mean = float(np.mean(seq_means[pivot:post_end]))
+        post_std = float(np.mean(seq_stds[pivot:post_end]))
+        border_like = abs(pre_mean - interior_mean) > mean_threshold or pre_std < std_threshold
+        content_like = abs(post_mean - interior_mean) + 1.5 < abs(pre_mean - interior_mean) or post_std > pre_std + 3.0
+        if not border_like or not content_like:
+            return 0
+        return min(pivot, int(n * 0.18))
+
+    col_means = gray.mean(axis=0)
+    col_stds = gray.std(axis=0)
+    row_means = gray.mean(axis=1)
+    row_stds = gray.std(axis=1)
+
+    trim_left = _border_trim(col_means, col_stds, reverse=False)
+    trim_right = _border_trim(col_means, col_stds, reverse=True)
+    trim_top = _border_trim(row_means, row_stds, reverse=False)
+    trim_bottom = _border_trim(row_means, row_stds, reverse=True)
+
+    max_h_trim = max(0, w // 3 - 1)
+    max_v_trim = max(0, h // 3 - 1)
+    trim_left = min(trim_left, max_h_trim)
+    trim_right = min(trim_right, max_h_trim)
+    trim_top = min(trim_top, max_v_trim)
+    trim_bottom = min(trim_bottom, max_v_trim)
+
+    refined_x = x + trim_left
+    refined_y = y + trim_top
+    refined_w = w - trim_left - trim_right
+    refined_h = h - trim_top - trim_bottom
+    if refined_w < max(24, int(w * 0.55)) or refined_h < max(24, int(h * 0.55)):
+        return crop
+    return (refined_x, refined_y, refined_w, refined_h)
+
+
+def _edge_crop_candidates(
+    gray: np.ndarray,
+    hough_crop: tuple[int, int, int, int],
+) -> tuple[list[tuple[int, int, int, int]], dict[str, Any]]:
+    """Generate crop candidates from edge profiles plus the Hough proposal."""
+    h, w = gray.shape[:2]
+    col_mean = gray.mean(axis=0)
+    col_std = gray.std(axis=0)
+    row_mean = gray.mean(axis=1)
+    row_std = gray.std(axis=1)
+    col_grad = ACCELERATOR.sobel_abs_mean(gray, 1, 0, axis=0)
+    row_grad = ACCELERATOR.sobel_abs_mean(gray, 0, 1, axis=1)
+
+    left_h, top_h, width_h, height_h = hough_crop
+    right_h = max(0, w - (left_h + width_h))
+    bottom_h = max(0, h - (top_h + height_h))
+
+    left_candidates, left_debug = _scan_edge_candidates(col_mean, col_std, col_grad, False, anchor=left_h)
+    right_candidates, right_debug = _scan_edge_candidates(col_mean, col_std, col_grad, True, anchor=right_h)
+    top_candidates, top_debug = _scan_edge_candidates(row_mean, row_std, row_grad, False, anchor=top_h)
+    bottom_candidates, bottom_debug = _scan_edge_candidates(row_mean, row_std, row_grad, True, anchor=bottom_h)
+
+    (
+        band_left,
+        band_right,
+        band_top,
+        band_bottom,
+        band_debug,
+    ) = _band_edge_candidates(gray, hough_crop)
+    left_debug["band_samples"] = band_debug["left"]
+    right_debug["band_samples"] = band_debug["right"]
+    top_debug["band_samples"] = band_debug["top"]
+    bottom_debug["band_samples"] = band_debug["bottom"]
+
+    left_candidates = _merge_candidate_values(left_candidates, band_left, left_debug)
+    right_candidates = _merge_candidate_values(right_candidates, band_right, right_debug)
+    top_candidates = _merge_candidate_values(top_candidates, band_top, top_debug)
+    bottom_candidates = _merge_candidate_values(bottom_candidates, band_bottom, bottom_debug)
+
+    candidates: set[tuple[int, int, int, int]] = {hough_crop}
+    for left, right, top, bottom in product(left_candidates, right_candidates, top_candidates, bottom_candidates):
+        width = w - left - right
+        height = h - top - bottom
+        if width < int(w * 0.45) or height < int(h * 0.45):
+            continue
+        candidates.add((left, top, width, height))
+    debug = {
+        "detect_width": int(w),
+        "detect_height": int(h),
+        "edges": {
+            "left": left_debug,
+            "right": right_debug,
+            "top": top_debug,
+            "bottom": bottom_debug,
+        },
+    }
+    return list(candidates), debug
+
+
+def _merge_candidate_values(primary: list[int], extra: list[int], debug: dict[str, Any] | None = None) -> list[int]:
+    merged: list[int] = []
+    weighted_trim = _weighted_trim_from_debug(debug)
+    for value in [*primary, *extra]:
+        if all(abs(value - kept) >= 6 for kept in merged):
+            merged.append(int(value))
+        if len(merged) >= 3:
+            break
+    if weighted_trim is not None and all(abs(weighted_trim - kept) >= 6 for kept in merged):
+        merged.append(int(weighted_trim))
+    if debug is not None:
+        debug["merged_candidates"] = [int(v) for v in merged[:4]]
+        debug["weighted_trim"] = int(weighted_trim) if weighted_trim is not None else None
+    return merged
+
+
+def _band_edge_candidates(
+    gray: np.ndarray,
+    hough_crop: tuple[int, int, int, int],
+) -> tuple[list[int], list[int], list[int], list[int], dict[str, list[dict[str, float | int | str]]]]:
+    """Collect edge candidates from multiple local bands instead of full-width averages."""
+    h, w = gray.shape[:2]
+    left_h, top_h, width_h, height_h = hough_crop
+    right_h = max(0, w - (left_h + width_h))
+    bottom_h = max(0, h - (top_h + height_h))
+
+    x_bands = _axis_bands(w)
+    y_bands = _axis_bands(h)
+    left_values: list[int] = []
+    right_values: list[int] = []
+    top_values: list[int] = []
+    bottom_values: list[int] = []
+    debug: dict[str, list[dict[str, float | int | str]]] = {
+        "left": [],
+        "right": [],
+        "top": [],
+        "bottom": [],
+    }
+
+    for y0, y1 in y_bands:
+        band = gray[y0:y1, :]
+        if band.size == 0:
+            continue
+        band_mean = band.mean(axis=0)
+        band_std = band.std(axis=0)
+        band_grad = ACCELERATOR.sobel_abs_mean(band, 1, 0, axis=0)
+        left_candidates, left_meta = _scan_edge_candidates(band_mean, band_std, band_grad, False, anchor=left_h)
+        right_candidates, right_meta = _scan_edge_candidates(band_mean, band_std, band_grad, True, anchor=right_h)
+        left_values.extend(left_candidates[:1])
+        right_values.extend(right_candidates[:1])
+        debug["left"].extend(_band_sample_debug(left_meta, y0, y1, "y"))
+        debug["right"].extend(_band_sample_debug(right_meta, y0, y1, "y"))
+
+    for x0, x1 in x_bands:
+        band = gray[:, x0:x1]
+        if band.size == 0:
+            continue
+        band_mean = band.mean(axis=1)
+        band_std = band.std(axis=1)
+        band_grad = ACCELERATOR.sobel_abs_mean(band, 0, 1, axis=1)
+        top_candidates, top_meta = _scan_edge_candidates(band_mean, band_std, band_grad, False, anchor=top_h)
+        bottom_candidates, bottom_meta = _scan_edge_candidates(band_mean, band_std, band_grad, True, anchor=bottom_h)
+        top_values.extend(top_candidates[:1])
+        bottom_values.extend(bottom_candidates[:1])
+        debug["top"].extend(_band_sample_debug(top_meta, x0, x1, "x"))
+        debug["bottom"].extend(_band_sample_debug(bottom_meta, x0, x1, "x"))
+
+    return (
+        _dedupe_sorted_candidates(left_values),
+        _dedupe_sorted_candidates(right_values),
+        _dedupe_sorted_candidates(top_values),
+        _dedupe_sorted_candidates(bottom_values),
+        debug,
+    )
+
+
+def _axis_bands(length: int) -> list[tuple[int, int]]:
+    band = max(48, min(length // 3, max(64, length // 4)))
+    center = length // 2
+    return [
+        (0, min(length, band)),
+        (max(0, center - band // 2), min(length, center + band // 2)),
+        (max(0, length - band), length),
+    ]
+
+
+def _dedupe_sorted_candidates(values: list[int]) -> list[int]:
+    unique = [int(v) for v in values if v >= 0]
+    chosen: list[int] = []
+    for value in unique:
+        if all(abs(value - kept) >= 6 for kept in chosen):
+            chosen.append(value)
+        if len(chosen) >= 3:
+            break
+    return chosen
+
+
+def _scan_edge_candidates(
+    means: np.ndarray,
+    stds: np.ndarray,
+    grads: np.ndarray,
+    reverse: bool,
+    *,
+    anchor: int,
+) -> tuple[list[int], dict[str, Any]]:
+    """Return a small set of promising trim distances for one edge."""
+    n = int(means.shape[0])
+    seq_means = means[::-1] if reverse else means
+    seq_stds = stds[::-1] if reverse else stds
+    seq_grads = grads[::-1] if reverse else grads
+    edge_span = max(8, min(24, n // 40))
+    window = max(6, min(20, edge_span))
+    search = max(edge_span * 2, min(n // 4, 240))
+    center_start = max(search, n // 3)
+    center_end = min(n - search, (n * 2) // 3)
+    if center_end <= center_start:
+        return [max(0, anchor)]
+
+    interior_mean = float(np.median(seq_means[center_start:center_end]))
+    interior_std = float(np.median(seq_stds[center_start:center_end]))
+    edge_mean = float(np.median(seq_means[:edge_span]))
+    edge_std = float(np.median(seq_stds[:edge_span]))
+    edge_grad = float(np.median(seq_grads[:edge_span]))
+
+    candidates: list[tuple[float, int, str]] = []
+    if 0 <= anchor <= int(n * 0.22):
+        candidates.append((1.5, int(anchor), "anchor"))
+    candidates.append((0.5, 0, "zero"))
+    legacy = _scan_legacy_edge_transition(seq_means, seq_stds)
+    if legacy is not None:
+        candidates.append((1.7, int(legacy), "legacy"))
+
+    for idx in range(edge_span, search - window):
+        pre_mean = float(np.mean(seq_means[max(0, idx - window) : idx]))
+        pre_std = float(np.mean(seq_stds[max(0, idx - window) : idx]))
+        post_mean = float(np.mean(seq_means[idx : idx + window]))
+        post_std = float(np.mean(seq_stds[idx : idx + window]))
+        post_grad = float(np.mean(seq_grads[idx : idx + window]))
+        mean_delta = abs(post_mean - pre_mean)
+        std_delta = post_std - pre_std
+        border_flat = max(0.0, (interior_std - pre_std) / max(interior_std, 1.0))
+        border_extreme = abs(pre_mean - interior_mean) / 32.0
+        transition = mean_delta / 18.0 + max(0.0, std_delta) / 10.0 + post_grad / max(np.percentile(seq_grads[:search], 90), 1.0)
+        content_gain = abs(post_mean - interior_mean) < abs(pre_mean - interior_mean)
+        if not content_gain and post_std < pre_std + 1.5:
+            continue
+        score = border_flat + border_extreme + transition
+        if score < 1.6:
+            continue
+        candidates.append((score, idx, "transition"))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    chosen: list[int] = []
+    chosen_debug: list[dict[str, float | int | str]] = []
+    for score, idx, source in candidates:
+        if all(abs(idx - kept) >= max(8, window) for kept in chosen):
+            chosen.append(int(idx))
+            chosen_debug.append({"trim": int(idx), "score": float(score), "source": source})
+        if len(chosen) >= 4:
+            break
+    if not chosen:
+        chosen = [max(0, anchor)]
+        chosen_debug = [{"trim": int(max(0, anchor)), "score": 0.0, "source": "fallback"}]
+    return chosen, {
+        "anchor": int(anchor),
+        "search_limit": int(search),
+        "global_candidates": chosen_debug,
+        "band_samples": [],
+        "merged_candidates": chosen.copy(),
+        "weighted_trim": None,
+    }
+
+
+def _band_sample_debug(
+    meta: dict[str, Any],
+    band_start: int,
+    band_end: int,
+    band_axis: str,
+) -> list[dict[str, float | int | str]]:
+    samples: list[dict[str, float | int | str]] = []
+    for candidate in meta.get("global_candidates", [])[:1]:
+        trim = int(candidate.get("trim", 0))
+        score = float(candidate.get("score", 0.0))
+        source = str(candidate.get("source", "band"))
+        samples.append(
+            {
+                "trim": trim,
+                "score": score,
+                "band_start": int(band_start),
+                "band_end": int(band_end),
+                "band_axis": band_axis,
+                "source": source,
+            }
+        )
+    return samples
+
+
+def _weighted_trim_from_debug(debug: dict[str, Any] | None) -> int | None:
+    if not debug:
+        return None
+    weighted_samples: list[tuple[float, float]] = []
+    for item in debug.get("global_candidates", []):
+        trim = item.get("trim")
+        score = item.get("score")
+        if isinstance(trim, (int, float)) and isinstance(score, (int, float)) and score > 0.8:
+            weighted_samples.append((float(trim), float(score)))
+    for item in debug.get("band_samples", []):
+        trim = item.get("trim")
+        score = item.get("score")
+        if isinstance(trim, (int, float)) and isinstance(score, (int, float)) and score > 0.8:
+            weighted_samples.append((float(trim), float(score) * 1.15))
+    if not weighted_samples:
+        return None
+    weighted_samples.sort(key=lambda entry: entry[1], reverse=True)
+    top = weighted_samples[:4]
+    total_weight = sum(weight for _, weight in top)
+    if total_weight <= 0:
+        return None
+    return int(round(sum(trim * weight for trim, weight in top) / total_weight))
+
+
+def _finalize_crop_debug(
+    debug: dict[str, Any],
+    crop: tuple[int, int, int, int],
+    detected_crop: tuple[int, int, int, int],
+    safe_inset: tuple[int, int],
+    hough_crop: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    crop_x, crop_y, crop_w, crop_h = crop
+    hough_x, hough_y, hough_w, hough_h = hough_crop
+    debug["selected_crop"] = {
+        "left": int(crop_x),
+        "top": int(crop_y),
+        "width": int(crop_w),
+        "height": int(crop_h),
+    }
+    detected_x, detected_y, detected_w, detected_h = detected_crop
+    debug["detected_crop"] = {
+        "left": int(detected_x),
+        "top": int(detected_y),
+        "width": int(detected_w),
+        "height": int(detected_h),
+    }
+    debug["safe_inset"] = {
+        "x": int(safe_inset[0]),
+        "y": int(safe_inset[1]),
+        "ratio": _SAFE_CROP_INSET_RATIO,
+    }
+    debug["hough_crop"] = {
+        "left": int(hough_x),
+        "top": int(hough_y),
+        "width": int(hough_w),
+        "height": int(hough_h),
+    }
+    debug["image_width"] = int(width)
+    debug["image_height"] = int(height)
+    return debug
+
+
+def _scan_legacy_edge_transition(
+    seq_means: np.ndarray,
+    seq_stds: np.ndarray,
+) -> int | None:
+    """Legacy single-edge transition probe kept as an extra candidate source."""
+    n = int(seq_means.shape[0])
+    if n < 32:
+        return None
+    search = max(8, min(n // 5, 160))
+    edge_span = max(4, min(search // 3, 24))
+    center_start = max(search, n // 3)
+    center_end = min(n - search, (n * 2) // 3)
+    if center_end <= center_start:
+        return None
+    interior_mean = float(np.median(seq_means[center_start:center_end]))
+    interior_std = float(np.median(seq_stds[center_start:center_end]))
+    mean_threshold = max(14.0, interior_std * 0.55)
+    std_threshold = max(8.0, interior_std * 0.45)
+    for pivot in range(edge_span, search - edge_span):
+        pre_mean = float(np.mean(seq_means[pivot - edge_span : pivot]))
+        pre_std = float(np.mean(seq_stds[pivot - edge_span : pivot]))
+        post_mean = float(np.mean(seq_means[pivot : pivot + edge_span]))
+        post_std = float(np.mean(seq_stds[pivot : pivot + edge_span]))
+        border_like = pre_std < std_threshold and (
+            pre_mean < 60.0
+            or pre_mean > 195.0
+            or abs(pre_mean - interior_mean) > max(28.0, mean_threshold * 1.8)
+        )
+        content_like = abs(post_mean - interior_mean) < mean_threshold or post_std > pre_std + 3.0
+        strong_transition = abs(post_mean - pre_mean) > mean_threshold
+        if border_like and content_like and strong_transition:
+            return min(pivot, int(n * 0.18))
+    return None
+
+
+def _select_best_crop(
+    gray: np.ndarray,
+    candidates: list[tuple[int, int, int, int]],
+    hough_crop: tuple[int, int, int, int],
+) -> tuple[tuple[int, int, int, int] | None, float]:
+    """Score candidate rectangles and return the best one."""
+    best_rect: tuple[int, int, int, int] | None = None
+    best_score = float("-inf")
+    for rect in candidates:
+        score = _score_crop_rect(gray, rect, hough_crop)
+        if score > best_score:
+            best_rect = rect
+            best_score = score
+    if best_rect is None:
+        return None, 0.0
+    normalized_score = float(np.clip((best_score + 2.0) / 8.0, 0.0, 1.0))
+    return best_rect, normalized_score
+
+
+def _score_crop_rect(
+    gray: np.ndarray,
+    rect: tuple[int, int, int, int],
+    hough_crop: tuple[int, int, int, int],
+) -> float:
+    x, y, w, h = rect
+    img_h, img_w = gray.shape[:2]
+    if w <= 0 or h <= 0:
+        return -999.0
+    x1 = x + w
+    y1 = y + h
+    if x < 0 or y < 0 or x1 > img_w or y1 > img_h:
+        return -999.0
+
+    strip = max(6, min(24, min(w, h) // 18))
+    center = gray[y + h // 4 : y + (h * 3) // 4, x + w // 4 : x + (w * 3) // 4]
+    if center.size == 0:
+        return -999.0
+    center_std = float(np.std(center))
+    coverage = (w * h) / float(img_w * img_h)
+
+    def _safe_region(y0: int, y1: int, x0: int, x1: int) -> np.ndarray | None:
+        if x0 < 0 or y0 < 0 or x1 > img_w or y1 > img_h or x1 <= x0 or y1 <= y0:
+            return None
+        return gray[y0:y1, x0:x1]
+
+    edge_score = 0.0
+    weak_trim_penalty = 0.0
+    active_edges = 0
+    trims = (x, img_w - x1, y, img_h - y1)
+    for trim, outer, inner in (
+        (x, _safe_region(y, y1, max(0, x - strip), x), _safe_region(y, y1, x, min(img_w, x + strip))),
+        (img_w - x1, _safe_region(y, y1, x1, min(img_w, x1 + strip)), _safe_region(y, y1, max(0, x1 - strip), x1)),
+        (y, _safe_region(max(0, y - strip), y, x, x1), _safe_region(y, min(img_h, y + strip), x, x1)),
+        (img_h - y1, _safe_region(y1, min(img_h, y1 + strip), x, x1), _safe_region(max(0, y1 - strip), y1, x, x1)),
+    ):
+        if inner is None or inner.size == 0:
+            continue
+        inner_mean = float(np.mean(inner))
+        inner_std = float(np.std(inner))
+        if outer is None or outer.size == 0:
+            continue
+        outer_mean = float(np.mean(outer))
+        outer_std = float(np.std(outer))
+        support = abs(inner_mean - outer_mean) / 22.0 + max(0.0, inner_std - outer_std) / 10.0
+        edge_score += support
+        if trim > strip and support < 0.75:
+            weak_trim_penalty += (0.75 - support) * 2.4
+        active_edges += 1
+
+    if active_edges:
+        edge_score /= active_edges
+
+    # Modest preference toward realistic film coverage and non-extreme aspect ratios.
+    coverage_penalty = abs(coverage - 0.78) * 3.2
+    aspect = w / max(h, 1)
+    aspect_penalty = min(abs(aspect - 1.5), abs(aspect - 1.33), abs(aspect - 1.0)) * 0.8
+    hx, hy, hw, hh = hough_crop
+    hough_trims = (hx, img_w - (hx + hw), hy, img_h - (hy + hh))
+    anchor_penalty = 0.0
+    for trim, ref in zip(trims, hough_trims, strict=True):
+        if ref <= strip:
+            continue
+        anchor_penalty += min(1.2, abs(trim - ref) / max(ref, strip) * 0.7)
+    return edge_score + center_std / 28.0 - coverage_penalty - aspect_penalty - weak_trim_penalty - anchor_penalty
 
 
 def _classify_border(

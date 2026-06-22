@@ -18,7 +18,7 @@ export function useViewerKeyboardShortcuts(workbench: ViewerKeyboardShortcutsCon
 
       if (event.altKey && event.key === "1") {
         event.preventDefault();
-        workbench.toggleLayoutElement("library");
+        workbench.toggleLayoutElement("analysis");
         return;
       }
       if (event.altKey && event.key === "2") {

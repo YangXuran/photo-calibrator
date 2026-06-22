@@ -34,6 +34,7 @@ type ContainerSize = {
 type ViewerStagePaneProps = {
   hudCropPriority?: "primary" | "secondary" | "hidden";
   calibratedSrc?: string;
+  calibratedPreviewBitmap?: ImageBitmap | null;
   compareTone?: "default" | "primary" | "muted";
   filmScanStatus: string;
   focusMode: boolean;
@@ -54,6 +55,7 @@ type ViewerStagePaneProps = {
 export function ViewerStagePane({
   hudCropPriority = "secondary",
   calibratedSrc,
+  calibratedPreviewBitmap,
   compareTone = "primary",
   filmScanStatus,
   focusMode,
@@ -70,6 +72,7 @@ export function ViewerStagePane({
   workbench,
   zoomTone = "default",
 }: ViewerStagePaneProps) {
+  const cropApplied = Boolean(selectedFile?.cropApplied || selectedFile?.result?.processing?.crop_applied);
   const focusToolbar = focusMode ? (
     <ViewerFocusToolbar
       compareTone={compareTone}
@@ -86,10 +89,12 @@ export function ViewerStagePane({
   return (
     <div className={`pc-stage-shell ${focusMode ? "is-focus" : ""}`} data-testid="viewer-stage-shell">
       <ViewerStage
+        calibratedPreviewBitmap={calibratedPreviewBitmap}
         calibratedSrc={calibratedSrc}
         compareMode={workbench.compareMode}
-        cropEditable={Boolean(selectedFile?.crop)}
-        cropRect={selectedFile?.crop?.crop_rect}
+        cropEditable={Boolean(selectedFile?.crop && !cropApplied)}
+        cropDiagnostics={selectedFile?.crop?.film_scan?.debug ?? undefined}
+        cropRect={cropApplied ? undefined : selectedFile?.crop?.crop_rect}
         focusMode={focusMode}
         hudActions={hudActions}
         hudCropPriority={hudCropPriority}
@@ -97,6 +102,7 @@ export function ViewerStagePane({
         hudSecondary={showHud ? hudSecondary : undefined}
         hudStatus={showHud ? filmScanStatus : undefined}
         hudToolbar={focusToolbar}
+        imageKey={selectedFile?.id}
         loading={workbench.loading}
         onContainerResize={onContainerResize}
         onCropChange={workbench.updateSelectedCrop}

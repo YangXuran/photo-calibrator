@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-function filePathToFileInfo(filePath) {
+function filePathToFileInfo(filePath, workspaceRoot) {
   const name = filePath.split(/[\\/]/).pop() || "photo";
-  return { name, path: filePath };
+  return { name, path: filePath, workspaceRoot };
 }
 
 const runtime = await ipcRenderer.invoke("photo-calibrator:get-runtime");
@@ -13,18 +13,21 @@ contextBridge.exposeInMainWorld("__PHOTO_CALIBRATOR_SHELL__", {
   source: "electron-preload",
   pickFiles: async () => {
     const filePaths = await ipcRenderer.invoke("photo-calibrator:pick-files");
-    return filePaths.map(filePathToFileInfo);
+    return filePaths.map((filePath) => filePathToFileInfo(filePath, filePath.replace(/[\\/][^\\/]+$/, "")));
   },
   pickDirectory: async () => {
     const directoryPaths = await ipcRenderer.invoke("photo-calibrator:pick-directory");
     const allEntries = await Promise.all(
       directoryPaths.map(async (directoryPath) => {
         const entries = await ipcRenderer.invoke("photo-calibrator:list-directory-files", directoryPath);
-        return entries.map(filePathToFileInfo);
+        return entries.map((entry) => filePathToFileInfo(entry, directoryPath));
       }),
     );
     return allEntries.flat();
   },
+  pickOutputDirectory: async (currentOutputPath) => (
+    ipcRenderer.invoke("photo-calibrator:pick-output-directory", currentOutputPath)
+  ),
 });
 
 // Bridge for macOS menu events sent from main process

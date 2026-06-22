@@ -58,30 +58,37 @@ export function Filmstrip({
       role="listbox"
     >
       {loadingCount > 0 ? (
-        <div className="pc-filmstrip-progress" data-testid="filmstrip-progress">
-          <div className="pc-filmstrip-progress-bar">
+        <div
+          aria-label={`正在准备缩略图：${totalCount - loadingCount}/${totalCount}`}
+          aria-live="polite"
+          className="pc-filmstrip-progress"
+          data-testid="filmstrip-progress"
+        >
+          <span className="pc-filmstrip-progress-text">{totalCount - loadingCount}/{totalCount}</span>
+          <div aria-hidden="true" className="pc-filmstrip-progress-bar">
             <div className="pc-filmstrip-progress-fill" style={{ width: `${progressPercent}%` }} />
           </div>
-          <span className="pc-filmstrip-progress-text">{totalCount - loadingCount}/{totalCount}</span>
         </div>
       ) : null}
-      {files.map((item, index) => (
-        <FilmstripItem
-          buttonRef={(node) => {
-            itemRefs.current[item.id] = node;
-          }}
-          density={density}
-          index={index}
-          item={item}
-          key={item.id}
-          onKeyDown={handleKeyDown}
-          onSelect={onSelect}
-          selected={item.id === selectedId}
-          showDetail={showDetail}
-          showMeta={showMeta}
-          showStateChip={showStateChip}
-        />
-      ))}
+      <div className={`pc-filmstrip-track pc-filmstrip-track-${density}`}>
+        {files.map((item, index) => (
+          <FilmstripItem
+            buttonRef={(node) => {
+              itemRefs.current[item.id] = node;
+            }}
+            density={density}
+            index={index}
+            item={item}
+            key={item.id}
+            onKeyDown={handleKeyDown}
+            onSelect={onSelect}
+            selected={item.id === selectedId}
+            showDetail={showDetail}
+            showMeta={showMeta}
+            showStateChip={showStateChip}
+          />
+        ))}
+      </div>
     </div>
   );
 }

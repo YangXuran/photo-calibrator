@@ -6,6 +6,8 @@ type CropCardProps = {
   collapseScope?: string;
   crop?: CropPayload;
   cropEdited?: boolean;
+  cropApplied?: boolean;
+  onApply: () => void;
   onSuggest: () => void;
   onReset: () => void;
 };
@@ -14,13 +16,16 @@ function percent(value?: number) {
   return value == null ? "-" : `${(value * 100).toFixed(1)}%`;
 }
 
-export function CropCard({ collapseScope, crop, cropEdited, onSuggest, onReset }: CropCardProps) {
+export function CropCard({ collapseScope, crop, cropApplied, cropEdited, onApply, onSuggest, onReset }: CropCardProps) {
   return (
     <PaneSection
       actions={
         <div className="pc-inline-actions">
           <button className="pc-button pc-button-secondary pc-button-small" onClick={onSuggest} type="button">
             自动建议
+          </button>
+          <button className="pc-button pc-button-primary pc-button-small" data-testid="crop-apply-button" disabled={!crop || cropApplied} onClick={onApply} type="button">
+            {cropApplied ? "已应用" : "应用裁切"}
           </button>
           <button className="pc-button pc-button-secondary pc-button-small" disabled={!cropEdited} onClick={onReset} type="button">
             恢复建议框
@@ -33,11 +38,12 @@ export function CropCard({ collapseScope, crop, cropEdited, onSuggest, onReset }
       defaultCollapsed
       density="compact"
       emphasis="muted"
+      testId="crop-section"
       title="胶片裁切"
     >
       <div className="pc-note pc-note-compact">
-        <strong>{cropEdited ? "已手动调整" : crop ? "使用建议框" : "未检测"}</strong>
-        <span>{cropEdited ? "本地调整框" : "可用于后续导出"}</span>
+        <strong>{cropApplied ? "裁切已应用" : cropEdited ? "待应用：已手动调整" : crop ? "待应用：建议框" : "未检测"}</strong>
+        <span>{cropApplied ? "原图与校准图已使用相同裁切" : crop ? "建议框已向内保留安全边距，调整后点击应用" : "先运行自动建议"}</span>
       </div>
       <InfoGrid
         items={[

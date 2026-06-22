@@ -7,6 +7,7 @@ export type RuntimeConfig = {
   supportsNativeDialogs: boolean;
   supportsShellBridge: boolean;
   enableMockShellBridge: boolean;
+  tempDir?: string;
 };
 
 declare global {
@@ -59,6 +60,10 @@ export function resolveRuntimeConfig(): RuntimeConfig {
     false;
   const enableMockShellBridge =
     parseBoolean(getEnv("VITE_ENABLE_MOCK_SHELL_BRIDGE")) ?? false;
+  const tempDir =
+    typeof injected.tempDir === "string" && injected.tempDir.trim().length > 0
+      ? injected.tempDir
+      : undefined;
 
   return {
     apiBaseUrl,
@@ -67,5 +72,6 @@ export function resolveRuntimeConfig(): RuntimeConfig {
     supportsNativeDialogs: Boolean(supportsNativeDialogs),
     supportsShellBridge: Boolean(supportsShellBridge),
     enableMockShellBridge: Boolean(enableMockShellBridge),
+    tempDir,
   };
 }

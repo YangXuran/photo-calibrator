@@ -152,6 +152,32 @@ def test_low_confidence_no_border() -> None:
     assert result.crop_h >= 380, f"Crop too short: {result.crop_h}"
 
 
+def test_refine_crop_trims_uniform_rebate_inside_detected_frame() -> None:
+    """Inner image content should be preferred over uniform rebate strips."""
+    from photo_calibrator.core.film_scan import _refine_crop_to_content
+
+    img = np.full((200, 300, 3), 120, dtype=np.uint8)
+    img[20:180, 20:280] = (12, 12, 12)
+    for row in range(30, 170):
+        img[row, 40:260] = (80 + row // 3, 100 + row // 5, 160 - row // 6)
+
+    refined = _refine_crop_to_content(img, (20, 20, 260, 160))
+
+    assert abs(refined[0] - 40) <= 8
+    assert abs(refined[1] - 30) <= 8
+    assert abs(refined[2] - 220) <= 16
+    assert abs(refined[3] - 140) <= 16
+
+
+def test_safe_crop_inset_moves_detected_edges_inward() -> None:
+    from photo_calibrator.core.film_scan import _inset_crop_for_safety
+
+    safe_crop, inset = _inset_crop_for_safety((40, 30, 720, 540), 800, 600)
+
+    assert inset == (7, 5)
+    assert safe_crop == (47, 35, 706, 530)
+
+
 # ── Perspective distortion tests ───────────────────────────────────
 
 

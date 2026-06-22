@@ -29,10 +29,10 @@ type WorkbenchLayoutControlsProps = {
 export function WorkbenchLayoutControls({ workbench }: WorkbenchLayoutControlsProps) {
   const toggles = [
     {
-      active: workbench.layoutState.showLibraryPane,
-      label: "Library",
-      onClick: () => workbench.toggleLayoutElement("library"),
-      testId: "toggle-library-pane",
+      active: workbench.layoutState.showAnalysisPane,
+      label: "Analysis",
+      onClick: () => workbench.toggleLayoutElement("analysis"),
+      testId: "toggle-analysis-pane",
     },
     {
       active: workbench.layoutState.showFilmstrip,

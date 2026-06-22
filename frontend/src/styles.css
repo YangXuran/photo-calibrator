@@ -1540,6 +1540,11 @@ button {
   will-change: transform;
 }
 
+.pc-stage-image-frame {
+  position: absolute;
+  inset: 0;
+}
+
 .pc-stage-media.is-fill .pc-stage-image {
   object-fit: cover;
 }
@@ -1549,6 +1554,36 @@ button {
   height: 100%;
   object-fit: contain;
   display: block;
+}
+
+.pc-stage-preview-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.pc-stage-preview-badge {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 3;
+  padding: 5px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  background: rgba(7, 12, 20, 0.72);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: var(--font-caption);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.26);
+  pointer-events: none;
+}
+
+.pc-stage-preview-overlay canvas {
+  object-fit: contain;
 }
 
 .pc-stage-busy {
@@ -1566,8 +1601,10 @@ button {
 
 .pc-stage-split .pc-stage-clip {
   position: absolute;
-  inset: 0 auto 0 0;
-  overflow: hidden;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  will-change: clip-path;
 }
 
 .pc-stage-split .pc-stage-divider {
@@ -1577,7 +1614,7 @@ button {
   width: 12px;
   margin-left: -6px;
   cursor: col-resize;
-  z-index: 2;
+  z-index: 4;
 }
 
 .pc-stage-split .pc-stage-divider::after {
@@ -1610,6 +1647,14 @@ button {
 }
 
 .pc-filmstrip {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pc-filmstrip-track {
+  height: 100%;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 124px;
@@ -1618,10 +1663,51 @@ button {
   padding: var(--sp-3) var(--sp-4) var(--sp-4);
 }
 
-.pc-filmstrip-compact {
+.pc-filmstrip-track-compact {
   grid-auto-columns: 112px;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3) var(--sp-3);
+}
+
+.pc-filmstrip-progress {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-3);
+  z-index: 6;
+  display: grid;
+  grid-template-columns: auto 48px;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 24px;
+  padding: 0 var(--sp-2);
+  border: 1px solid rgba(98, 167, 255, 0.28);
+  border-radius: var(--radius-pill);
+  background: rgba(6, 11, 18, 0.88);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.pc-filmstrip-progress-text {
+  color: #d9e9ff;
+  font-family: var(--font-mono);
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pc-filmstrip-progress-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: rgba(98, 167, 255, 0.16);
+}
+
+.pc-filmstrip-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #5eead4, var(--accent));
+  transition: width 180ms ease-out;
 }
 
 .pc-thumb {
@@ -2668,9 +2754,87 @@ button {
 
 .pc-crop-overlay {
   position: absolute;
+  z-index: 3;
   border: 2px solid rgba(96, 165, 250, 0.9);
   box-shadow: 0 0 0 9999px rgba(2, 6, 12, 0.28);
   pointer-events: auto;
+}
+
+.pc-crop-debug-band,
+.pc-crop-debug-candidate,
+.pc-crop-debug-weighted {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pc-crop-debug-band-left,
+.pc-crop-debug-band-right,
+.pc-crop-debug-weighted-left,
+.pc-crop-debug-weighted-right,
+.pc-crop-debug-candidate-left,
+.pc-crop-debug-candidate-right {
+  top: 0;
+  bottom: 0;
+}
+
+.pc-crop-debug-band-top,
+.pc-crop-debug-band-bottom,
+.pc-crop-debug-weighted-top,
+.pc-crop-debug-weighted-bottom,
+.pc-crop-debug-candidate-top,
+.pc-crop-debug-candidate-bottom {
+  left: 0;
+  right: 0;
+}
+
+.pc-crop-debug-band {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.1), rgba(251, 191, 36, 0.82), rgba(251, 191, 36, 0.1));
+}
+
+.pc-crop-debug-band-top,
+.pc-crop-debug-band-bottom {
+  height: 2px;
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.1), rgba(251, 191, 36, 0.85), rgba(251, 191, 36, 0.1));
+}
+
+.pc-crop-debug-band-left,
+.pc-crop-debug-band-right {
+  width: 2px;
+}
+
+.pc-crop-debug-candidate {
+  opacity: 0.55;
+}
+
+.pc-crop-debug-candidate-left,
+.pc-crop-debug-candidate-right {
+  width: 1px;
+  background: rgba(96, 165, 250, 0.65);
+}
+
+.pc-crop-debug-candidate-top,
+.pc-crop-debug-candidate-bottom {
+  height: 1px;
+  background: rgba(96, 165, 250, 0.65);
+}
+
+.pc-crop-debug-weighted {
+  opacity: 0.92;
+}
+
+.pc-crop-debug-weighted-left,
+.pc-crop-debug-weighted-right {
+  width: 2px;
+  background: rgba(34, 197, 94, 0.95);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.65);
+}
+
+.pc-crop-debug-weighted-top,
+.pc-crop-debug-weighted-bottom {
+  height: 2px;
+  background: rgba(34, 197, 94, 0.95);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.65);
 }
 
 .pc-crop-overlay.is-editable {
@@ -3214,10 +3378,12 @@ button {
 /* ── Image Loading State ─────────────────────────────────────────── */
 
 .pc-stage-loading {
+  --pc-stage-loading-scale: 1;
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(var(--pc-stage-loading-scale));
+  transform-origin: center;
   z-index: 1;
   padding: var(--sp-6) 32px;
   background: rgba(10, 15, 24, 0.88);
@@ -3295,11 +3461,9 @@ button {
 @keyframes pc-stage-loading-fade-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
   }
 }
 
@@ -3345,7 +3509,7 @@ button {
 
 /* Auto-hide: thumb invisible until container is hovered */
 .pc-pane-scroll::-webkit-scrollbar-thumb,
-.pc-filmstrip::-webkit-scrollbar-thumb,
+.pc-filmstrip-track::-webkit-scrollbar-thumb,
 .pc-filmstrip-pane::-webkit-scrollbar-thumb,
 .pc-history-list::-webkit-scrollbar-thumb,
 .pc-dialog::-webkit-scrollbar-thumb,
@@ -3355,7 +3519,7 @@ button {
 }
 
 .pc-pane-scroll:hover::-webkit-scrollbar-thumb,
-.pc-filmstrip:hover::-webkit-scrollbar-thumb,
+.pc-filmstrip-track:hover::-webkit-scrollbar-thumb,
 .pc-filmstrip-pane:hover::-webkit-scrollbar-thumb,
 .pc-history-list:hover::-webkit-scrollbar-thumb,
 .pc-dialog:hover::-webkit-scrollbar-thumb,
@@ -3364,7 +3528,7 @@ button {
 }
 
 .pc-pane-scroll:hover::-webkit-scrollbar-thumb:hover,
-.pc-filmstrip:hover::-webkit-scrollbar-thumb:hover,
+.pc-filmstrip-track:hover::-webkit-scrollbar-thumb:hover,
 .pc-filmstrip-pane:hover::-webkit-scrollbar-thumb:hover,
 .pc-history-list:hover::-webkit-scrollbar-thumb:hover,
 .pc-dialog:hover::-webkit-scrollbar-thumb:hover,

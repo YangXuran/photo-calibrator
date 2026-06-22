@@ -60,7 +60,7 @@ export function LutRadarChart({ vectors }: LutRadarChartProps) {
   });
 
   return (
-    <svg className="pc-chart" viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label="LUT radar chart">
+    <svg className="pc-chart" data-testid="lut-radar-chart" viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label="LUT radar chart">
       {gridRings.map((pct, i) => (
         <circle key={i} cx={CENTER} cy={CENTER} r={RADIUS * pct} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
       ))}

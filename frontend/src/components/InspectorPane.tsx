@@ -8,8 +8,6 @@ type InspectorPaneProps = {
 };
 
 export function InspectorPane({ workbench }: InspectorPaneProps) {
-  const selectedFile = workbench.selectedFile;
-
   return (
     <SidePaneShell
       header={null}

@@ -1,8 +1,10 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
-import { getAuxiliarySectionPresentation } from "../lib/layoutPresets";
+import { ActivityPanel } from "./ActivityPanel";
+import { HistoryPanel } from "./HistoryPanel";
 import { InspectorPanelSections } from "./InspectorPanelSections";
+import { PaneSection } from "./PaneSection";
 import { SessionCard } from "./SessionCard";
-import { WorkflowFeedCard } from "./WorkflowFeedCard";
+import { SessionLibraryCard } from "./SessionLibraryCard";
 
 type InspectorSessionPanelProps = {
   order?: string[];
@@ -12,14 +14,32 @@ type InspectorSessionPanelProps = {
 export function InspectorSessionPanel({ order, workbench }: InspectorSessionPanelProps) {
   const selectedFile = workbench.selectedFile;
   const collapseScope = "workbench";
-  const workflowFeedPresentation = getAuxiliarySectionPresentation("workflow-feed");
   return (
     <InspectorPanelSections
       order={order}
       sections={[
         {
+          key: "history",
+          content: (
+            <PaneSection
+              collapseStorageScope={collapseScope}
+              collapseStorageKey="inspector-session-history"
+              collapsible
+              testId="history-section"
+              title="操作历史"
+              meta={selectedFile?.historyPersistent === false ? "历史未持久化" : "当前文件的撤销 / 重做记录"}
+            >
+              <HistoryPanel
+                entries={workbench.history}
+                currentIndex={workbench.historyIndex}
+                onUndo={workbench.undo}
+                onRedo={workbench.redo}
+              />
+            </PaneSection>
+          ),
+        },
+        {
           key: "session-card",
-          visible: workbench.preferences.showSessionCard,
           content: (
             <SessionCard
               collapseScope={collapseScope}
@@ -36,18 +56,19 @@ export function InspectorSessionPanel({ order, workbench }: InspectorSessionPane
           ),
         },
         {
-          key: "workflow-feed",
-          visible: workbench.preferences.showWorkflowFeed,
+          key: "saved-sessions",
           content: (
-            <WorkflowFeedCard
-              aiResult={workbench.aiResult}
-              density={workflowFeedPresentation.density}
-              documentRender={workbench.documentRender}
-              emphasis={workflowFeedPresentation.emphasis}
-              exportResult={workbench.exportResult}
-              sessionSaveResult={workbench.sessionSaveResult}
+            <SessionLibraryCard
+              onDelete={workbench.deleteSavedSession}
+              onLoad={workbench.loadSavedSession}
+              onRefresh={workbench.refreshSavedSessions}
+              sessions={workbench.savedSessions}
             />
           ),
+        },
+        {
+          key: "activity",
+          content: <ActivityPanel items={workbench.activityLog} />,
         },
       ]}
     />

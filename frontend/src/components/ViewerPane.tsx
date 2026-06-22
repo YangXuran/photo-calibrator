@@ -63,6 +63,7 @@ export function ViewerPane({ workbench, originalSrc, calibratedSrc, onContainerR
         <>
           {workbench.highResLoading ? <progress className="pc-highres-progress" /> : null}
           <ViewerStagePane
+            calibratedPreviewBitmap={workbench.localCurvePreviewBitmap}
             calibratedSrc={calibratedSrc}
             compareTone={viewerPanePresentation.compareTone}
             filmScanStatus={filmScanStatus}

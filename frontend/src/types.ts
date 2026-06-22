@@ -1,6 +1,6 @@
 export type CompareMode = "side-by-side" | "split" | "calibrated-only";
 export type ViewerZoomMode = "fit" | "fill" | "manual";
-export type InspectorTab = "adjust" | "color" | "curves" | "compose" | "analysis" | "ai" | "export" | "session" | "settings";
+export type InspectorTab = "adjust" | "curves" | "compose" | "ai" | "export" | "session" | "settings";
 
 export type ViewerPan = {
   x: number;
@@ -15,23 +15,10 @@ export type ViewerWorkspaceState = {
 };
 
 export type WorkbenchPreferences = {
-  showLibraryPane: boolean;
+  showAnalysisPane: boolean;
   showInspectorPane: boolean;
-  showPluginsPanel: boolean;
-  showSelectionStatus: boolean;
-  showSavedSessions: boolean;
-  showActivityPanel: boolean;
   showFilmstrip: boolean;
   showViewerHud: boolean;
-  showAdjustStatus: boolean;
-  showAdjustQuickActions: boolean;
-  showCropPanel: boolean;
-  showAnalysisMetrics: boolean;
-  showAnalysisCharts: boolean;
-  showAnalysisContext: boolean;
-  showAnalysisAIReview: boolean;
-  showSessionCard: boolean;
-  showWorkflowFeed: boolean;
 };
 
 export type PluginInfo = {
@@ -146,7 +133,10 @@ export type CalibrationPayload = {
     accelerator_requested?: string;
     original_width?: number;
     original_height?: number;
+    crop_rect?: CropRect | null;
+    crop_applied?: boolean;
   };
+  document?: Record<string, unknown>;
 };
 
 export type PreviewPayload = {
@@ -189,10 +179,20 @@ export type WorkspaceFile = {
   crop?: CropPayload;
   cropSuggestedRect?: CropRect;
   cropEdited?: boolean;
+  cropApplied?: boolean;
+  imageTransform?: ImageTransform;
   thumbnailLoading?: boolean;
+  calibrationSignature?: string;
+  lCurve?: ChannelCurve;
   rCurve?: ChannelCurve;
   gCurve?: ChannelCurve;
   bCurve?: ChannelCurve;
+  workspaceRoot?: string;
+  persistentSessionId?: string;
+  persistedState?: PersistedEditState;
+  persistedHistory?: HistoryEntry[];
+  persistedHistoryIndex?: number;
+  historyPersistent?: boolean;
 };
 
 export type CropRect = {
@@ -200,6 +200,53 @@ export type CropRect = {
   top: number;
   width: number;
   height: number;
+};
+
+export type ImageTransform = {
+  rotation: number;
+  flipH: boolean;
+  flipV: boolean;
+};
+
+export type CropEdgeCandidate = {
+  trim: number;
+  score: number;
+  source?: string;
+};
+
+export type CropBandSample = CropEdgeCandidate & {
+  band_start: number;
+  band_end: number;
+  band_axis: "x" | "y";
+};
+
+export type CropEdgeDiagnostics = {
+  anchor?: number;
+  weighted_trim?: number | null;
+  merged_candidates?: number[];
+  global_candidates?: CropEdgeCandidate[];
+  band_samples?: CropBandSample[];
+};
+
+export type CropDiagnostics = {
+  image_width?: number;
+  image_height?: number;
+  detect_width?: number;
+  detect_height?: number;
+  hough_crop?: CropRect;
+  detected_crop?: CropRect;
+  selected_crop?: CropRect;
+  safe_inset?: {
+    x: number;
+    y: number;
+    ratio: number;
+  };
+  edges?: {
+    left?: CropEdgeDiagnostics;
+    right?: CropEdgeDiagnostics;
+    top?: CropEdgeDiagnostics;
+    bottom?: CropEdgeDiagnostics;
+  };
 };
 
 export type CropPayload = {
@@ -211,6 +258,7 @@ export type CropPayload = {
     border_type?: string | null;
     film_format?: string | null;
     diagnosis?: string[];
+    debug?: CropDiagnostics | null;
   };
   processing?: {
     film_scan_source?: string;
@@ -233,6 +281,14 @@ export type ExportPayload = {
     metadata_keys?: string[];
     icc_embedded?: boolean;
   };
+};
+
+export type BatchExportItemResult = {
+  file_id: string;
+  file_name: string;
+  ok: boolean;
+  path?: string;
+  error?: string;
 };
 
 export type DocumentRenderPayload = {
@@ -353,6 +409,7 @@ export type CurvePoint = [number, number];
 export type ChannelCurve = CurvePoint[];
 
 export type ManualCurves = {
+  l: ChannelCurve;
   r: ChannelCurve;
   g: ChannelCurve;
   b: ChannelCurve;
@@ -392,4 +449,19 @@ export type HistoryEntry = {
   timestamp: string;
   operation_count: number;
   current_op_name: string;
+  sequence_no?: number;
+  before_state?: PersistedEditState;
+  after_state?: PersistedEditState;
+};
+
+export type PersistedEditState = {
+  mode: string;
+  strength: number;
+  accelerator: string;
+  curves: ManualCurves;
+  crop?: CropPayload;
+  cropEdited?: boolean;
+  cropApplied?: boolean;
+  imageTransform?: ImageTransform;
+  runtimeSessionId?: string;
 };

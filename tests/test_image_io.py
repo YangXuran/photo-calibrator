@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -441,7 +443,8 @@ def test_decode_raw_postprocess_fallback(tmp_path) -> None:
     import rawpy
 
     # Use the real ARW file
-    raw_bytes = open("DSC08739.ARW", "rb").read()
+    raw_path = Path(__file__).resolve().parents[1] / "photo_test" / "DSC08739.ARW"
+    raw_bytes = raw_path.read_bytes()
     bgr, source = decode_raw_preview(raw_bytes, "DSC08739.ARW")
     assert source in {"raw-embedded-jpeg", "raw-embedded-bitmap", "raw-half-postprocess"}
     assert bgr is not None

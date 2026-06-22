@@ -272,7 +272,66 @@ class TestAggregateOps:
         assert stats["preview_total_bytes"] == 5
         assert stats["session_count"] == 1
         assert stats["analysis_count"] == 1
-        assert stats["db_version"] == "2"
+        assert stats["db_version"] == "4"
+
+
+class TestPersistentActionHistory:
+    def test_commit_undo_redo_and_truncate_branch(self, db: WorkspaceDB) -> None:
+        source = "/photos/test.tif"
+        first = {"mode": "global", "strength": 0.8}
+        second = {"mode": "global", "strength": 0.6}
+        third = {"mode": "skin-priority", "strength": 0.6}
+        db.commit_action(
+            session_id="persistent-1", source_path=source, description="strength",
+            action_type="strength", before_state=first, after_state=second,
+            preview_blob=b"preview-1", preview_mime="image/jpeg",
+        )
+        db.commit_action(
+            session_id="persistent-1", source_path=source, description="mode",
+            action_type="mode", before_state=second, after_state=third,
+            preview_blob=b"preview-2", preview_mime="image/jpeg",
+        )
+
+        cursor, state, blob, _mime = db.move_history_cursor("persistent-1", -1) or (-9, {}, None, None)
+        assert cursor == 0
+        assert state == second
+        assert blob == b"preview-1"
+        assert db.load_session("persistent-1").calibrated_preview_blob == b"preview-1"
+
+        replacement = {"mode": "film", "strength": 0.6}
+        db.commit_action(
+            session_id="persistent-1", source_path=source, description="branch",
+            action_type="mode", before_state=second, after_state=replacement,
+        )
+        actions = db.load_actions("persistent-1")
+        assert [json.loads(item.after_state_json or "{}") for item in actions] == [second, replacement]
+        assert db.move_history_cursor("persistent-1", 1) is None
+
+    def test_action_limit_keeps_latest_fifty(self, db: WorkspaceDB) -> None:
+        for index in range(55):
+            db.commit_action(
+                session_id="persistent-limit", source_path="/photos/test.tif",
+                description=str(index), action_type="strength",
+                before_state={"value": index}, after_state={"value": index + 1},
+            )
+        actions = db.load_actions("persistent-limit", limit=100)
+        assert len(actions) == 50
+        assert actions[0].sequence_no == 5
+
+    def test_registry_isolated_by_workspace_root(self, tmp_path: Path) -> None:
+        reset_workspace_db()
+        try:
+            first_root = tmp_path / "first"
+            second_root = tmp_path / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            first = get_workspace_db(first_root)
+            second = get_workspace_db(second_root)
+            assert first is not second
+            assert Path(first.stats()["db_path"]) == first_root / "photo-calibrator.db"
+            assert Path(second.stats()["db_path"]) == second_root / "photo-calibrator.db"
+        finally:
+            reset_workspace_db()
 
     def test_clear_all(self, db: WorkspaceDB) -> None:
         db.save_preview(_make_preview("p1"))

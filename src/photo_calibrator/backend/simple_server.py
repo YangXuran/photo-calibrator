@@ -9,6 +9,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import sys
 import tempfile
 import time
 from collections import OrderedDict
@@ -55,6 +56,7 @@ WEB_ROOT = _FRONTEND_DIST if _FRONTEND_DIST.is_dir() else ROOT / "web"
 PREVIEW_CACHE_DIR = ROOT / ".cache" / "previews"
 SESSION_STORE_DIR = ROOT / ".cache" / "sessions"
 DEFAULT_ANALYSIS_MAX_SIDE = 3200
+FILM_SCAN_MAX_SIDE = 960
 MEMORY_CACHE_LIMIT = 128
 BATCH_WORKERS = max(1, min(4, os.cpu_count() or 1))
 
@@ -538,6 +540,114 @@ def _export_buffer_from_result(source_buffer: ImageBuffer, export_image: np.ndar
         metadata=deepcopy(source_buffer.metadata) if policy["preserve_metadata"] else {},
         orientation=source_buffer.orientation,
     )
+
+
+def _crop_rect_from_body(body: dict) -> dict[str, float] | None:
+    value = body.get("crop_rect")
+    if not isinstance(value, dict):
+        return None
+    try:
+        left = float(value.get("left", 0.0))
+        top = float(value.get("top", 0.0))
+        width = float(value.get("width", 1.0))
+        height = float(value.get("height", 1.0))
+    except (TypeError, ValueError):
+        raise ValueError("crop_rect values must be numbers") from None
+
+    left = float(np.clip(left, 0.0, 0.999))
+    top = float(np.clip(top, 0.0, 0.999))
+    width = float(np.clip(width, 0.0, 1.0 - left))
+    height = float(np.clip(height, 0.0, 1.0 - top))
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError("crop_rect width and height must be positive")
+    if left <= 0.0001 and top <= 0.0001 and width >= 0.999 and height >= 0.999:
+        return None
+    return {"left": left, "top": top, "width": width, "height": height}
+
+
+def _apply_crop_rect(image: np.ndarray, crop_rect: dict[str, float] | None) -> np.ndarray:
+    if not crop_rect:
+        return image
+    height, width = image.shape[:2]
+    if width <= 1 or height <= 1:
+        return image
+    x0 = int(round(crop_rect["left"] * width))
+    y0 = int(round(crop_rect["top"] * height))
+    x1 = int(round((crop_rect["left"] + crop_rect["width"]) * width))
+    y1 = int(round((crop_rect["top"] + crop_rect["height"]) * height))
+    x0 = max(0, min(x0, width - 1))
+    y0 = max(0, min(y0, height - 1))
+    x1 = max(x0 + 1, min(x1, width))
+    y1 = max(y0 + 1, min(y1, height))
+    return np.ascontiguousarray(image[y0:y1, x0:x1])
+
+
+def _image_transform_from_body(body: dict) -> dict[str, float | bool] | None:
+    value = body.get("image_transform")
+    if not isinstance(value, dict):
+        return None
+    try:
+        rotation = float(value.get("rotation", 0.0))
+        flip_h = bool(value.get("flipH", value.get("flip_h", False)))
+        flip_v = bool(value.get("flipV", value.get("flip_v", False)))
+    except (TypeError, ValueError):
+        raise ValueError("image_transform values must be rotation/flip numbers") from None
+
+    rotation = ((rotation + 180.0) % 360.0) - 180.0
+    if abs(rotation) < 0.0001 and not flip_h and not flip_v:
+        return None
+    return {"rotation": rotation, "flip_h": flip_h, "flip_v": flip_v}
+
+
+def _apply_image_transform(image: np.ndarray, transform: dict[str, float | bool] | None) -> np.ndarray:
+    if not transform:
+        return image
+    result = image
+    if transform.get("flip_h") and transform.get("flip_v"):
+        result = cv2.flip(result, -1)
+    elif transform.get("flip_h"):
+        result = cv2.flip(result, 1)
+    elif transform.get("flip_v"):
+        result = cv2.flip(result, 0)
+
+    rotation = float(transform.get("rotation", 0.0))
+    rotation = ((rotation + 180.0) % 360.0) - 180.0
+    if abs(rotation) < 0.0001:
+        return np.ascontiguousarray(result)
+    if abs(rotation - 90.0) < 0.0001:
+        return np.ascontiguousarray(cv2.rotate(result, cv2.ROTATE_90_CLOCKWISE))
+    if abs(rotation + 90.0) < 0.0001:
+        return np.ascontiguousarray(cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    if abs(abs(rotation) - 180.0) < 0.0001:
+        return np.ascontiguousarray(cv2.rotate(result, cv2.ROTATE_180))
+
+    height, width = result.shape[:2]
+    center = (width / 2.0, height / 2.0)
+    matrix = cv2.getRotationMatrix2D(center, rotation, 1.0)
+    cos = abs(matrix[0, 0])
+    sin = abs(matrix[0, 1])
+    new_width = int(round(height * sin + width * cos))
+    new_height = int(round(height * cos + width * sin))
+    matrix[0, 2] += new_width / 2.0 - center[0]
+    matrix[1, 2] += new_height / 2.0 - center[1]
+    border = float(np.median(result)) if result.size else 0.0
+    return cv2.warpAffine(
+        result,
+        matrix,
+        (max(1, new_width), max(1, new_height)),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(border, border, border),
+    )
+
+
+def _apply_crop_and_transform(
+    image: np.ndarray,
+    crop_rect: dict[str, float] | None,
+    image_transform: dict[str, float | bool] | None,
+) -> np.ndarray:
+    """Apply a source-space crop before rotating or flipping its pixels."""
+    return _apply_image_transform(_apply_crop_rect(image, crop_rect), image_transform)
 
 
 def _plugin_reader_id(body: dict) -> str | None:
@@ -1625,16 +1735,35 @@ def _calibrate_session_payload(body: dict) -> dict:
 
 def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> dict:
     t0 = time.perf_counter()
+    image_transform = _image_transform_from_body(body)
     img = entry.prepared.image
+    crop_rect = _crop_rect_from_body(body)
     calibration_start = time.perf_counter()
     calibration = _apply_calibration(entry, img, body)
+    if crop_rect or image_transform:
+        calibration = dict(calibration)
+        calibration["image"] = _apply_crop_and_transform(calibration["image"], crop_rect, image_transform)
+        calibration["post_report"] = analyze_image_array(calibration["image"])
+        metadata = dict(calibration.get("metadata") or {})
+        metadata["crop_applied"] = bool(crop_rect)
+        metadata["image_transform_applied"] = bool(image_transform)
+        calibration["metadata"] = metadata
     calibration_ms = (time.perf_counter() - calibration_start) * 1000.0
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     include_original = bool(body.get("include_original", True))
     fast = bool(body.get("fast", False))
     has_curves = bool(body.get("r_curve") or body.get("g_curve") or body.get("b_curve"))
     resp_start = time.perf_counter()
-    result = _calibration_response(entry, calibration, img, elapsed_ms, include_original=include_original, fast=fast)
+    result = _calibration_response(
+        entry,
+        calibration,
+        _apply_crop_and_transform(img, crop_rect, image_transform),
+        elapsed_ms,
+        include_original=include_original,
+        fast=fast,
+        crop_rect=crop_rect,
+        image_transform=image_transform,
+    )
     resp_ms = (time.perf_counter() - resp_start) * 1000.0
     total_ms = (time.perf_counter() - t0) * 1000.0
     result["_timing"] = {
@@ -1738,6 +1867,8 @@ def _calibration_response(
     elapsed_ms: float,
     include_original: bool = True,
     fast: bool = False,
+    crop_rect: dict[str, float] | None = None,
+    image_transform: dict[str, float | bool] | None = None,
 ) -> dict:
     prepared = entry.prepared
     accelerator = _accelerator_payload()
@@ -1798,11 +1929,14 @@ def _calibration_response(
             "calibration_source": metadata.get("calibration_source", "core"),
             "calibration_plugin_id": metadata.get("plugin_id"),
             "calibration_plugin_name": metadata.get("plugin_name"),
+            "crop_rect": crop_rect,
+            "crop_applied": bool(crop_rect),
+            "image_transform": image_transform,
+            "image_transform_applied": bool(image_transform),
         },
     }
     payload["document"] = _session_document_payload(entry, {**calibration, "processing": payload["processing"]})
     _record_session_calibration(entry, payload)
-    _record_action_history(entry.cache_key, payload)
     return payload
 
 
@@ -1828,15 +1962,16 @@ def _generate_cube_lut_data(export_result: dict, size: int = 17) -> np.ndarray |
 
     if mode in ("global", "midtones-only", "skin-priority",
                 "highlights-only", "preserve-split-tone",
-                "tone-zone", "selective", "film"):
+                "tone-zone", "selective", "film", "negative-film"):
         a_shift = (export_result.get("shift") or {}).get("a") or 0.0
         b_shift = (export_result.get("shift") or {}).get("b") or 0.0
         if abs(a_shift) < 0.001 and abs(b_shift) < 0.001:
             return None
-        lab = ACCELERATOR.rgb_to_lab_float(flat)
-        lab[:, 1] += a_shift * strength
-        lab[:, 2] += b_shift * strength
-        flat_out = ACCELERATOR.lab_to_rgb_float(lab)
+        flat_u8 = np.clip(np.rint(flat * 255.0), 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+        lab = ACCELERATOR.rgb_to_lab_float(flat_u8)
+        lab[:, :, 1] += a_shift * strength
+        lab[:, :, 2] += b_shift * strength
+        flat_out = ACCELERATOR.lab_to_rgb_float(lab).reshape(-1, 3)
         return np.clip(flat_out.reshape(size, size, size, 3), 0.0, 1.0)
 
     return None
@@ -1878,7 +2013,12 @@ def _export_payload(body: dict) -> dict:
             raw_options=_raw_decode_options(body),
         )
     export_result = _apply_calibration(entry, source_buffer.data, body)
-    buf = _export_buffer_from_result(source_buffer, export_result["image"], body)
+    export_image = _apply_crop_and_transform(
+        export_result["image"],
+        _crop_rect_from_body(body),
+        _image_transform_from_body(body),
+    )
+    buf = _export_buffer_from_result(source_buffer, export_image, body)
     writer_metadata = None
 
     if fmt in {"jpeg", "jpg", "png", "tiff16", "tif16", "exr", "hdr"}:
@@ -2252,6 +2392,100 @@ def _workspace_sync_payload(body: dict) -> dict:
     }
 
 
+def _workspace_db_from_body(body: dict):
+    root_value = body.get("workspace_root")
+    if not root_value:
+        raise ValueError("workspace_root required")
+    root = Path(str(root_value)).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Workspace directory not found: {root}")
+    return root, get_workspace_db(root)
+
+
+def _preview_blob_from_url(value: object) -> tuple[bytes | None, str | None]:
+    if not isinstance(value, str) or not value:
+        return None, None
+    if value.startswith("data:") and "," in value:
+        header, encoded = value.split(",", 1)
+        mime = header[5:].split(";", 1)[0] or "image/jpeg"
+        return base64.b64decode(encoded), mime
+    parsed = urlparse(value)
+    if not parsed.path.startswith("/api/preview-image/"):
+        return None, None
+    candidate = (PREVIEW_CACHE_DIR / Path(parsed.path).name).resolve()
+    if not str(candidate).startswith(str(PREVIEW_CACHE_DIR.resolve())) or not candidate.is_file():
+        return None, None
+    return candidate.read_bytes(), mimetypes.guess_type(candidate.name)[0] or "image/jpeg"
+
+
+def _preview_data_url(blob: bytes | None, mime: str | None) -> str | None:
+    if not blob:
+        return None
+    return f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(blob).decode('ascii')}"
+
+
+def _history_entries_payload(db, session_id: str) -> list[dict[str, object]]:
+    return [
+        {
+            "id": record.id,
+            "sequence_no": record.sequence_no,
+            "description": record.description,
+            "action_type": record.action_type,
+            "before_state": json.loads(record.before_state_json) if record.before_state_json else None,
+            "after_state": json.loads(record.after_state_json) if record.after_state_json else None,
+            "created_at": record.created_at,
+        }
+        for record in db.load_actions(session_id)
+    ]
+
+
+def _history_cursor_index(entries: list[dict[str, object]], sequence_no: int) -> int:
+    for index, entry in enumerate(entries):
+        if int(entry.get("sequence_no", -1)) == sequence_no:
+            return index
+    return -1
+
+
+def _workspace_open_payload(body: dict) -> dict:
+    root, db = _workspace_db_from_body(body)
+    paths = [str(Path(value).expanduser().resolve()) for value in body.get("paths", [])]
+    report = db.sync_directory(root)
+    modified = set(report.modified)
+    added = set(report.added)
+    files: list[dict[str, object]] = []
+    for source_path in paths:
+        sessions = db.list_sessions(source_path=source_path)
+        session = sessions[0] if sessions else None
+        if source_path in modified:
+            status = "modified"
+        elif session is not None:
+            status = "restored"
+        else:
+            status = "fresh" if source_path in added else "fresh"
+        payload: dict[str, object] = {"path": source_path, "status": status}
+        if session is not None and status == "restored":
+            history_entries = _history_entries_payload(db, session.session_id)
+            payload.update(
+                {
+                    "persistent_session_id": session.session_id,
+                    "state": json.loads(session.session_data_json),
+                    "history_cursor": _history_cursor_index(history_entries, session.history_cursor),
+                    "history": history_entries,
+                    "calibrated_image": _preview_data_url(
+                        session.calibrated_preview_blob, session.calibrated_preview_mime
+                    ),
+                }
+            )
+        files.append(payload)
+    return {
+        "ok": True,
+        "workspace_root": str(root),
+        "database_path": str(root / "photo-calibrator.db"),
+        "persistent": True,
+        "files": files,
+    }
+
+
 def _workspace_clear_payload() -> dict:
     """POST /api/workspace/clear — clear all workspace database entries."""
     db = get_workspace_db(ROOT)
@@ -2311,7 +2545,12 @@ def _export_path_payload(body: dict) -> dict:
             ),
         )
     else:
-        buf = _export_buffer_from_result(source_buffer, result["image"], body)
+        export_image = _apply_crop_and_transform(
+            result["image"],
+            _crop_rect_from_body(body),
+            _image_transform_from_body(body),
+        )
+        buf = _export_buffer_from_result(source_buffer, export_image, body)
         writer_metadata = _write_image_with_plugins(
             buf,
             output_path,
@@ -2470,7 +2709,37 @@ def _film_scan_payload(body: dict) -> dict:
             },
         }
 
-    result = detect_film_frame(prepared.image)
+    detect_image = prepared.image
+    detect_scale_x = 1.0
+    detect_scale_y = 1.0
+    longest_side = max(prepared.image.shape[:2])
+    if longest_side > FILM_SCAN_MAX_SIDE:
+        detect_image = _resize_to_max_side(prepared.image, FILM_SCAN_MAX_SIDE)
+        detect_scale_x = prepared.image.shape[1] / max(detect_image.shape[1], 1)
+        detect_scale_y = prepared.image.shape[0] / max(detect_image.shape[0], 1)
+
+    result = detect_film_frame(detect_image)
+    if detect_scale_x != 1.0 or detect_scale_y != 1.0:
+        scaled_corners = [
+            (int(round(x * detect_scale_x)), int(round(y * detect_scale_y)))
+            for x, y in result.corners
+        ]
+        scaled_debug = _scale_film_scan_debug(result.debug, detect_scale_x, detect_scale_y)
+        result = type(result)(
+            angle_deg=result.angle_deg,
+            corners=scaled_corners,
+            crop_x=int(round(result.crop_x * detect_scale_x)),
+            crop_y=int(round(result.crop_y * detect_scale_y)),
+            crop_w=int(round(result.crop_w * detect_scale_x)),
+            crop_h=int(round(result.crop_h * detect_scale_y)),
+            confidence=result.confidence,
+            border_type=result.border_type,
+            is_perspective=result.is_perspective,
+            transform_matrix=result.transform_matrix,
+            film_format=result.film_format,
+            evaluation=result.evaluation,
+            debug=scaled_debug,
+        )
     width = max(1, prepared.analysis_width)
     height = max(1, prepared.analysis_height)
     crop_rect = {
@@ -2500,14 +2769,136 @@ def _film_scan_payload(body: dict) -> dict:
             "film_format": result.film_format.name if result.film_format else None,
             "evaluation_score": result.evaluation.overall_score if result.evaluation else None,
             "diagnosis": result.evaluation.diagnosis if result.evaluation else [],
+            "debug": _normalize_film_scan_debug(result.debug, width, height),
         },
         "processing": {
             "analysis_width": prepared.analysis_width,
             "analysis_height": prepared.analysis_height,
+            "detect_width": int(detect_image.shape[1]),
+            "detect_height": int(detect_image.shape[0]),
             "preview_source": prepared.preview_source,
             "film_scan_source": "core",
         },
     }
+
+
+def _scale_film_scan_debug(
+    debug: dict | None,
+    scale_x: float,
+    scale_y: float,
+) -> dict | None:
+    if not isinstance(debug, dict):
+        return debug
+    scaled = deepcopy(debug)
+
+    def _scale_rect(rect: dict | None) -> None:
+        if not isinstance(rect, dict):
+            return
+        rect["left"] = int(round(float(rect.get("left", 0)) * scale_x))
+        rect["top"] = int(round(float(rect.get("top", 0)) * scale_y))
+        rect["width"] = int(round(float(rect.get("width", 0)) * scale_x))
+        rect["height"] = int(round(float(rect.get("height", 0)) * scale_y))
+
+    for key in ("selected_crop", "detected_crop", "hough_crop"):
+        _scale_rect(scaled.get(key))
+
+    safe_inset = scaled.get("safe_inset")
+    if isinstance(safe_inset, dict):
+        safe_inset["x"] = int(round(float(safe_inset.get("x", 0)) * scale_x))
+        safe_inset["y"] = int(round(float(safe_inset.get("y", 0)) * scale_y))
+
+    edges = scaled.get("edges")
+    if isinstance(edges, dict):
+        for edge_name, edge in edges.items():
+            if not isinstance(edge, dict):
+                continue
+            axis_scale = scale_x if edge_name in {"left", "right"} else scale_y
+            band_scale = scale_y if edge_name in {"left", "right"} else scale_x
+            for key in ("anchor", "weighted_trim"):
+                if edge.get(key) is not None:
+                    edge[key] = int(round(float(edge[key]) * axis_scale))
+            for key in ("merged_candidates",):
+                values = edge.get(key)
+                if isinstance(values, list):
+                    edge[key] = [int(round(float(value) * axis_scale)) for value in values]
+            for key in ("global_candidates", "band_samples"):
+                values = edge.get(key)
+                if not isinstance(values, list):
+                    continue
+                for item in values:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("trim") is not None:
+                        item["trim"] = int(round(float(item["trim"]) * axis_scale))
+                    if item.get("band_start") is not None:
+                        item["band_start"] = int(round(float(item["band_start"]) * band_scale))
+                    if item.get("band_end") is not None:
+                        item["band_end"] = int(round(float(item["band_end"]) * band_scale))
+    if scaled.get("image_width") is not None:
+        scaled["image_width"] = int(round(float(scaled["image_width"]) * scale_x))
+    if scaled.get("image_height") is not None:
+        scaled["image_height"] = int(round(float(scaled["image_height"]) * scale_y))
+    if scaled.get("detect_width") is not None:
+        scaled["detect_width"] = int(round(float(scaled["detect_width"]) * scale_x))
+    if scaled.get("detect_height") is not None:
+        scaled["detect_height"] = int(round(float(scaled["detect_height"]) * scale_y))
+    return scaled
+
+
+def _normalize_film_scan_debug(
+    debug: dict | None,
+    width: int,
+    height: int,
+) -> dict | None:
+    if not isinstance(debug, dict) or width <= 0 or height <= 0:
+        return None
+    normalized = deepcopy(debug)
+
+    def _normalize_rect(rect: dict | None) -> None:
+        if not isinstance(rect, dict):
+            return
+        rect["left"] = float(rect.get("left", 0.0)) / width
+        rect["top"] = float(rect.get("top", 0.0)) / height
+        rect["width"] = float(rect.get("width", 0.0)) / width
+        rect["height"] = float(rect.get("height", 0.0)) / height
+
+    for key in ("selected_crop", "detected_crop", "hough_crop"):
+        _normalize_rect(normalized.get(key))
+
+    safe_inset = normalized.get("safe_inset")
+    if isinstance(safe_inset, dict):
+        safe_inset["x"] = float(safe_inset.get("x", 0.0)) / width
+        safe_inset["y"] = float(safe_inset.get("y", 0.0)) / height
+
+    edges = normalized.get("edges")
+    if isinstance(edges, dict):
+        for edge_name, edge in edges.items():
+            if not isinstance(edge, dict):
+                continue
+            axis_length = width if edge_name in {"left", "right"} else height
+            band_length = height if edge_name in {"left", "right"} else width
+            for key in ("anchor", "weighted_trim"):
+                if edge.get(key) is not None:
+                    edge[key] = float(edge[key]) / axis_length
+            values = edge.get("merged_candidates")
+            if isinstance(values, list):
+                edge["merged_candidates"] = [float(value) / axis_length for value in values]
+            for key in ("global_candidates", "band_samples"):
+                items = edge.get(key)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("trim") is not None:
+                        item["trim"] = float(item["trim"]) / axis_length
+                    if item.get("band_start") is not None:
+                        item["band_start"] = float(item["band_start"]) / band_length
+                    if item.get("band_end") is not None:
+                        item["band_end"] = float(item["band_end"]) / band_length
+    normalized["image_width"] = width
+    normalized["image_height"] = height
+    return normalized
 
 
 def _plugins_payload(query: dict) -> dict:
@@ -3105,23 +3496,73 @@ def _history_save_payload(body: dict) -> dict:
     return {"ok": True, "id": row_id}
 
 
+def _history_commit_payload(body: dict) -> dict:
+    root, db = _workspace_db_from_body(body)
+    source_path = str(Path(str(body.get("source_path", ""))).expanduser().resolve())
+    session_id = str(body.get("persistent_session_id") or body.get("session_id") or "")
+    if not source_path or not session_id:
+        raise ValueError("source_path and persistent_session_id required")
+    before_state = body.get("before_state")
+    after_state = body.get("after_state")
+    if not isinstance(before_state, dict) or not isinstance(after_state, dict):
+        raise ValueError("before_state and after_state must be objects")
+    preview_blob, preview_mime = _preview_blob_from_url(body.get("calibrated_image"))
+    sequence, cursor = db.commit_action(
+        session_id=session_id,
+        source_path=source_path,
+        description=str(body.get("description", "编辑")),
+        action_type=str(body.get("action_type", "calibration")),
+        before_state=before_state,
+        after_state=after_state,
+        document=body.get("document") if isinstance(body.get("document"), dict) else None,
+        preview_blob=preview_blob,
+        preview_mime=preview_mime,
+    )
+    history_entries = _history_entries_payload(db, session_id)
+    return {
+        "ok": True,
+        "workspace_root": str(root),
+        "persistent_session_id": session_id,
+        "sequence_no": sequence,
+        "history_cursor": _history_cursor_index(history_entries, cursor),
+        "history": history_entries,
+    }
+
+
+def _history_move_payload(body: dict, direction: int) -> dict:
+    _root, db = _workspace_db_from_body(body)
+    session_id = str(body.get("persistent_session_id") or body.get("session_id") or "")
+    if not session_id:
+        raise ValueError("persistent_session_id required")
+    moved = db.move_history_cursor(session_id, direction)
+    if moved is None:
+        return {"ok": False, "persistent_session_id": session_id, "history": _history_entries_payload(db, session_id)}
+    cursor, state, preview_blob, preview_mime = moved
+    session = db.load_session(session_id)
+    history_entries = _history_entries_payload(db, session_id)
+    return {
+        "ok": True,
+        "persistent_session_id": session_id,
+        "history_cursor": _history_cursor_index(history_entries, cursor),
+        "state": state,
+        "calibrated_image": _preview_data_url(preview_blob, preview_mime),
+        "history": history_entries,
+    }
+
+
 def _history_load_payload(body: dict) -> dict:
     session_id = str(body.get("session_id", ""))
     if not session_id:
         return {"ok": False, "error": "session_id required", "entries": []}
-    db = get_workspace_db(ROOT)
-    records = db.load_actions(session_id)
-    entries = [
-        {
-            "id": r.id,
-            "description": r.description,
-            "action_type": r.action_type,
-            "params": json.loads(r.params_json) if r.params_json else None,
-            "created_at": r.created_at,
-        }
-        for r in records
-    ]
-    return {"ok": True, "entries": entries}
+    root_value = body.get("workspace_root")
+    db = get_workspace_db(Path(str(root_value))) if root_value else get_workspace_db(ROOT)
+    session = db.load_session(session_id)
+    history_entries = _history_entries_payload(db, session_id)
+    return {
+        "ok": True,
+        "entries": history_entries,
+        "history_cursor": _history_cursor_index(history_entries, session.history_cursor) if session else -1,
+    }
 
 
 def _record_action_history(session_id: str, payload: dict) -> None:
@@ -3192,8 +3633,12 @@ _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/document/render": _document_render_payload,
     "/api/batch/cancel": _batch_cancel_payload,
     "/api/workspace/sync": _workspace_sync_payload,
+    "/api/workspace/open": _workspace_open_payload,
     "/api/workspace/clear": lambda _body: _workspace_clear_payload(),
     "/api/history/save": _history_save_payload,
+    "/api/history/commit": _history_commit_payload,
+    "/api/history/undo": lambda body: _history_move_payload(body, -1),
+    "/api/history/redo": lambda body: _history_move_payload(body, 1),
     "/api/config": _config_put_payload,
 }
 
@@ -3209,7 +3654,10 @@ _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/session/list": _session_list_payload,
     "/api/batch/status": _batch_status_payload,
     "/api/workspace/stats": lambda _query: _workspace_stats_payload(),
-    "/api/history/load": lambda query: _history_load_payload({"session_id": query["session_id"][0]} if "session_id" in query else {}),
+    "/api/history/load": lambda query: _history_load_payload({
+        "session_id": query.get("session_id", [""])[0],
+        "workspace_root": query.get("workspace_root", [None])[0],
+    }),
     "/api/config": _config_get_payload,
 }
 

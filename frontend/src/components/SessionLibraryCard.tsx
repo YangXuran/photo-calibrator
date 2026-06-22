@@ -20,7 +20,7 @@ export function SessionLibraryCard({ sessions, onRefresh, onLoad, onDelete }: Se
       }
       meta="受管 session 存储"
       testId="saved-sessions-section"
-      title="Saved Sessions"
+      title="已保存 Session"
     >
       <div className="pc-list">
         {sessions.map((item) => (

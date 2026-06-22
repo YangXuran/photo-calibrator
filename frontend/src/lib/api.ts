@@ -11,6 +11,7 @@ import type {
   SessionListPayload,
   SessionLoadPayload,
   SessionSavePayload,
+  PersistedEditState,
 } from "../types";
 import { resolveRuntimeConfig } from "../runtime/config";
 
@@ -166,4 +167,26 @@ export async function putConfig(config: Record<string, any>): Promise<{ ok: bool
       body: JSON.stringify(config),
     }),
   );
+}
+
+export type WorkspaceOpenFile = {
+  path: string;
+  status: "fresh" | "restored" | "modified";
+  persistent_session_id?: string;
+  state?: PersistedEditState;
+  history_cursor?: number;
+  history?: Array<{ sequence_no: number; description: string; action_type: string; before_state?: PersistedEditState; after_state?: PersistedEditState; created_at: number }>;
+  calibrated_image?: string;
+};
+
+export async function postWorkspaceOpen(body: object): Promise<{ ok: boolean; workspace_root: string; database_path: string; persistent: boolean; files: WorkspaceOpenFile[] }> {
+  return expectJson(await fetch(apiUrl("/api/workspace/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+}
+
+export async function postHistoryCommit(body: object): Promise<{ ok: boolean; history_cursor: number; history: any[] }> {
+  return expectJson(await fetch(apiUrl("/api/history/commit"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+}
+
+export async function postHistoryMove(path: "undo" | "redo", body: object): Promise<{ ok: boolean; history_cursor?: number; state?: PersistedEditState; calibrated_image?: string; history?: any[] }> {
+  return expectJson(await fetch(apiUrl(`/api/history/${path}`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
 }

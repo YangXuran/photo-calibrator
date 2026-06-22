@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postPreview, postSessionDelete, postSessionSave, putConfig } from "../lib/api";
+import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postHistoryCommit, postHistoryMove, postPreview, postSessionDelete, postSessionSave, postWorkspaceOpen, putConfig } from "../lib/api";
 import { fileToDataUrl, isBrowserDisplayable, workspaceFileId } from "../lib/files";
 import { DEFAULT_WORKBENCH_PREFERENCES } from "../lib/layoutPresets";
-import { suggestExportPath, suggestSessionPath } from "../lib/paths";
+import { directoryFromPath, suggestExportPath, suggestExportPathInDirectory, suggestSessionPath } from "../lib/paths";
 import { loadAISettings, saveAISettings, type AIProviderSettings } from "../components/AIProviderCard";
 import type {
   ActionState,
@@ -15,13 +15,16 @@ import type {
   CropPayload,
   DocumentRenderPayload,
   EvaluatorInfo,
+  BatchExportItemResult,
   ExportPayload,
   HistogramPayload,
   HistoryEntry,
+  ImageTransform,
   InspectorTab,
   ManualCurves,
   NotificationItem,
   PluginInfo,
+  PersistedEditState,
   SessionListItem,
   SessionSavePayload,
   SourceFilter,
@@ -49,20 +52,21 @@ type SessionOptions = {
 };
 
 type CurveInteraction = "idle" | "drag";
-type CurvePreviewWorkerMessage =
-  | { type: "prepared"; requestId: number; cacheKey: string }
-  | { type: "rendered"; requestId: number; cacheKey: string; bitmap: ImageBitmap; histogram: HistogramPayload }
-  | { type: "error"; requestId: number; cacheKey: string; error: string };
+type CurvePreviewFallbackCache = {
+  key: string;
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+};
 
 const WORKBENCH_PREFERENCES_KEY = "photo-calibrator:workbench-preferences";
 const WORKBENCH_INSPECTOR_TAB_KEY = "photo-calibrator:workbench-inspector-tab";
 const WORKBENCH_VIEWER_STATE_KEY = "photo-calibrator:workbench-viewer-state";
-const CURVE_PREVIEW_MAX_SIDE = 1280;
-const CURVE_PREVIEW_MIN_SIDE = 320;
+const CURVE_PREVIEW_INTERACTIVE_SIDE = 480;
 const CURVE_PREVIEW_DRAG_FPS = 30;
 
 /** A file info from shell bridge with path (no File object for non-browser files) */
-export type PathFileInfo = { name: string; path: string };
+export type PathFileInfo = { name: string; path: string; workspaceRoot?: string };
 
 export type PickedFiles = FileList | File[] | PathFileInfo[] | null;
 
@@ -75,10 +79,15 @@ function loadWorkbenchPreferences(): WorkbenchPreferences {
     return {
       ...DEFAULT_WORKBENCH_PREFERENCES,
       ...parsed,
+      showAnalysisPane: parsed.showAnalysisPane ?? Boolean((parsed as Partial<WorkbenchPreferences> & { showLibraryPane?: boolean }).showLibraryPane ?? true),
     };
   } catch {
     return DEFAULT_WORKBENCH_PREFERENCES;
   }
+}
+
+function workspacePathKey(value: string): string {
+  return value.replace(/^\/private(?=\/var\/)/, "");
 }
 
 function loadInspectorTab(): InspectorTab {
@@ -86,8 +95,12 @@ function loadInspectorTab(): InspectorTab {
   try {
     const raw = window.localStorage.getItem(WORKBENCH_INSPECTOR_TAB_KEY);
     if (!raw) return "adjust";
-    const parsed = JSON.parse(raw) as InspectorTab;
-    return parsed === "color" ? "adjust" : parsed;
+    const parsed = JSON.parse(raw) as string;
+    if (parsed === "color" || parsed === "analysis") return "adjust";
+    if (["adjust", "curves", "compose", "ai", "export", "session", "settings"].includes(parsed)) {
+      return parsed as InspectorTab;
+    }
+    return "adjust";
   } catch {
     return "adjust";
   }
@@ -181,6 +194,8 @@ function buildCalibrationSignature(
   strength: number,
   accelerator: string,
   curves: ManualCurves,
+  cropRect?: CropRect,
+  imageTransform?: ImageTransform,
 ): string {
   return [
     mode,
@@ -190,7 +205,86 @@ function buildCalibrationSignature(
     serializeCurve(curves.r),
     serializeCurve(curves.g),
     serializeCurve(curves.b),
+    serializeCropRect(cropRect),
+    serializeImageTransform(imageTransform),
   ].join("::");
+}
+
+function serializeCropRect(cropRect?: CropRect): string {
+  if (!cropRect) return "crop:none";
+  return [
+    "crop",
+    cropRect.left.toFixed(5),
+    cropRect.top.toFixed(5),
+    cropRect.width.toFixed(5),
+    cropRect.height.toFixed(5),
+  ].join(":");
+}
+
+function cropRectForRequest(crop?: CropPayload): CropRect | undefined {
+  return crop?.crop_rect;
+}
+
+function isCropApplied(item?: WorkspaceFile): boolean {
+  return Boolean(item?.cropApplied || item?.result?.processing?.crop_applied);
+}
+
+function serializeImageTransform(transform?: ImageTransform): string {
+  const normalized = normalizeImageTransform(transform);
+  return [
+    "transform",
+    normalized.rotation.toFixed(1),
+    normalized.flipH ? "h1" : "h0",
+    normalized.flipV ? "v1" : "v0",
+  ].join(":");
+}
+
+const DEFAULT_IMAGE_TRANSFORM: ImageTransform = {
+  rotation: 0,
+  flipH: false,
+  flipV: false,
+};
+
+function normalizeRotation(value: number): number {
+  let next = Number.isFinite(value) ? value : 0;
+  next = ((next + 180) % 360 + 360) % 360 - 180;
+  return Math.abs(next) < 0.0001 ? 0 : Number(next.toFixed(1));
+}
+
+function normalizeImageTransform(transform?: Partial<ImageTransform>): ImageTransform {
+  return {
+    rotation: normalizeRotation(transform?.rotation ?? 0),
+    flipH: Boolean(transform?.flipH),
+    flipV: Boolean(transform?.flipV),
+  };
+}
+
+function isDefaultImageTransform(transform?: Partial<ImageTransform>): boolean {
+  const normalized = normalizeImageTransform(transform);
+  return normalized.rotation === 0 && !normalized.flipH && !normalized.flipV;
+}
+
+function imageTransformForRequest(transform?: Partial<ImageTransform>): ImageTransform | undefined {
+  const normalized = normalizeImageTransform(transform);
+  return isDefaultImageTransform(normalized) ? undefined : normalized;
+}
+
+function buildDefaultExportState(
+  item: WorkspaceFile,
+  accelerator: string,
+  curves: ManualCurves,
+): PersistedEditState {
+  return {
+    mode: "global",
+    strength: 0.8,
+    accelerator,
+    curves,
+    crop: item.crop,
+    cropEdited: item.cropEdited,
+    cropApplied: isCropApplied(item),
+    imageTransform: normalizeImageTransform(item.imageTransform),
+    runtimeSessionId: item.sessionId,
+  };
 }
 
 function resolvePreviewMaxSide(preview?: WorkspaceFile["highResPreview"] | WorkspaceFile["preview"]): number | null {
@@ -206,6 +300,7 @@ export function useWorkbench() {
   const [evaluators, setEvaluators] = useState<EvaluatorInfo[]>([]);
   const [capabilities, setCapabilities] = useState<CapabilityPayload | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const filesRef = useRef<WorkspaceFile[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [viewerState, setViewerState] = useState<ViewerWorkspaceState>(() => loadViewerState());
   const [mode, setMode] = useState("global");
@@ -216,16 +311,17 @@ export function useWorkbench() {
   const [activeInspectorTab, setActiveInspectorTabState] = useState<InspectorTab>(() => loadInspectorTab());
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
     format: "jpeg",
-    outputPath: "/tmp/photo-calibrated.jpg",
+    outputPath: suggestExportPath("photo.jpg", "jpeg"),
     quality: 92,
     embedIcc: true,
     preserveMetadata: true,
     exportTransform: "auto",
   });
   const [sessionOptions, setSessionOptions] = useState<SessionOptions>({
-    savePath: "/tmp/photo-session.json",
+    savePath: suggestSessionPath("photo.jpg"),
   });
   const [exportResult, setExportResult] = useState<ExportPayload | null>(null);
+  const [batchExportResults, setBatchExportResults] = useState<BatchExportItemResult[]>([]);
   const [documentRender, setDocumentRender] = useState<DocumentRenderPayload | null>(null);
   const documentRenderFileRef = useRef<string | null>(null);
   const [sessionSaveResult, setSessionSaveResult] = useState<SessionSavePayload | null>(null);
@@ -240,6 +336,7 @@ export function useWorkbench() {
     calibration: ActionState;
     filmScan: ActionState;
     export: ActionState;
+    batchExport: ActionState;
     ai: ActionState;
     session: ActionState;
     document: ActionState;
@@ -247,6 +344,7 @@ export function useWorkbench() {
     calibration: { status: "idle" },
     filmScan: { status: "idle" },
     export: { status: "idle" },
+    batchExport: { status: "idle" },
     ai: { status: "idle" },
     session: { status: "idle" },
     document: { status: "idle" },
@@ -262,7 +360,7 @@ export function useWorkbench() {
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [preferences, setPreferences] = useState<WorkbenchPreferences>(() => loadWorkbenchPreferences());
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
-  const [stageContainerSize, setStageContainerSize] = useState<{ width: number; height: number } | null>(null);
+  const [stageContainerSize, setStageContainerSizeState] = useState<{ width: number; height: number } | null>(null);
   const [curveInteraction, setCurveInteraction] = useState<CurveInteraction>("idle");
   const [localCurvePreviewBitmap, setLocalCurvePreviewBitmap] = useState<ImageBitmap | null>(null);
   const [localCurvePreviewHistogram, setLocalCurvePreviewHistogram] = useState<HistogramPayload | null>(null);
@@ -276,22 +374,15 @@ export function useWorkbench() {
   const highResRequestRef = useRef(0);
   const highResSessionRef = useRef<string | null>(null);
   const curveSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const curveHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const curvePreviewFrameRef = useRef<number | null>(null);
   const curvePreviewRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const curvePreviewBitmapRef = useRef<ImageBitmap | null>(null);
-  const curvePreviewWorkerRef = useRef<Worker | null>(null);
   const curvePreviewCacheKeyRef = useRef<string | null>(null);
-  const curvePreviewFallbackCacheRef = useRef<{
-    key: string;
-    width: number;
-    height: number;
-    data: Uint8ClampedArray;
-  } | null>(null);
-  const curvePreviewFallbackRef = useRef(false);
+  const curvePreviewFallbackCacheRef = useRef<CurvePreviewFallbackCache | null>(null);
   const curvePreviewSequenceRef = useRef(0);
   const curvePreviewLastDragMsRef = useRef(0);
   const curveInteractionRef = useRef<CurveInteraction>("idle");
+  const persistenceWarningShownRef = useRef<Set<string>>(new Set());
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
   type UndoSnapshot = { mode: string; strength: number; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
@@ -299,7 +390,119 @@ export function useWorkbench() {
   const undoingRef = useRef(false);
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyIndexRef = useRef(historyIndex);
-  const selectedFile = useMemo(() => files.find((item) => item.id === selectedId), [files, selectedId]);
+  const editBeforeRef = useRef<PersistedEditState | null>(null);
+  const pendingCommitRef = useRef<{ description: string; actionType: string; state: PersistedEditState } | null>(null);
+  const activeCommitKeyRef = useRef<string | null>(null);
+  const appliedCropIdsRef = useRef<Set<string>>(new Set());
+  const selectedFile = useMemo(() => {
+    const item = files.find((entry) => entry.id === selectedId);
+    if (!item || !appliedCropIdsRef.current.has(item.id) || item.cropApplied) return item;
+    return { ...item, cropApplied: true };
+  }, [files, selectedId]);
+  function currentEditState(overrides: Partial<PersistedEditState> = {}): PersistedEditState {
+    return {
+      mode,
+      strength,
+      accelerator,
+      curves: cloneManualCurves({ l: lCurve, r: rCurve, g: gCurve, b: bCurve }),
+      crop: selectedFile?.crop,
+      cropEdited: selectedFile?.cropEdited,
+      cropApplied: isCropApplied(selectedFile),
+      imageTransform: normalizeImageTransform(selectedFile?.imageTransform),
+      runtimeSessionId: selectedFile?.sessionId,
+      ...overrides,
+    };
+  }
+
+  function historyFromApi(entries: any[]): HistoryEntry[] {
+    return entries.map((entry) => ({
+      description: entry.description,
+      timestamp: new Date(entry.created_at * 1000).toLocaleTimeString([], { hour12: false }),
+      operation_count: 1,
+      current_op_name: entry.action_type,
+      sequence_no: entry.sequence_no,
+      before_state: entry.before_state,
+      after_state: entry.after_state,
+    }));
+  }
+
+  function beginEdit() {
+    if (!editBeforeRef.current) {
+      editBeforeRef.current = currentEditState();
+      activeCommitKeyRef.current = null;
+    }
+  }
+
+  async function persistCommittedEdit(
+    description: string,
+    actionType: string,
+    afterState: PersistedEditState,
+    calibratedImage?: string,
+  ) {
+    const target = selectedFile;
+    const beforeState = editBeforeRef.current ?? target?.persistedState ?? afterState;
+    editBeforeRef.current = null;
+    if (!target) return;
+    const persistentSessionId = target.persistentSessionId ?? `workspace:${target.id}`;
+    if (!target.workspaceRoot || !(target.file as any)?.path) {
+      pushHistoryEntry(description, 1, actionType);
+      return;
+    }
+    try {
+      const response = await postHistoryCommit({
+        workspace_root: target.workspaceRoot,
+        source_path: (target.file as any).path,
+        persistent_session_id: persistentSessionId,
+        description,
+        action_type: actionType,
+        before_state: beforeState,
+        after_state: afterState,
+        calibrated_image: calibratedImage ?? target.result?.calibrated_image,
+        document: target.result?.document,
+      });
+      const nextHistory = historyFromApi(response.history);
+      setHistory(nextHistory);
+      setHistoryIndex(response.history_cursor);
+      setFiles((items) => items.map((item) => item.id === target.id ? {
+        ...item,
+        persistentSessionId,
+        persistedState: afterState,
+        persistedHistory: nextHistory,
+        persistedHistoryIndex: response.history_cursor,
+        historyPersistent: true,
+      } : item));
+    } catch (error) {
+      pushHistoryEntry(description, 1, actionType);
+      setFiles((items) => items.map((item) => item.id === target.id ? { ...item, historyPersistent: false } : item));
+      if (!persistenceWarningShownRef.current.has(target.id)) {
+        persistenceWarningShownRef.current.add(target.id);
+        notify("warning", "历史未持久化", String(error));
+      }
+    }
+  }
+
+  function commitEdit(description: string, actionType: string, stateOverride?: PersistedEditState) {
+    const state = stateOverride ?? currentEditState();
+    const commitKey = `${actionType}:${JSON.stringify(state)}`;
+    if (activeCommitKeyRef.current === commitKey) return;
+    activeCommitKeyRef.current = commitKey;
+    pendingCommitRef.current = { description, actionType, state };
+    const signature = buildCalibrationSignature(state.mode, state.strength, state.accelerator, state.curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
+    if (selectedFile?.result?.calibrated_image && selectedFile.calibrationSignature === signature) {
+      pendingCommitRef.current = null;
+      void persistCommittedEdit(description, actionType, state, selectedFile.result.calibrated_image);
+    }
+  }
+
+  function setModeCommitted(value: string) {
+    beginEdit();
+    setMode(value);
+    commitEdit(`模式 ${value}`, "mode", currentEditState({ mode: value }));
+  }
+
+  function commitStrength(value: number) {
+    commitEdit("强度调整", "strength", currentEditState({ strength: value }));
+  }
   const displayedSelectedFile = selectedFile;
   const selectionDisplayReady = true;
   const filteredFiles = useMemo(() => {
@@ -321,7 +524,7 @@ export function useWorkbench() {
   const layoutState = useMemo(
     () => ({
       viewerFocusMode,
-      showLibraryPane: preferences.showLibraryPane && !viewerFocusMode,
+      showAnalysisPane: preferences.showAnalysisPane && !viewerFocusMode,
       showInspectorPane: preferences.showInspectorPane && !viewerFocusMode,
       showFilmstrip: preferences.showFilmstrip && !viewerFocusMode,
       showViewerHud: preferences.showViewerHud && !viewerFocusMode,
@@ -333,6 +536,12 @@ export function useWorkbench() {
   const viewerZoomMode = viewerState.zoomMode;
   const viewerZoomScale = viewerState.zoomScale;
   const viewerPan = viewerState.pan;
+
+  const setStageContainerSize = useCallback((size: { width: number; height: number }) => {
+    setStageContainerSizeState((current) =>
+      current?.width === size.width && current.height === size.height ? current : size,
+    );
+  }, []);
 
   function notify(tone: NotificationItem["tone"], title: string, message: string) {
     const id = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -352,7 +561,23 @@ export function useWorkbench() {
   }
 
   function setActiveInspectorTab(tab: InspectorTab) {
-    setActiveInspectorTabState(tab === "color" ? "adjust" : tab);
+    setActiveInspectorTabState(tab);
+  }
+
+  function stateForFileExport(item: WorkspaceFile): PersistedEditState {
+    if (selectedFile?.id === item.id) {
+      return currentEditState({ runtimeSessionId: item.sessionId });
+    }
+    if (item.persistedState) {
+      return item.persistedState;
+    }
+    const curves = cloneManualCurves(fileCurvesRef.current.get(item.id) ?? {
+      l: item.lCurve ?? DEFAULT_IDENTITY_CURVE,
+      r: item.rCurve ?? DEFAULT_IDENTITY_CURVE,
+      g: item.gCurve ?? DEFAULT_IDENTITY_CURVE,
+      b: item.bCurve ?? DEFAULT_IDENTITY_CURVE,
+    });
+    return buildDefaultExportState(item, accelerator, curves);
   }
 
   function updateViewerState(patch: Partial<ViewerWorkspaceState>) {
@@ -363,21 +588,15 @@ export function useWorkbench() {
   }
 
   const resolveCurvePreviewSource = useCallback((targetFile: WorkspaceFile | undefined) => (
-    targetFile?.highResPreview?.original_preview
+    targetFile?.result?.calibrated_image
+      ?? targetFile?.highResPreview?.original_preview
       ?? targetFile?.preview?.original_preview
       ?? targetFile?.displayUrl
   ), []);
 
   const resolveCurvePreviewTargetSide = useCallback(() => {
-    if (typeof window === "undefined") return CURVE_PREVIEW_MIN_SIDE;
-    const dpr = window.devicePixelRatio || 1;
-    return stageContainerSize
-      ? Math.max(
-          CURVE_PREVIEW_MIN_SIDE,
-          Math.min(CURVE_PREVIEW_MAX_SIDE, Math.round(Math.max(stageContainerSize.width, stageContainerSize.height) * dpr)),
-        )
-      : CURVE_PREVIEW_MIN_SIDE;
-  }, [stageContainerSize]);
+    return CURVE_PREVIEW_INTERACTIVE_SIDE;
+  }, []);
 
   const resolveCurvePreviewCacheKey = useCallback((targetFile: WorkspaceFile | undefined) => {
     const sourceUrl = resolveCurvePreviewSource(targetFile);
@@ -425,15 +644,10 @@ export function useWorkbench() {
 
   const disposeCurvePreviewBitmap = useCallback((bitmap: ImageBitmap | null) => {
     if (!bitmap) return;
-    if (typeof window === "undefined") {
-      bitmap.close();
-      return;
-    }
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        bitmap.close();
-      });
-    });
+    // Canvas layers may still draw the previous bitmap for a few frames during
+    // curve drags. Closing it aggressively can throw and blank the React tree.
+    if (typeof window === "undefined") return;
+    window.setTimeout(() => bitmap.close(), 3000);
   }, []);
 
   const clearLocalCurvePreview = useCallback(() => {
@@ -451,7 +665,6 @@ export function useWorkbench() {
     curvePreviewFallbackCacheRef.current = null;
     const previousBitmap = curvePreviewBitmapRef.current;
     curvePreviewBitmapRef.current = null;
-    curvePreviewFallbackRef.current = false;
     setLocalCurvePreviewBitmap(null);
     setLocalCurvePreviewHistogram(null);
     disposeCurvePreviewBitmap(previousBitmap);
@@ -468,66 +681,21 @@ export function useWorkbench() {
     disposeCurvePreviewBitmap(previousBitmap);
   }, [disposeCurvePreviewBitmap]);
 
-  const ensureCurvePreviewWorker = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    if (curvePreviewFallbackRef.current || typeof Worker === "undefined") return null;
-    if (curvePreviewWorkerRef.current) return curvePreviewWorkerRef.current;
-    const workerUrl = new URL("../workers/curvePreview.worker.ts", import.meta.url);
-    console.log("[curve-preview] creating worker:", workerUrl.href);
-    const worker = new Worker(workerUrl, { type: "module" });
-    worker.onerror = (event) => {
-      console.error("[curve-preview] worker onerror:", event.message, "filename:", event.filename);
-      curvePreviewWorkerRef.current = null;
-      curvePreviewFallbackRef.current = true;
-      worker.terminate?.();
-    };
-    worker.onmessageerror = (event) => {
-      console.error("[curve-preview] worker onmessageerror:", event);
-    };
-    worker.onmessage = (event: MessageEvent<CurvePreviewWorkerMessage>) => {
-      const message = event.data;
-      if (message.type === "prepared") {
-        debugLog("curve.preview.prepared", { cacheKey: message.cacheKey });
-        curvePreviewCacheKeyRef.current = message.cacheKey;
-        return;
-      }
-      if (message.type === "rendered") {
-        if (message.requestId !== curvePreviewSequenceRef.current) {
-          debugLog("curve.preview.drop", { requestId: message.requestId, current: curvePreviewSequenceRef.current });
-          message.bitmap.close();
-          return;
-        }
-        debugLog("curve.preview.rendered", { cacheKey: message.cacheKey, requestId: message.requestId, width: message.bitmap.width, height: message.bitmap.height });
-        const previousBitmap = curvePreviewBitmapRef.current;
-        curvePreviewBitmapRef.current = message.bitmap;
-        curvePreviewCacheKeyRef.current = message.cacheKey;
-        setLocalCurvePreviewBitmap(message.bitmap);
-        setLocalCurvePreviewHistogram(message.histogram);
-        disposeCurvePreviewBitmap(previousBitmap);
-        return;
-      }
-      if (message.requestId === curvePreviewSequenceRef.current) {
-        console.warn("[curve-preview] worker reported error:", message.error);
-        curvePreviewFallbackRef.current = true;
-        debugLog("curve.preview.error", { error: message.error, requestId: message.requestId });
-      }
-    };
-    curvePreviewWorkerRef.current = worker;
-    return worker;
-  }, []);
-
-  const renderLocalCurvePreviewFallback = useCallback(async (targetFile: WorkspaceFile, nextCurves: ManualCurves) => {
+  const prepareCurvePreviewFallbackCache = useCallback(async (targetFile: WorkspaceFile): Promise<CurvePreviewFallbackCache | null> => {
     const sourceUrl = resolveCurvePreviewSource(targetFile);
     const cacheKey = resolveCurvePreviewCacheKey(targetFile);
-    if (!sourceUrl || !cacheKey || typeof window === "undefined") return;
-    const effectiveCurves = composeManualCurves(nextCurves);
-    debugLog("curve.preview.fallback.start", { fileId: targetFile.id, cacheKey });
+    if (!sourceUrl || !cacheKey || typeof window === "undefined") return null;
+    const existing = curvePreviewFallbackCacheRef.current;
+    if (existing?.key === cacheKey) return existing;
 
-    let cached = curvePreviewFallbackCacheRef.current;
-    if (!cached || cached.key !== cacheKey) {
-      const response = await fetch(sourceUrl);
-      const blob = await response.blob();
-      const bitmap = await createImageBitmap(blob);
+    debugLog("curve.preview.cache.prepare", { fileId: targetFile.id, cacheKey });
+    const response = await fetch(sourceUrl);
+    if (!response.ok) {
+      throw new Error(`Curve preview source failed: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob);
+    try {
       const scale = Math.min(1, resolveCurvePreviewTargetSide() / Math.max(bitmap.width, bitmap.height));
       const width = Math.max(1, Math.round(bitmap.width * scale));
       const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -536,20 +704,28 @@ export function useWorkbench() {
       canvas.height = height;
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) {
-        bitmap.close();
         throw new Error("Curve preview fallback canvas context is unavailable");
       }
       context.drawImage(bitmap, 0, 0, width, height);
       const imageData = context.getImageData(0, 0, width, height);
-      bitmap.close();
-      cached = {
+      const cached = {
         key: cacheKey,
         width,
         height,
         data: new Uint8ClampedArray(imageData.data),
       };
       curvePreviewFallbackCacheRef.current = cached;
+      return cached;
+    } finally {
+      bitmap.close();
     }
+  }, [resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+
+  const renderLocalCurvePreviewFallback = useCallback(async (targetFile: WorkspaceFile, nextCurves: ManualCurves) => {
+    const cached = await prepareCurvePreviewFallbackCache(targetFile);
+    if (!cached || typeof window === "undefined") return;
+    const effectiveCurves = composeManualCurves(nextCurves);
+    debugLog("curve.preview.fallback.start", { fileId: targetFile.id, cacheKey: cached.key });
 
     const lutR = buildCurveLut(effectiveCurves.r);
     const lutG = buildCurveLut(effectiveCurves.g);
@@ -574,50 +750,24 @@ export function useWorkbench() {
     setLocalCurvePreviewBitmap(bitmap);
     setLocalCurvePreviewHistogram(buildCurvePreviewHistogram(rgba));
     disposeCurvePreviewBitmap(previousBitmap);
-    debugLog("curve.preview.fallback.done", { fileId: targetFile.id, cacheKey });
-  }, [buildCurvePreviewHistogram, disposeCurvePreviewBitmap, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+    debugLog("curve.preview.fallback.done", { fileId: targetFile.id, cacheKey: cached.key });
+  }, [buildCurvePreviewHistogram, disposeCurvePreviewBitmap, prepareCurvePreviewFallbackCache]);
 
   const prewarmLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined) => {
-    const worker = ensureCurvePreviewWorker();
-    const sourceUrl = resolveCurvePreviewSource(targetFile);
-    const cacheKey = resolveCurvePreviewCacheKey(targetFile);
-    if (!sourceUrl || !cacheKey) return;
-    if (!worker) {
-      curvePreviewFallbackRef.current = true;
-      return;
-    }
-    worker.postMessage({
-      type: "prepare",
-      requestId: ++curvePreviewSequenceRef.current,
-      cacheKey,
-      sourceUrl,
-      targetSide: resolveCurvePreviewTargetSide(),
+    if (!targetFile) return;
+    void prepareCurvePreviewFallbackCache(targetFile).catch((error) => {
+      console.warn("[curve-preview] prewarm failed:", error);
     });
-  }, [ensureCurvePreviewWorker, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+  }, [prepareCurvePreviewFallbackCache]);
 
   const renderLocalCurvePreview = useCallback((targetFile: WorkspaceFile, nextCurves: ManualCurves) => {
-    const worker = ensureCurvePreviewWorker();
     const sourceUrl = resolveCurvePreviewSource(targetFile);
     const cacheKey = resolveCurvePreviewCacheKey(targetFile);
-    const effectiveCurves = composeManualCurves(nextCurves);
     if (!sourceUrl || !cacheKey) return;
-    if (!worker) {
-      curvePreviewFallbackRef.current = true;
-      void renderLocalCurvePreviewFallback(targetFile, nextCurves).catch((error) => {
-        console.warn("[curve-preview] fallback failed:", error);
-      });
-      return;
-    }
-    debugLog("curve.preview.worker.start", { fileId: targetFile.id, cacheKey, requestId: curvePreviewSequenceRef.current });
-    worker.postMessage({
-      type: "render",
-      requestId: curvePreviewSequenceRef.current,
-      cacheKey,
-      sourceUrl,
-      targetSide: resolveCurvePreviewTargetSide(),
-      curves: effectiveCurves,
+    void renderLocalCurvePreviewFallback(targetFile, nextCurves).catch((error) => {
+      console.warn("[curve-preview] fallback failed:", error);
     });
-  }, [ensureCurvePreviewWorker, renderLocalCurvePreviewFallback, resolveCurvePreviewCacheKey, resolveCurvePreviewSource, resolveCurvePreviewTargetSide]);
+  }, [renderLocalCurvePreviewFallback, resolveCurvePreviewCacheKey, resolveCurvePreviewSource]);
 
   const scheduleLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined, nextCurves: ManualCurves, interaction: CurveInteraction) => {
     if (!targetFile) return;
@@ -709,6 +859,10 @@ export function useWorkbench() {
   }, [viewerState]);
 
   useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
     historyIndexRef.current = historyIndex;
   }, [historyIndex]);
 
@@ -745,32 +899,57 @@ export function useWorkbench() {
     };
   }, [aiSettings, preferences, viewerState, activeInspectorTab]);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.closest("input, textarea, select, button") || target.isContentEditable)) {
-        return;
-      }
-      if (event.altKey && event.key === "1") {
-        event.preventDefault();
-        toggleLayoutElement("library");
-      } else if (event.altKey && event.key === "2") {
-        event.preventDefault();
-        toggleLayoutElement("filmstrip");
-      } else if (event.altKey && event.key === "3") {
-        event.preventDefault();
-        toggleLayoutElement("inspector");
-      } else if (event.shiftKey && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        toggleViewerFocusMode();
-      }
+  function applyPersistedState(state: PersistedEditState, calibratedImage?: string) {
+    undoingRef.current = true;
+    setMode(state.mode);
+    setStrength(state.strength);
+    setAccelerator(state.accelerator);
+    const curves = cloneManualCurves(state.curves);
+    setLCurve(curves.l);
+    setRCurve(curves.r);
+    setGCurve(curves.g);
+    setBCurve(curves.b);
+    setCommittedCurves(curves);
+    if (selectedFile) {
+      if (state.cropApplied) appliedCropIdsRef.current.add(selectedFile.id);
+      else appliedCropIdsRef.current.delete(selectedFile.id);
+      fileCurvesRef.current.set(selectedFile.id, curves);
+      setFiles((items) => items.map((item) => item.id === selectedFile.id ? {
+        ...item,
+        sessionId: item.sessionId,
+        crop: state.crop,
+        cropEdited: state.cropEdited,
+        cropApplied: state.cropApplied,
+        persistedState: state,
+        imageTransform: normalizeImageTransform(state.imageTransform),
+        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, state.accelerator, curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
+        result: calibratedImage && item.result ? { ...item.result, calibrated_image: calibratedImage } : item.result,
+      } : item));
     }
+    queueMicrotask(() => { undoingRef.current = false; });
+  }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [preferences, viewerFocusMode]);
+  async function movePersistentHistory(direction: "undo" | "redo") {
+    if (!selectedFile?.workspaceRoot || !selectedFile.persistentSessionId) return false;
+    const response = await postHistoryMove(direction, {
+      workspace_root: selectedFile.workspaceRoot,
+      persistent_session_id: selectedFile.persistentSessionId,
+    });
+    if (!response.ok || !response.state) return true;
+    applyPersistedState(response.state, response.calibrated_image);
+    const nextHistory = historyFromApi(response.history ?? []);
+    setHistory(nextHistory);
+    setHistoryIndex(response.history_cursor ?? -1);
+    setFiles((items) => items.map((item) => item.id === selectedFile.id ? {
+      ...item,
+      persistedHistory: nextHistory,
+      persistedHistoryIndex: response.history_cursor ?? -1,
+    } : item));
+    return true;
+  }
 
-  function undo() {
+  async function undo() {
+    if (await movePersistentHistory("undo")) return;
     const stack = undoStackRef.current;
     const idx = undoIndexRef.current;
     if (idx <= 0) return;
@@ -793,7 +972,8 @@ export function useWorkbench() {
     undoingRef.current = false;
   }
 
-  function redo() {
+  async function redo() {
+    if (await movePersistentHistory("redo")) return;
     const stack = undoStackRef.current;
     const idx = undoIndexRef.current;
     if (idx >= stack.length - 1) return;
@@ -825,7 +1005,10 @@ export function useWorkbench() {
     }
     const manualCurves = committedCurves;
     const effectiveCurves = composeManualCurves(manualCurves);
-    const signature = buildCalibrationSignature(mode, strength, accelerator, manualCurves);
+    const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
+    const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
+    const requestImageTransform = imageTransformForRequest(imageTransform);
+    const signature = buildCalibrationSignature(mode, strength, accelerator, manualCurves, cropRect, imageTransform);
     if (selectedFile.result?.calibrated_image && selectedFile.calibrationSignature === signature) {
       return;
     }
@@ -857,8 +1040,10 @@ export function useWorkbench() {
             mode,
             strength,
             accelerator,
-            include_original: false,
+            include_original: Boolean(cropRect),
             fast: fastMode,
+            crop_rect: cropRect,
+            image_transform: requestImageTransform,
             ...curvePayload,
           });
         } else {
@@ -870,6 +1055,8 @@ export function useWorkbench() {
             strength,
             accelerator,
             fast: fastMode,
+            crop_rect: cropRect,
+            image_transform: requestImageTransform,
             ...curvePayload,
           };
           if (filePath) {
@@ -889,6 +1076,7 @@ export function useWorkbench() {
             item.id === selectedFile.id
               ? {
                   ...item,
+                  cropApplied: Boolean(payload.processing?.crop_applied) || item.cropApplied,
                   calibrationSignature: signature,
                   sessionId: payload.session_id ?? item.sessionId,
                   result: {
@@ -912,7 +1100,9 @@ export function useWorkbench() {
             try {
               const cal = await postCalibrationSession({
                 session_id: sid, mode, strength, accelerator,
-                include_original: false,
+                include_original: Boolean(cropRect),
+                crop_rect: cropRect,
+                image_transform: requestImageTransform,
                 r_curve: effectiveCurves.r, g_curve: effectiveCurves.g, b_curve: effectiveCurves.b,
               });
               setFiles((items) => items.map((item) =>
@@ -923,8 +1113,16 @@ export function useWorkbench() {
         }
         setCurveInteraction("idle");
         setActionState("calibration", "success", payload.session_id ?? selectedFile.name);
-        const opCount = payload.processing ? 1 : 0;
-        pushHistoryEntry(`${mode} / ${strength.toFixed(2)}`, opCount, mode);
+        const pendingCommit = pendingCommitRef.current;
+        if (pendingCommit) {
+          pendingCommitRef.current = null;
+          void persistCommittedEdit(
+            pendingCommit.description,
+            pendingCommit.actionType,
+            { ...pendingCommit.state, runtimeSessionId: payload.session_id ?? pendingCommit.state.runtimeSessionId },
+            payload.calibrated_image,
+          );
+        }
         requestAnimationFrame(() => {
           perfMark("DOM.rendered");
           perfDump();
@@ -945,7 +1143,23 @@ export function useWorkbench() {
       calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
       if (fileOrParamsChanged) setLoading(false);
     };
-  }, [selectedFile?.id, curveStateFileId, mode, strength, accelerator, committedCurves, curveInteraction]);
+  }, [
+    selectedFile?.id,
+    selectedFile?.crop?.crop_rect.left,
+    selectedFile?.crop?.crop_rect.top,
+    selectedFile?.crop?.crop_rect.width,
+    selectedFile?.crop?.crop_rect.height,
+    selectedFile?.cropApplied,
+    selectedFile?.imageTransform?.rotation,
+    selectedFile?.imageTransform?.flipH,
+    selectedFile?.imageTransform?.flipV,
+    curveStateFileId,
+    mode,
+    strength,
+    accelerator,
+    committedCurves,
+    curveInteraction,
+  ]);
 
   /* push calibration snapshots to undo stack (debounced 600ms) */
   useEffect(() => {
@@ -984,20 +1198,26 @@ export function useWorkbench() {
     setExportResult(null);
     setSessionSaveResult(null);
     setDocumentRender(null);
+    const restoredState = selectedFile.persistedState;
+    if (restoredState) {
+      setMode(restoredState.mode);
+      setStrength(restoredState.strength);
+      setAccelerator(restoredState.accelerator);
+    }
     const saved = fileCurvesRef.current.get(selectedFile.id);
     const nextCurves = cloneManualCurves(saved ?? {
-      l: selectedFile.lCurve ?? DEFAULT_IDENTITY_CURVE,
-      r: selectedFile.rCurve ?? DEFAULT_IDENTITY_CURVE,
-      g: selectedFile.gCurve ?? DEFAULT_IDENTITY_CURVE,
-      b: selectedFile.bCurve ?? DEFAULT_IDENTITY_CURVE,
+      l: restoredState?.curves.l ?? selectedFile.lCurve ?? DEFAULT_IDENTITY_CURVE,
+      r: restoredState?.curves.r ?? selectedFile.rCurve ?? DEFAULT_IDENTITY_CURVE,
+      g: restoredState?.curves.g ?? selectedFile.gCurve ?? DEFAULT_IDENTITY_CURVE,
+      b: restoredState?.curves.b ?? selectedFile.bCurve ?? DEFAULT_IDENTITY_CURVE,
     });
     setLCurve(nextCurves.l);
     setRCurve(nextCurves.r);
     setGCurve(nextCurves.g);
     setBCurve(nextCurves.b);
     setCommittedCurves(nextCurves);
-    setHistory([]);
-    setHistoryIndex(-1);
+    setHistory(selectedFile.persistedHistory ?? []);
+    setHistoryIndex(selectedFile.persistedHistoryIndex ?? -1);
     setCurveStateFileId(selectedFile.id);
   }, [selectedFile?.id, clearLocalCurvePreview]);
 
@@ -1008,10 +1228,32 @@ export function useWorkbench() {
     selectedFile?.id,
     selectedFile?.highResPreview?.original_preview,
     selectedFile?.preview?.original_preview,
+    selectedFile?.result?.calibrated_image,
     selectedFile?.displayUrl,
     stageContainerSize?.width,
     stageContainerSize?.height,
     prewarmLocalCurvePreview,
+  ]);
+
+  useEffect(() => {
+    if (curveInteraction !== "drag" || !selectedFile || localCurvePreviewBitmap) return;
+    const latest = filesRef.current.find((item) => item.id === selectedFile.id) ?? selectedFile;
+    if (!resolveCurvePreviewSource(latest)) return;
+    scheduleLocalCurvePreview(latest, { l: lCurve, r: rCurve, g: gCurve, b: bCurve }, "drag");
+  }, [
+    curveInteraction,
+    localCurvePreviewBitmap,
+    selectedFile?.id,
+    selectedFile?.highResPreview?.original_preview,
+    selectedFile?.preview?.original_preview,
+    selectedFile?.result?.calibrated_image,
+    selectedFile?.displayUrl,
+    lCurve,
+    rCurve,
+    gCurve,
+    bCurve,
+    resolveCurvePreviewSource,
+    scheduleLocalCurvePreview,
   ]);
 
   useEffect(() => {
@@ -1024,8 +1266,6 @@ export function useWorkbench() {
 
   useEffect(() => () => {
     clearLocalCurvePreview();
-    curvePreviewWorkerRef.current?.terminate();
-    curvePreviewWorkerRef.current = null;
   }, [clearLocalCurvePreview]);
 
   /* ── Adaptive resolution: reset tracking when file changes ── */
@@ -1046,7 +1286,6 @@ export function useWorkbench() {
   useEffect(() => {
     if (!selectedFile?.sessionId) return;
     if (!selectedFile?.preview) return;
-    if (curveStateFileId !== selectedFile.id) return;
     if (!stageContainerSize) return;
     if (selectedFile?.browserDisplayable) return;
 
@@ -1096,6 +1335,8 @@ export function useWorkbench() {
           strength,
           accelerator,
           include_original: true,
+          crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
+          image_transform: imageTransformForRequest(selectedFile.imageTransform),
           r_curve: effectiveCurves.r,
           g_curve: effectiveCurves.g,
           b_curve: effectiveCurves.b,
@@ -1104,7 +1345,7 @@ export function useWorkbench() {
         setFiles((items) =>
           items.map((item) =>
             item.id === capturedFileId
-              ? { ...item, result: calibration }
+              ? { ...item, cropApplied: Boolean(calibration.processing?.crop_applied) || item.cropApplied, result: calibration }
               : item,
           ),
         );
@@ -1121,7 +1362,26 @@ export function useWorkbench() {
         highResTimerRef.current = null;
       }
     };
-  }, [stageContainerSize, viewerZoomScale, viewerZoomMode, selectedFile?.id, selectedFile?.sessionId, curveStateFileId, mode, strength, accelerator, committedCurves]);
+  }, [
+    stageContainerSize,
+    viewerZoomScale,
+    viewerZoomMode,
+    selectedFile?.id,
+    selectedFile?.sessionId,
+    selectedFile?.cropApplied,
+    selectedFile?.crop?.crop_rect.left,
+    selectedFile?.crop?.crop_rect.top,
+    selectedFile?.crop?.crop_rect.width,
+    selectedFile?.crop?.crop_rect.height,
+    selectedFile?.imageTransform?.rotation,
+    selectedFile?.imageTransform?.flipH,
+    selectedFile?.imageTransform?.flipV,
+    curveStateFileId,
+    mode,
+    strength,
+    accelerator,
+    committedCurves,
+  ]);
 
   async function hydrateNonDisplayablePreviews(nextFiles: WorkspaceFile[]) {
     const toProcess = nextFiles.filter((item) => item.file && !item.browserDisplayable && !item.preview);
@@ -1200,18 +1460,57 @@ export function useWorkbench() {
   async function onPickFiles(fileList: PickedFiles) {
     const pickedFiles: (File | PathFileInfo)[] = fileList ? Array.from(fileList as unknown as ArrayLike<File | PathFileInfo>) : [];
     if (!pickedFiles.length) return;
-    const nextFiles = pickedFiles.map((item) => {
+    const pathItems = pickedFiles.filter((item): item is PathFileInfo => typeof item === "object" && item !== null && "path" in item && !(item instanceof File));
+    const supportedPathItems = pathItems.filter((item) => /\.(jpe?g|png|tiff?|dng|cr2|cr3|nef|arw|raf|fff|hdr|exr)$/i.test(item.path));
+    const effectivePickedFiles: (File | PathFileInfo)[] = pathItems.length ? supportedPathItems : pickedFiles;
+    let restoredByPath = new Map<string, Awaited<ReturnType<typeof postWorkspaceOpen>>["files"][number]>();
+    if (supportedPathItems.length > 0) {
+      const workspaceRoot = supportedPathItems[0].workspaceRoot ?? supportedPathItems[0].path.replace(/[\\/][^\\/]+$/, "");
+      try {
+        const workspace = await postWorkspaceOpen({ workspace_root: workspaceRoot, paths: supportedPathItems.map((item) => item.path) });
+        restoredByPath = new Map(workspace.files.map((item) => [workspacePathKey(item.path), item]));
+      } catch (error) {
+        notify("warning", "历史未持久化", String(error));
+      }
+    }
+    const nextFiles = effectivePickedFiles.map((item) => {
       // Handle PathFileInfo (shell bridge items with path, no browser File)
       if (typeof item === "object" && item !== null && "path" in item && !(item instanceof File)) {
         const pathInfo = item as PathFileInfo;
+        const restored = restoredByPath.get(workspacePathKey(pathInfo.path));
+        const restoredState = restored?.state;
+        const restoredHistory = historyFromApi(restored?.history ?? []);
+        const calibratedImage = restored?.calibrated_image;
+        const restoredResult = calibratedImage && restoredState ? {
+          calibrated_image: calibratedImage,
+          reduction_pct: 0,
+          input: { direction: "restored", lab: { strength: 0, a_mean: 0, b_star_mean: 0 } },
+          output: { lab: { strength: 0, a_mean: 0, b_star_mean: 0 } },
+          processing: { preview_source: "workspace-db" },
+        } satisfies CalibrationPayload : undefined;
         return {
           id: `file:${pathInfo.path}`,
           kind: "file",
           file: pathInfo,
           name: pathInfo.name,
-          displayUrl: "",
-          thumbnailUrl: "",
+          displayUrl: calibratedImage ?? "",
+          thumbnailUrl: calibratedImage ?? "",
           browserDisplayable: false,
+          workspaceRoot: pathInfo.workspaceRoot ?? pathInfo.path.replace(/[\\/][^\\/]+$/, ""),
+          persistentSessionId: restored?.persistent_session_id,
+          persistedState: restoredState,
+          persistedHistory: restoredHistory,
+          persistedHistoryIndex: restored?.history_cursor ?? -1,
+          historyPersistent: restored?.status === "restored",
+          sessionId: undefined,
+          result: restoredResult,
+          calibrationSignature: restoredResult && restoredState
+            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, restoredState.accelerator, restoredState.curves, restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
+            : undefined,
+          crop: restoredState?.crop,
+          cropEdited: restoredState?.cropEdited,
+          cropApplied: restoredState?.cropApplied,
+          imageTransform: normalizeImageTransform(restoredState?.imageTransform),
           lCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
           rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
           gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
@@ -1230,15 +1529,28 @@ export function useWorkbench() {
         displayUrl: url,
         thumbnailUrl: url,
         browserDisplayable: displayable,
+        imageTransform: DEFAULT_IMAGE_TRANSFORM,
         lCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         rCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         gCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
         bCurve: [...DEFAULT_IDENTITY_CURVE.map((p) => [...p] as [number, number])],
       } satisfies WorkspaceFile;
     });
+    const firstRestoredState = nextFiles[0]?.persistedState;
+    if (firstRestoredState) {
+      const restoredCurves = cloneManualCurves(firstRestoredState.curves);
+      setMode(firstRestoredState.mode);
+      setStrength(firstRestoredState.strength);
+      setAccelerator(firstRestoredState.accelerator);
+      setLCurve(restoredCurves.l);
+      setRCurve(restoredCurves.r);
+      setGCurve(restoredCurves.g);
+      setBCurve(restoredCurves.b);
+      setCommittedCurves(restoredCurves);
+    }
     setFiles(nextFiles);
     const firstFile = nextFiles[0];
-    if (firstFile && !firstFile.browserDisplayable) {
+    if (firstFile && !firstFile.browserDisplayable && !firstFile.result) {
       const filePath = (firstFile.file as any)?.path as string | undefined;
       const body: Record<string, unknown> = { file_name: firstFile.name, analysis_max_side: 320 };
       if (filePath) body.path = filePath;
@@ -1258,6 +1570,15 @@ export function useWorkbench() {
     if (!selectedFile) return;
     try {
       setActionState("filmScan", "running", selectedFile.name);
+      appliedCropIdsRef.current.delete(selectedFile.id);
+      setFiles((items) => items.map((item) => item.id === selectedFile.id ? {
+        ...item,
+        crop: undefined,
+        cropSuggestedRect: undefined,
+        cropEdited: false,
+        cropApplied: false,
+        result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
+      } : item));
       let payload: CropPayload;
       if (selectedFile.sessionId) {
         payload = await postFilmScan({ session_id: selectedFile.sessionId });
@@ -1273,6 +1594,12 @@ export function useWorkbench() {
         }
         payload = await postFilmScan(body);
       }
+      highResRequestRef.current += 1;
+      if (highResTimerRef.current) {
+        clearTimeout(highResTimerRef.current);
+        highResTimerRef.current = null;
+      }
+      highResSessionRef.current = payload.session_id ?? selectedFile.sessionId ?? null;
       setFiles((items) =>
         items.map((item) =>
           item.id === selectedFile.id
@@ -1282,12 +1609,15 @@ export function useWorkbench() {
                 crop: payload,
                 cropSuggestedRect: payload.crop_rect,
                 cropEdited: false,
+                cropApplied: false,
+                result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
               }
             : item,
         ),
       );
       setActionState("filmScan", "success", payload.film_scan?.film_format ?? payload.processing?.film_scan_source ?? "done");
-      pushHistoryEntry("胶片扫描", 1, "film-scan");
+      beginEdit();
+      commitEdit("胶片扫描", "film-scan", currentEditState({ crop: payload, cropEdited: false, cropApplied: false, runtimeSessionId: payload.session_id ?? selectedFile.sessionId }));
     } catch (error) {
       console.error(error);
       setActionState("filmScan", "error", String(error));
@@ -1311,6 +1641,8 @@ export function useWorkbench() {
         embed_icc: exportOptions.embedIcc,
         preserve_metadata: exportOptions.preserveMetadata,
         export_transform: exportOptions.exportTransform,
+        crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
+        image_transform: imageTransformForRequest(selectedFile.imageTransform),
       };
       if (filePathVal) {
         body.path = filePathVal;
@@ -1326,6 +1658,72 @@ export function useWorkbench() {
       console.error(error);
       setActionState("export", "error", String(error));
       notify("error", "Export failed", String(error));
+    }
+  }
+
+  async function runBatchExport() {
+    const exportableFiles = filesRef.current.filter((item) => item.kind === "file" && item.file);
+    if (exportableFiles.length === 0) return;
+    const outputDir = directoryFromPath(exportOptions.outputPath);
+    const nextResults: BatchExportItemResult[] = [];
+    setBatchExportResults([]);
+    setActiveInspectorTab("export");
+    let successCount = 0;
+    try {
+      setActionState("batchExport", "running", `0/${exportableFiles.length}`);
+      for (let index = 0; index < exportableFiles.length; index += 1) {
+        const item = exportableFiles[index]!;
+        const state = stateForFileExport(item);
+        const effectiveCurves = composeManualCurves(state.curves);
+        const body: Record<string, unknown> = {
+          file_name: item.name,
+          mode: state.mode,
+          strength: state.strength,
+          accelerator: state.accelerator,
+          output_path: suggestExportPathInDirectory(item.name, exportOptions.format, outputDir),
+          format: exportOptions.format,
+          quality: exportOptions.quality,
+          embed_icc: exportOptions.embedIcc,
+          preserve_metadata: exportOptions.preserveMetadata,
+          export_transform: exportOptions.exportTransform,
+          crop_rect: state.cropApplied ? cropRectForRequest(state.crop) : undefined,
+          image_transform: imageTransformForRequest(state.imageTransform),
+          r_curve: effectiveCurves.r,
+          g_curve: effectiveCurves.g,
+          b_curve: effectiveCurves.b,
+        };
+        setActionState("batchExport", "running", `${index + 1}/${exportableFiles.length} ${item.name}`);
+        try {
+          const filePathVal = (item.file as any)?.path as string | undefined;
+          if (filePathVal) {
+            body.path = filePathVal;
+          } else {
+            body.image_data = await fileToDataUrl(item.file as File);
+          }
+          const payload = await postExport(body);
+          successCount += 1;
+          nextResults.push({
+            file_id: item.id,
+            file_name: item.name,
+            ok: true,
+            path: payload.path,
+          });
+        } catch (error) {
+          nextResults.push({
+            file_id: item.id,
+            file_name: item.name,
+            ok: false,
+            error: String(error),
+          });
+        }
+        setBatchExportResults([...nextResults]);
+      }
+      setActionState("batchExport", successCount === exportableFiles.length ? "success" : "error", `${successCount}/${exportableFiles.length}`);
+      notify(successCount === exportableFiles.length ? "success" : "warning", "批量导出完成", `${successCount}/${exportableFiles.length} 成功`);
+    } catch (error) {
+      console.error(error);
+      setActionState("batchExport", "error", String(error));
+      notify("error", "批量导出失败", String(error));
     }
   }
 
@@ -1452,7 +1850,7 @@ export function useWorkbench() {
       }
       const payload = await postAIEvaluate(body);
       setAiResult(payload);
-      setActiveInspectorTab("analysis");
+      setActiveInspectorTab("ai");
       setActionState("ai", payload.ok ? "success" : "error", payload.evaluation?.summary ?? payload.error ?? payload.evaluator_name);
       notify(payload.ok ? "success" : "warning", payload.ok ? "AI review complete" : "AI review warning", payload.evaluation?.summary ?? payload.error ?? payload.evaluator_name);
     } catch (error) {
@@ -1462,8 +1860,11 @@ export function useWorkbench() {
     }
   }
 
-  function updateSelectedCrop(cropRect: CropRect) {
+  function updateSelectedCrop(cropRect: CropRect, options?: { interaction?: "drag" | "commit" }) {
     if (!selectedFile) return;
+    appliedCropIdsRef.current.delete(selectedFile.id);
+    if (options?.interaction === "drag") beginEdit();
+    const nextCrop = selectedFile.crop ? { ...selectedFile.crop, crop_rect: cropRect } : { crop_rect: cropRect };
     setFiles((items) =>
       items.map((item) =>
         item.id === selectedFile.id
@@ -1478,15 +1879,24 @@ export function useWorkbench() {
                     crop_rect: cropRect,
                   },
               cropEdited: true,
+              cropApplied: false,
+              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
             }
           : item,
       ),
     );
-    pushHistoryEntry("裁切调整", 1, "crop");
+    if (options?.interaction === "commit") {
+      commitEdit("裁切调整", "crop", currentEditState({ crop: nextCrop, cropEdited: true, cropApplied: false }));
+    }
   }
 
   function resetSelectedCrop() {
     if (!selectedFile?.cropSuggestedRect) return;
+    appliedCropIdsRef.current.delete(selectedFile.id);
+    beginEdit();
+    const nextCrop = selectedFile.crop
+      ? { ...selectedFile.crop, crop_rect: selectedFile.cropSuggestedRect }
+      : { crop_rect: selectedFile.cropSuggestedRect };
     setFiles((items) =>
       items.map((item) =>
         item.id === selectedFile.id
@@ -1501,17 +1911,76 @@ export function useWorkbench() {
                     crop_rect: item.cropSuggestedRect!,
                   },
               cropEdited: false,
+              cropApplied: false,
+              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
             }
           : item,
       ),
     );
     notify("info", "Crop reset", "恢复到自动建议框");
-    pushHistoryEntry("裁切复位", 1, "crop-reset");
+    commitEdit("裁切复位", "crop-reset", currentEditState({ crop: nextCrop, cropEdited: false, cropApplied: false }));
+  }
+
+  function applySelectedCrop() {
+    if (!selectedFile?.crop || isCropApplied(selectedFile)) return;
+    beginEdit();
+    appliedCropIdsRef.current.add(selectedFile.id);
+    setFiles((items) => items.map((item) =>
+      item.id === selectedFile.id ? { ...item, cropApplied: true } : item,
+    ));
+    commitEdit("应用裁切", "crop-apply", currentEditState({ cropApplied: true }));
+  }
+
+  function updateSelectedImageTransform(
+    updater: ImageTransform | ((current: ImageTransform) => ImageTransform),
+    options?: { interaction?: "drag" | "commit"; description?: string },
+  ) {
+    if (!selectedFile) return;
+    if (options?.interaction === "drag") beginEdit();
+    const currentTransform = normalizeImageTransform(selectedFile.imageTransform);
+    const nextTransform = normalizeImageTransform(typeof updater === "function" ? updater(currentTransform) : updater);
+    setFiles((items) =>
+      items.map((item) =>
+        item.id === selectedFile.id
+          ? {
+              ...item,
+              imageTransform: nextTransform,
+            }
+          : item,
+      ),
+    );
+    if (options?.interaction === "commit") {
+      commitEdit(options.description ?? "旋转与翻转", "image-transform", currentEditState({ imageTransform: nextTransform }));
+    }
+  }
+
+  function rotateSelectedImage(delta: number) {
+    beginEdit();
+    updateSelectedImageTransform(
+      (current) => ({ ...current, rotation: normalizeRotation(current.rotation + delta) }),
+      { interaction: "commit", description: delta < 0 ? "向左旋转" : "向右旋转" },
+    );
+  }
+
+  function flipSelectedImage(axis: "horizontal" | "vertical") {
+    beginEdit();
+    updateSelectedImageTransform(
+      (current) => axis === "horizontal"
+        ? { ...current, flipH: !current.flipH }
+        : { ...current, flipV: !current.flipV },
+      { interaction: "commit", description: axis === "horizontal" ? "水平翻转" : "垂直翻转" },
+    );
+  }
+
+  function resetSelectedImageTransform() {
+    beginEdit();
+    updateSelectedImageTransform(DEFAULT_IMAGE_TRANSFORM, { interaction: "commit", description: "重置旋转翻转" });
   }
 
   function setCurves(next: ManualCurves, options?: { interaction?: "drag" | "commit" | "edit" }) {
     perfReset("curve-drag");
     const interaction = options?.interaction ?? "edit";
+    if (interaction === "drag") beginEdit();
     const nl = cloneCurve(next.l);
     const nr = cloneCurve(next.r);
     const ng = cloneCurve(next.g);
@@ -1528,15 +1997,20 @@ export function useWorkbench() {
       setCommittedCurves(cloneManualCurves(manualCurves));
     }
     if (selectedFile) {
+      const previewTarget = filesRef.current.find((item) => item.id === selectedFile.id) ?? selectedFile;
       fileCurvesRef.current.set(selectedFile.id, manualCurves);
-      scheduleLocalCurvePreview(selectedFile, manualCurves, interaction === "drag" ? "drag" : "idle");
+      if (interaction === "drag") {
+        scheduleLocalCurvePreview(previewTarget, manualCurves, "drag");
+      } else {
+        clearLocalCurvePreview();
+      }
     } else {
       console.warn("[curve-preview] SKIP: selectedFile is null, cannot schedule preview. files:", files.length, "selectedId:", selectedId);
     }
-    if (curveHistoryTimerRef.current) clearTimeout(curveHistoryTimerRef.current);
-    curveHistoryTimerRef.current = setTimeout(() => {
-      pushHistoryEntry("曲线调整", 1, "curves");
-    }, 1000);
+    if (interaction !== "drag") {
+      beginEdit();
+      commitEdit("曲线调整", "curves", currentEditState({ curves: manualCurves }));
+    }
   }
 
   function pushHistoryEntry(description: string, operationCount: number, currentOpName: string) {
@@ -1669,9 +2143,9 @@ export function useWorkbench() {
     }));
   }
 
-  function toggleLayoutElement(target: "library" | "filmstrip" | "inspector" | "viewer-hud") {
-    if (target === "library") {
-      togglePreference("showLibraryPane");
+  function toggleLayoutElement(target: "analysis" | "filmstrip" | "inspector" | "viewer-hud") {
+    if (target === "analysis") {
+      togglePreference("showAnalysisPane");
       return;
     }
     if (target === "filmstrip") {
@@ -1728,8 +2202,12 @@ export function useWorkbench() {
     resetViewerZoom,
     mode,
     setMode,
+    setModeCommitted,
     strength,
     setStrength,
+    commitStrength,
+    beginEdit,
+    commitEdit,
     accelerator,
     setAccelerator,
     loading,
@@ -1744,6 +2222,7 @@ export function useWorkbench() {
     exportOptions,
     setExportOptions,
     exportResult,
+    batchExportResults,
     documentRender,
     sessionOptions,
     setSessionOptions,
@@ -1774,6 +2253,7 @@ export function useWorkbench() {
     resetPreferences,
     runFilmScan,
     runExport,
+    runBatchExport,
     renderDocument,
     saveSession,
     refreshSavedSessions,
@@ -1782,6 +2262,11 @@ export function useWorkbench() {
     runAIEvaluation,
     updateSelectedCrop,
     resetSelectedCrop,
+    applySelectedCrop,
+    updateSelectedImageTransform,
+    rotateSelectedImage,
+    flipSelectedImage,
+    resetSelectedImageTransform,
     dismissNotification,
     removeSelectedItem,
     clearWorkspace,
@@ -1799,7 +2284,7 @@ export function useWorkbench() {
     backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
     selectedId, selectedFile, displayedSelectedFile, selectionDisplayReady, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
     viewerPan, mode, strength, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
-    exportResult, documentRender, sessionOptions, sessionSaveResult, savedSessions,
+    exportResult, batchExportResults, documentRender, sessionOptions, sessionSaveResult, savedSessions,
     selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
     actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,
     lCurve, rCurve, gCurve, bCurve, history, historyIndex, setAISettingsAndSave, settleLocalCurvePreview,

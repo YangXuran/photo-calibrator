@@ -4,7 +4,7 @@
 
 ## 0. 当前状态
 
-仓库已经从早期脚本形态进入可运行 Electron 桌面应用（React + Python backend）。Electron 窗口通过 dev 分支构建，后端 HTTP API 端口 8766，预览图片 HTTP URL 传输。2026-06-11 已完成性能优化（0ms debounce + per-file curves）、HTTP URL 替代 base64、CORS headers、CCC/PCI/RGB 图表恢复、Catmull-Rom 曲线编辑器。已知问题: 文件切换图片闪烁(deferred)。需要注意：代码已实现不等于已接入主流程。目前 Phase 1-3 和 Phase 4 P0/P1 大量基础设施已落地，部分尚未完成前后端集成。历史核心文件仍可作为算法来源参考：
+仓库已经进入可运行的 Electron 桌面产品阶段（React + Python backend）。`npm run dev` 会启动 Vite、Electron 和本地后端，HTTP API 默认端口为 8766。2026-06-22 的主流程已经覆盖文件夹导入、自适应高清预览、偏色分析、负片校准、曲线、自动裁切、显式应用裁切、旋转/翻转、持久化历史、批量导出和 macOS arm64 DMG 构建。后续开发必须区分“当前产品主流程”和仍保留的 `web/` 旧轻量界面；产品 UI 以 `frontend/` 为准。历史核心文件仍可作为算法来源参考：
 
 - `color_cast_detector.py`: 偏色检测、肤色/亮度分区、CCC、PCI、诱导效应、Matplotlib 报告图。
 - `color_cast_calibrator.py`: 基于 Lab a*/b* 偏移的全局/中间调/肤色/高光/保留分离色调校准。
@@ -18,8 +18,9 @@
 - `src/photo_calibrator/backend/simple_server.py`: 本地 HTTP 服务、预览缓存、内存分析缓存、批处理 API。
 - `src/photo_calibrator/plugins/`: **插件系统** — hook 协议、manifest 验证、发现/加载/生命周期管理、内置 stub 插件。
 - `src/photo_calibrator/ai/`: **AI 评估子系统** — provider-agnostic 接口、提示词模板、OpenAI 兼容 provider（覆盖 Ollama/vLLM/OpenAI/DeepSeek/Groq）+ MockProvider。
-- `web/`: 轻量 Web UI，支持文件/文件夹导入、TIFF/RAW 预览、图表展示、session 调参。
-- `tests/`: Python 单元测试当前基线为 `192 passed / 1 skipped`，UI `npm run test:ui` 通过。
+- `frontend/`: 当前 Electron 产品 UI，React/Vite/TypeScript + Playwright。
+- `web/`: 保留的轻量/旧 Web UI，不是桌面产品主界面。
+- `tests/`: Python、浏览器和 Electron E2E；准确基线以本机当次测试输出和 `STATUS.md` 为准，不沿用旧固定数字。
 
 已实现的性能/加速基础：
 
@@ -42,54 +43,41 @@ Phase 4 新增能力：
 
 当前已经确认的集成现实：
 
-- **已接入产品主流程**: 基础校准、session 预览、缓存、分析图表、TIFF/RAW 预览路径、UI 模块化、i18n、accelerator benchmark。
-- **已实现但未完全接线**:
-  - `core/film_scan.py` 已有算法和测试，但前端裁切建议仍是占位矩形，后端没有专门 film scan API。
-  - `plugins/` 已能发现/加载/查询 hook，但 backend 处理链和 UI 还没消费这些 hook。
-  - `ai/` 已有 provider 和 schema，但还没接成真实的校准评估 API / UI 流程。
-  - `io/readers.py` / `io/writers.py` 能力已增强，但 `backend/simple_server.py` 的主分析/导出路径仍保留旧的 preview-first 流程。
-  - 当前主导出仍偏向分析分辨率回放，不是完整的原图全分辨率重放。
+- **已接入产品主流程**: 基础/负片校准、session 与自适应预览、缓存、结构化分析图表、TIFF/RAW/HDR/EXR I/O、原图全分辨率导出回放、film scan API、插件 service、AI evaluation API/UI、Electron bridge、文件夹数据库和持久化撤销/重做。
+- **裁切契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。预览和导出统一执行“校准 -> 原图坐标裁切 -> 翻转/旋转”。Original/Calibrated 使用同一裁切几何，滑动对比只改变 `clip-path`，不得改变图片尺寸。
+- **历史契约**: 滑杆/曲线拖动期间只预览，pointer/key release 后提交一次；每个文件独立历史，数据库最多保留 50 条并持久化 redo 游标。
+- **仍需外部环境确认**: 真实云 AI provider、不同相机 RAW profile、签名/公证后的 DMG、Linux 分发和实机 GPU 性能。
 
 主要限制：
 
-- 当前核心虽然已有 dtype-aware I/O 基础，但主处理链仍主要是 preview-first 管线；RAW、16-bit TIFF、EXR/HDR 和高质量导出还需要完整 float/色彩管理重放。
+- 当前预览与原图导出已经分离，但内部工作色彩空间、相机 profile/DCP 和显示变换仍需进一步专业化。
 - 轻量 HTTP 服务是 MVP，不是最终 FastAPI/IPC 架构。
-- 当前校准以 Lab 通道平移、RGB 曲线、矩阵、3D LUT 预览为主，缺少 ICC/OCIO/LUT 导出管线、线性光处理、软打样和非破坏编辑模型。
+- 当前校准仍以 Lab 通道平移、RGB 曲线、矩阵和 3D LUT 为主；ICC/OCIO/LUT 已有导出入口，但线性光处理、软打样和统一非破坏编辑图仍需完善。
 - GPU 可用性取决于运行环境。开发机若无 OpenCL/CUDA/MPS，只能验证 CPU fallback 和 fake torch 逻辑，不能宣称完成实机 GPU 性能验证。
-- AI 评估目前只有 provider 层和 skeleton，尚未接入真实模型跑校准评估流程。
+- AI 评估 API/UI 已接入；真实 provider 的隐私、成本和输出稳定性仍需专项验证。
 - 中文/英文输出有部分乱码和语义残缺，重构时应重新整理用户可见文案。
 
 ### 当前后端剩余重点
 
-以下是按 2026-06 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O 或基础 session 功能。
+以下是按 2026-06-22 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O 或基础 session 功能。
 
-#### P1: 继续补完产品级后端能力
+#### P1: 发布质量与专业色彩管理
 
-1. **ICC / OCIO 导出闭环**
-   - 当前已有 `sRGB <-> Linear` 和基础 display/export transform。
-   - 仍缺：
-     - 导出时的 ICC profile 嵌入策略
-     - OCIO config / display / export transform 的可配置接口
-     - profile-aware 而非仅 `Linear` / `sRGB` 二分的导出决策
+1. **macOS 分发**
+   - arm64 PyInstaller + Electron Builder + DMG 已能本地构建。
+   - 仍缺签名、公证、最低系统版本矩阵和干净机器验证。
 
-2. **元数据 roundtrip**
-   - 当前已经能读取一部分 metadata / ICC / EXIF。
-   - 仍缺：
-     - 导出时的 EXIF / XMP / ICC 保留与覆盖策略
-     - sidecar 与导出文件之间的 metadata 一致性约束
+2. **工作色彩空间**
+   - ICC 嵌入、OCIO/export transform 和 metadata roundtrip 已进入导出链。
+   - 仍需统一 scene/display working-space 契约，并补充相机 profile/DCP。
 
-3. **Plugin runtime 深度接入**
-   - 当前 analyzer / calibrator / AI evaluator 已能进入 backend 主流程。
-   - 仍缺：
-     - `image_reader` / `image_writer` / `film_scan_detector` 在主流程中的优先接入
-     - 插件级错误隔离、权限边界和更清晰的 failure contract
+3. **Plugin / AI 生产边界**
+   - reader/writer/analyzer/calibrator/film-scan/AI hooks 已进入 service/API/UI。
+   - 仍需不可信插件隔离、权限边界和真实 AI provider 的隐私/成本验证。
 
-4. **AI evaluation hardening**
-   - 当前已有 provider、service、API 和 session/sidecar 写回。
-   - 仍缺：
-     - 后台异步执行和超时控制
-     - 重试 / failure isolation
-     - provider 配置管理、隐私确认、请求日志
+4. **大项目缓存治理**
+   - 文件夹数据库和 adaptive preview 已完成。
+   - 仍需预览金字塔、缓存配额、迁移和损坏恢复策略。
 
 #### P2: 架构层后续收口
 
@@ -104,7 +92,7 @@ Phase 4 新增能力：
 7. **非破坏编辑模型主流程化**
    - `pipeline/` 已有骨架。
    - 当前主流程仍主要是“请求 -> 计算结果图 -> 返回预览”。
-   - 历史、操作栈、序列化、全流程参数重放还未成为 backend 第一公民。
+   - 文件夹数据库已持久化当前 session/history/cursor，但 `pipeline.Document` 仍未成为所有编辑操作的唯一数据源。
 
 #### P3: 可后置但仍重要
 
@@ -112,9 +100,9 @@ Phase 4 新增能力：
    - RAW 全分辨率导出已经接入。
    - 仍缺更专业的相机 profile / DCP / 相机矩阵 / 白平衡策略契约。
 
-9. **后端持久化**
-   - 当前 session / cache 仍以进程内存为主。
-   - 若走项目级桌面应用，需要磁盘 session、预览金字塔、文档恢复和长期缓存治理。
+9. **后端持久化后续**
+   - 每个文件夹的 `photo-calibrator.db` 已保存 session、预览、历史和文件指纹。
+   - 仍需预览金字塔、独立裁切前原图预览、长期缓存配额和数据库迁移治理。
 
 ## 1. 产品目标
 
@@ -471,26 +459,10 @@ AI 模块应设计为 provider-agnostic：
 
 ### 当前收口顺序
 
-当前最优先不是继续横向铺新能力，而是先把已有基础设施接成闭环。推荐顺序：
-
-1. **Film scan integration**
-   - 增加后端 film scan route。
-   - 前端 `Suggest crop` 改为真实请求后端。
-   - 检测结果进入当前 document/session 状态。
-
-2. **I/O integration**
-   - `simple_server.py` 主分析入口尽量统一走 `photo_calibrator.io.readers`。
-   - 导出路径统一走 `photo_calibrator.io.writers` / sidecar / LUT 层。
-   - 逐步消除后端里分散的旧 decode/export 逻辑。
-
-3. **Full-resolution export replay**
-   - 预览分析仍可降采样。
-   - 导出必须重新读取原图并按同一参数重放。
-
-4. **Plugin / AI runtime integration**
-   - 先接 backend 内部 hook / evaluator 调用。
-   - 再加 API。
-   - 最后再做 UI 入口。
+1. **macOS 发布闭环**: 签名、公证、原生依赖路径和干净机器 smoke test。
+2. **色彩管线专业化**: 工作空间、显示变换、相机 profile/DCP 和软打样契约。
+3. **编辑图统一**: 让 `pipeline.Document` 成为历史、恢复、预览和全分辨率导出的唯一操作来源。
+4. **大型工作区**: 预览金字塔、缓存配额、数据库迁移和可取消后台任务。
 
 ### Phase 5: AI 评估和打包发布
 
@@ -498,9 +470,9 @@ AI 模块应设计为 provider-agnostic：
 
 任务：
 
-- 实现 AI provider 接口和至少一个可配置 provider。
-- 增加隐私确认、请求日志、失败重试。
-- 配置 Linux/macOS 打包，验证 Electron、Python runtime、native image I/O 依赖路径。
+- 验证真实 AI provider，补齐隐私确认、请求日志、超时和失败重试。
+- 完成 macOS 签名、公证和干净机器安装验证，并补齐 Linux 打包。
+- 持续验证 Electron、Python runtime 和 native image I/O 依赖路径。
 - 建立最小 CI：lint、test、build smoke test。
 
 验收：
@@ -557,13 +529,14 @@ AI 模块应设计为 provider-agnostic：
 
 ### 15.2 当前共享事实
 
-- 可运行后端：`PYTHONPATH=src python3 -m photo_calibrator.backend.simple_server --port 8766 --accelerator auto`
-- 可运行 UI：`http://127.0.0.1:8766`
-- 必跑 Python 验证：`python3 -m pytest`
-- 必跑编译验证：`python3 -m compileall -q src tests`
+- 桌面调试入口：`npm run dev`，自动启动 Vite、Electron 和后端。
+- 可独立运行后端：`PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.simple_server --port 8766 --accelerator auto`
+- 必跑 Python 验证：`.venv/bin/python -m pytest -q`
+- 必跑编译验证：`.venv/bin/python -m compileall -q src tests`
+- 必跑前端验证：`npm --prefix frontend run typecheck && npm --prefix frontend run build`
 - UI 相关改动必跑：`npm run test:ui`
-- Accelerator 验证：`PYTHONPATH=src python3 -m photo_calibrator.backend.accelerator_benchmark --backend auto --image-side 64 --lut-size 7 --iterations 1`
-- 当前 benchmark 操作必须包含 6 项：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`3d-lut`。
+- Accelerator 验证：`PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmark --backend auto --image-side 64 --lut-size 7 --iterations 1`
+- 当前 benchmark/capability 操作至少包含：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`histogram`、`3d-lut`、`rgb-gray`、`gaussian-blur`、`sobel-profile`。测试应检查必要子集或同步完整集合，不能保留旧的精确集合断言。
 - 当前状态文档以 `STATUS.md` 为准；如果代码和本文档冲突，以实际测试结果和代码路径为准，不以旧阶段宣称为准。
 
 ### 15.3 Agent A: Accelerator / Performance
@@ -577,7 +550,7 @@ AI 模块应设计为 provider-agnostic：
 - `src/photo_calibrator/backend/accelerator_benchmark.py`
 - `tests/test_accelerator.py`
 - `tests/test_accelerator_benchmark_cli.py`
-- 与 benchmark 表格相关的极小 UI 测试调整：`tests/ui/photo_calibrator_frontend_layout.spec.js`
+- 与 benchmark 展示相关的极小 React UI/Electron E2E 调整（如实际存在对应面板）
 
 可以做：
 
@@ -696,15 +669,15 @@ AI 模块应设计为 provider-agnostic：
 
 ### 15.7 Agent E: Frontend / UX / Charts
 
-目标：提升 Web UI 的专业工具体验，保持 Playwright 可测。
+目标：提升 Electron React 工作台的专业工具体验，保持 Playwright 可测。
 
 只负责：
 
-- `web/index.html`
-- `web/app.js`
-- `web/styles.css`
-- `tests/ui/photo_calibrator_frontend_layout.spec.js`
-- `package.json` 仅限前端脚本或测试依赖
+- `frontend/src/`
+- `frontend/electron/` 中纯 UI bridge 改动
+- `tests/ui/photo_calibrator_frontend_*.spec.js`
+- `tests/ui/photo_calibrator_electron_e2e.spec.js`
+- `frontend/package.json` 与根 `package.json` 中前端脚本
 
 可以做：
 
@@ -712,14 +685,14 @@ AI 模块应设计为 provider-agnostic：
 - 增加批处理上传 UI，调用 `/api/calibrate-batch`。
 - 增加预览加载态、错误态、缩略图质量。
 - 增加 `data-testid` 并扩展 Playwright 覆盖。
-- 在 backend 新 route 就绪后接入真实 film scan crop suggest，而不是本地占位框。
-- 为后续 plugin / AI 入口预留 UI 区域，但不要先造假数据工作流。
+- 维护真实 film scan、裁切应用、旋转/翻转、持久化历史和导出交互。
+- 维护 Analysis | Viewer | Inspector 信息架构，禁止重新引入重复面板。
 
 不要做：
 
 - 不要改 Python 算法。
 - 不要改 API 字段名；需要新字段时先兼容旧字段。
-- 不要引入 React/Electron 大迁移，除非专门开新分支/阶段。
+- 不要把产品功能只实现到旧 `web/`；该目录不是当前桌面主界面。
 
 验收：
 
@@ -850,15 +823,17 @@ setLocale("zh"); // 切换到中文，自动调用 translateDOM()
 
 ```bash
 # 1. 确保前端已构建
-cd frontend && npx vite build
+npm --prefix frontend run build
 
-# 2. 运行 Electron 截图测试（需要 xvfb）
-xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-  node tests/ui/electron_screenshot_test.js
+# 2. macOS 运行 Electron E2E / 截图脚本
+npm run test:ui
+node tests/ui/electron_screenshot_test.js
 
 # 3. 截图保存在 /tmp/electron-screenshots/
 ls /tmp/electron-screenshots/
 ```
+
+Linux CI 可在上述命令外层增加 `xvfb-run --auto-servernum`；macOS 不使用 xvfb。交互问题还必须用 Computer Use 在真实 Electron 窗口点击或拖动验证。
 
 ### 18.3 必须验证的场景
 
@@ -866,35 +841,18 @@ ls /tmp/electron-screenshots/
 |------|---------|---------|
 | 文件夹导入 | 导入整个 `photo_test/` 子目录（≥10 张 TIFF），filmstrip 显示所有缩略图 | `workbench-{分辨率}.png` |
 | 多分辨率 | 1280×720、1440×900、1920×1080 三种尺寸下布局正确 | `workbench-1280x720.png` 等 |
-| 校准面板 | Adjust 标签页：模式选择、强度滑杆、曲线编辑器 | `curve-editor-1440x900.png` |
-| 分析面板 | Analysis 标签页：指标卡片、直方图、Lab 向量图 | `analysis-tab-1440x900.png` |
+| 校准面板 | Adjust 标签页：模式与强度；Curves 标签页：R/G/B/L 曲线 | `curve-editor-1440x900.png` |
+| 分析面板 | 左侧 Analysis pane：指标卡片、直方图、Lab 向量图 | `analysis-pane-1440x900.png` |
 | 设置面板 | Settings 标签页：Runtime Status、Accelerator、Plugins | `settings-tab-1440x900.png` |
-| 历史面板 | Adjust 标签底部：操作历史时间线、撤销/重做按钮 | 包含在 `curve-editor` 截图中 |
+| 历史面板 | Session 标签页：操作历史、保存 Session、活动记录 | `session-tab-1440x900.png` |
+| 裁切滑动对比 | Compose 中 Detect -> Apply crop，Split 20%/80% 图片不得缩放 | `crop-split-1440x900.png` |
 
-### 18.4 多模态视觉分析
+### 18.4 视觉分析
 
-截图完成后，使用 `look_at` 工具进行视觉分析（底层调用 `multimodal-looker` agent，配置为 `alibaba-cn/qwen3-vl-plus`）：
-
-```
-look_at(
-  file_path="/tmp/electron-screenshots/workbench-1440x900.png",
-  goal="描述布局、UI 元素、颜色、文字、是否有任何渲染问题"
-)
-```
-
-**重要：必须使用 `look_at` 工具，不要用 `task(subagent_type="multimodal-looker")`。**
-后者无法传递图片附件给 agent，agent 调用 `read` 工具后，Go binary 的 Alibaba provider adapter 存在 bug（`read` 工具返回图片后，消息格式化错误：`{'text': None, 'image': None}`），导致 API 拒绝请求。该 bug 已反馈给 opencode 开发者，修复前只能用 `look_at`。
-
-对于多张截图，并行发起多个 `look_at` 调用（每张图一次）：
-
-```
-look_at(file_path="/tmp/electron-screenshots/analysis-tab-1440x900.png", goal="...")
-look_at(file_path="/tmp/electron-screenshots/settings-tab-1440x900.png", goal="...")
-// ...
-```
+截图完成后使用当前环境可用的本地图像查看工具检查静态布局；涉及点击、拖动、焦点、原生对话框或 Electron bridge 时使用 Computer Use 操作真实应用。不要依赖某个未安装的历史 agent/tool 名称。
 
 检查项：
-- 布局：三栏（Library | Viewer | Inspector）是否正确分隔，无重叠或裁切
+- 布局：三栏（Analysis | Viewer | Inspector）是否正确分隔，无重叠或裁切
 - 响应式：三种分辨率下元素是否正确缩放，文字无溢出
 - 功能指示器：filmstrip 缩略图数量、viewer 状态标签、图表是否渲染
 - 中文 i18n：所有 UI 文字正确显示，无乱码
@@ -922,13 +880,18 @@ photo_test/
 完整 E2E 测试在 `tests/ui/photo_calibrator_electron_e2e.spec.js`：
 
 ```bash
-# 运行 Electron E2E 测试
-xvfb-run --auto-servernum npx playwright test tests/ui/photo_calibrator_electron_e2e.spec.js
+# macOS 运行 Electron E2E 测试
+npm run test:ui
+
+# Linux CI
+xvfb-run --auto-servernum npm run test:ui
 ```
 
 测试覆盖：
 - 启动 Electron 应用并显示工作台
 - 通过 shell bridge 导入真实 TIFF 照片
 - 运行校准并显示结果
-- 切换布局预设
-- 运行胶片扫描检测
+- 验证 Inspector 面板唯一归属与 Focus 布局
+- 运行胶片扫描、建议框编辑和显式应用裁切
+- 验证裁切后 Original/Calibrated 对齐和滑动分割不缩放
+- 验证旋转/翻转、负片校准、导出和持久化历史

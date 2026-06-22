@@ -33,7 +33,7 @@ const FILMSTRIP_SHORTCUTS: ShortcutItem[] = [
 ];
 
 const WORKSPACE_SHORTCUTS: ShortcutItem[] = [
-  { action: "切换左侧 Library", keys: ["Alt", "1"] },
+  { action: "切换左侧 Analysis", keys: ["Alt", "1"] },
   { action: "切换底部 Filmstrip", keys: ["Alt", "2"] },
   { action: "切换右侧 Inspector", keys: ["Alt", "3"] },
   { action: "进入 / 退出 Viewer Focus", keys: ["Shift", "F"] },

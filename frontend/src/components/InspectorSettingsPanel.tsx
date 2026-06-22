@@ -42,9 +42,6 @@ export function InspectorSettingsPanel({ workbench, aiSettings, onAISettingsChan
           ]}
         />
       </PaneSection>
-
-      <AIProviderCard settings={aiSettings} onChange={onAISettingsChange} />
-
       {workbench.capabilities?.accelerator ? (
         <PaneSection density="compact" meta="" title="Accelerator">
           <InfoGrid

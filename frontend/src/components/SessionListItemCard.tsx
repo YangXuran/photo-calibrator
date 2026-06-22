@@ -12,7 +12,7 @@ function fmtTime(value?: number) {
 }
 
 function sessionPathName(path: string) {
-  const parts = path.split("/");
+  const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] || path;
 }
 

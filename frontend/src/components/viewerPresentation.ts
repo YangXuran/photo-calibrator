@@ -38,7 +38,9 @@ export function getViewerPresentation(workbench: ViewerPresentationInput): Viewe
   const filmScanStatus =
     workbench.actionStates.filmScan.status === "running"
       ? "Detecting"
-      : summary.cropLabel === "Crop adjusted"
+      : summary.cropLabel === "Crop applied"
+        ? "Applied"
+        : summary.cropLabel === "Crop adjusted"
         ? "Adjusted"
         : summary.cropLabel === "Crop suggested"
           ? "Suggested"

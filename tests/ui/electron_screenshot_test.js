@@ -1,11 +1,20 @@
 const { _electron: electron } = require("@playwright/test");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const { startBackend, stopServer, waitForUrl, getFreePort } = require("./react_workbench_helpers");
 
-const ELECTRON_PATH = path.resolve(__dirname, "../../frontend/node_modules/electron/dist/electron");
-const TEST_PHOTO_DIR = "/home/xuran/Projects/photo_calibrator/photo_test/3285 e100哈大3f";
-const SCREENSHOT_DIR = "/tmp/electron-screenshots";
+function resolveElectronPath() {
+  const distDir = path.resolve(__dirname, "../../frontend/node_modules/electron/dist");
+  if (process.platform === "darwin") {
+    return path.join(distDir, "Electron.app", "Contents", "MacOS", "Electron");
+  }
+  return path.join(distDir, "electron");
+}
+
+const ELECTRON_PATH = resolveElectronPath();
+const TEST_PHOTO_DIR = path.resolve(__dirname, "../../photo_test/3285 e100哈大3f");
+const SCREENSHOT_DIR = path.join(os.tmpdir(), "electron-screenshots");
 
 const VIEWPORTS = [
   { name: "1280x720", width: 1280, height: 720 },
@@ -38,7 +47,7 @@ async function importFolderPhotos(window, photoPaths) {
       try {
         const response = await fetch(`file://${p}`);
         const buffer = await response.arrayBuffer();
-        const name = p.split("/").pop();
+        const name = p.split(/[\\/]/).pop();
         const file = new File([buffer], name);
         file.path = p;
         files.push(file);
@@ -117,14 +126,13 @@ async function main() {
     console.log("Settings tab screenshot failed:", e.message);
   }
 
-  // Switch to analysis tab and screenshot
+  // Capture the persistent analysis pane.
   try {
-    await window.locator('[data-testid="inspector-tab-analysis"]').click();
     await window.waitForTimeout(500);
-    await window.screenshot({ path: path.join(SCREENSHOT_DIR, "analysis-tab-1440x900.png") });
-    console.log("Screenshot: analysis-tab-1440x900.png");
+    await window.screenshot({ path: path.join(SCREENSHOT_DIR, "analysis-pane-1440x900.png") });
+    console.log("Screenshot: analysis-pane-1440x900.png");
   } catch (e) {
-    console.log("Analysis tab screenshot failed:", e.message);
+    console.log("Analysis pane screenshot failed:", e.message);
   }
 
   // Switch to adjust tab, select rgb-curves mode

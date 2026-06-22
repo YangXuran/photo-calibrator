@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from photo_calibrator.plugins import hooks
 from photo_calibrator.plugins.api import register_builtin
 
@@ -22,6 +24,19 @@ class NoopAnalyzer:
 
     def analyze(self, image: Any, **kwargs: Any) -> dict[str, Any]:
         return {"name": "noop", "metrics": {}}
+
+
+@register_builtin("calibrator")
+class NoopCalibrator:
+    """Pass-through calibrator used to validate plugin runtime wiring."""
+
+    @property
+    def calibrator_name(self) -> str:
+        return "noop"
+
+    def calibrate(self, image: Any, params: dict[str, Any]) -> np.ndarray:
+        del params
+        return np.asarray(image).copy()
 
 
 @register_builtin("ai_evaluator")

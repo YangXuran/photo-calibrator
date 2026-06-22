@@ -30,6 +30,11 @@ async function switchMode(page, mode) {
   await page.waitForTimeout(500);
 }
 
+async function openCurves(page) {
+  await page.getByTestId("inspector-tab-curves").click();
+  await expect(page.getByTestId("curve-editor")).toBeVisible({ timeout: 5000 });
+}
+
 test.describe("curve editor controls", () => {
   let servers;
 
@@ -47,8 +52,7 @@ test.describe("curve editor controls", () => {
     try {
       await page.setViewportSize({ width: 1440, height: 900 });
 
-      await switchMode(page, "rgb-curves");
-      await expect(page.getByTestId("curve-editor")).toBeVisible({ timeout: 5000 });
+      await openCurves(page);
       await expect(page.getByTestId("inspector-pane")).toBeVisible();
 
       const editorBox = await page.getByTestId("curve-editor").boundingBox();
@@ -70,8 +74,7 @@ test.describe("curve editor controls", () => {
     const sampleDir = await importTestImage(page, servers.frontendUrl);
     try {
       await page.setViewportSize({ width: 1920, height: 1080 });
-      await switchMode(page, "rgb-curves");
-      await expect(page.getByTestId("curve-editor")).toBeVisible({ timeout: 5000 });
+      await openCurves(page);
     } finally {
       removeTempDir(sampleDir);
     }
@@ -81,8 +84,7 @@ test.describe("curve editor controls", () => {
     const sampleDir = await importTestImage(page, servers.frontendUrl);
     try {
       await page.setViewportSize({ width: 1280, height: 720 });
-      await switchMode(page, "rgb-curves");
-      await expect(page.getByTestId("curve-editor")).toBeVisible({ timeout: 5000 });
+      await openCurves(page);
     } finally {
       removeTempDir(sampleDir);
     }
@@ -92,8 +94,7 @@ test.describe("curve editor controls", () => {
     const sampleDir = await importTestImage(page, servers.frontendUrl);
     try {
       await page.setViewportSize({ width: 1440, height: 900 });
-      await switchMode(page, "rgb-curves");
-      await expect(page.getByTestId("curve-editor")).toBeVisible({ timeout: 5000 });
+      await openCurves(page);
 
       const point = page.getByTestId("curve-point-r-2");
       await expect(point).toBeVisible();
@@ -119,8 +120,8 @@ test.describe("curve editor controls", () => {
 
       await page.getByTestId("mode-select").selectOption("global");
       await page.waitForTimeout(400);
-      await switchMode(page, "rgb-curves");
-      await page.waitForTimeout(400);
+      await openCurves(page);
+      await page.getByTestId("inspector-tab-session").click();
 
       await expect(page.getByTestId("history-panel")).toBeVisible({ timeout: 5000 });
       await expect(page.getByTestId("history-undo-btn")).toBeVisible();
@@ -161,16 +162,13 @@ test.describe("curve editor controls", () => {
       await switchMode(page, "lut3d");
       await page.waitForTimeout(500);
 
-      await page.getByTestId("inspector-tab-analysis").click();
-      await page.waitForTimeout(500);
-
       const expandBtn = page.getByTestId("analysis-charts-section").getByRole("button", { name: "展开" });
       if (await expandBtn.isVisible()) {
         await expandBtn.click();
         await page.waitForTimeout(300);
       }
 
-      const chart = page.getByTestId("chromaticity-chart");
+      const chart = page.getByTestId("lut-radar-chart");
       await expect(chart).toBeVisible({ timeout: 5000 });
     } finally {
       removeTempDir(sampleDir);

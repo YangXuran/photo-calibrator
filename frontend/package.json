@@ -1,6 +1,9 @@
 {
   "name": "photo-calibrator-workbench",
   "version": "0.1.0",
+  "description": "Cross-platform photo color analysis and calibration desktop app",
+  "author": "Yang Xuran",
+  "repository": "https://github.com/YangXuran/photo-calibrator",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +16,9 @@
     "typecheck": "tsc --noEmit",
     "electron": "electron electron/main.mjs",
     "electron:dev": "PHOTO_CALIBRATOR_RENDERER_MODE=dev PHOTO_CALIBRATOR_RENDERER_URL=http://127.0.0.1:5173 PHOTO_CALIBRATOR_API_BASE_URL=http://127.0.0.1:8766 electron electron/main.mjs",
-    "electron:prod": "PHOTO_CALIBRATOR_API_BASE_URL=http://127.0.0.1:8766 electron electron/main.mjs"
+    "electron:prod": "electron electron/main.mjs",
+    "package:backend:mac": "PYINSTALLER_CONFIG_DIR=../build/pyinstaller-config ../.venv/bin/pyinstaller --clean --noconfirm --distpath ../build/backend --workpath ../build/pyinstaller ../packaging/photo-calibrator-backend.spec",
+    "package:dmg:arm64": "npm run build && npm run package:backend:mac && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -26,9 +31,46 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
     "playwright": "^1.60.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   },
-  "main": "electron/main.mjs"
+  "main": "electron/main.mjs",
+  "build": {
+    "appId": "com.yangxuran.photocalibrator",
+    "productName": "Photo Calibrator",
+    "asar": true,
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/backend/photo-calibrator-backend",
+        "to": "backend"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.photography",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "../packaging/entitlements.mac.plist",
+      "entitlementsInherit": "../packaging/entitlements.mac.plist"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "sign": false
+    }
+  }
 }

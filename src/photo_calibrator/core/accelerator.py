@@ -41,16 +41,29 @@ class ImageAccelerator:
     def rgb_to_hsv(self, rgb: np.ndarray) -> np.ndarray:
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
 
+    def rgb_to_gray_u8(self, rgb: np.ndarray) -> np.ndarray:
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
     def rgb_to_lab_float(self, rgb: np.ndarray) -> np.ndarray:
         rgb_float = rgb.astype(np.float32) / 255.0
         return cv2.cvtColor(rgb_float, cv2.COLOR_RGB2Lab)
 
     def lab_to_rgb_uint8(self, lab: np.ndarray) -> np.ndarray:
-        rgb = cv2.cvtColor(lab, cv2.COLOR_Lab2RGB)
+        rgb = self.lab_to_rgb_float(lab)
         return np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+
+    def lab_to_rgb_float(self, lab: np.ndarray) -> np.ndarray:
+        return cv2.cvtColor(lab.astype(np.float32, copy=False), cv2.COLOR_Lab2RGB)
 
     def resize_area(self, img: np.ndarray, target: tuple[int, int]) -> np.ndarray:
         return cv2.resize(img, target, interpolation=cv2.INTER_AREA)
+
+    def gaussian_blur(self, img: np.ndarray, ksize: tuple[int, int], sigma: float = 0.0) -> np.ndarray:
+        return cv2.GaussianBlur(img, ksize, sigma)
+
+    def sobel_abs_mean(self, gray: np.ndarray, dx: int, dy: int, axis: int) -> np.ndarray:
+        sobel = cv2.Sobel(gray, cv2.CV_32F, dx, dy, ksize=3)
+        return np.mean(np.abs(sobel), axis=axis)
 
     def calc_hist(self, img_rgb: np.ndarray, channel: int, bins: int, mask: np.ndarray | None = None) -> np.ndarray:
         return cv2.calcHist([img_rgb], [channel], mask, [bins], [0, 256]).reshape(-1)
@@ -112,7 +125,7 @@ class ImageAccelerator:
 
 class OpenCLUMatAccelerator(ImageAccelerator):
     name = "opencl-umat"
-    accelerated_ops = ("resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram")
+    accelerated_ops = ("resize", "rgb-gray", "gaussian-blur", "sobel-profile", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram")
     cpu_fallback_ops = ("3d-lut",)
 
     def _run(self, img: np.ndarray, fn, fallback):
@@ -132,6 +145,9 @@ class OpenCLUMatAccelerator(ImageAccelerator):
     def rgb_to_hsv(self, rgb: np.ndarray) -> np.ndarray:
         return self._run(rgb, lambda umat: cv2.cvtColor(umat, cv2.COLOR_RGB2HSV), lambda: ImageAccelerator.rgb_to_hsv(self, rgb))
 
+    def rgb_to_gray_u8(self, rgb: np.ndarray) -> np.ndarray:
+        return self._run(rgb, lambda umat: cv2.cvtColor(umat, cv2.COLOR_RGB2GRAY), lambda: ImageAccelerator.rgb_to_gray_u8(self, rgb))
+
     def rgb_to_lab_float(self, rgb: np.ndarray) -> np.ndarray:
         rgb_float = rgb.astype(np.float32) / 255.0
         return self._run(
@@ -150,6 +166,21 @@ class OpenCLUMatAccelerator(ImageAccelerator):
             lambda umat: cv2.resize(umat, target, interpolation=cv2.INTER_AREA),
             lambda: ImageAccelerator.resize_area(self, img, target),
         )
+
+    def gaussian_blur(self, img: np.ndarray, ksize: tuple[int, int], sigma: float = 0.0) -> np.ndarray:
+        return self._run(
+            img,
+            lambda umat: cv2.GaussianBlur(umat, ksize, sigma),
+            lambda: ImageAccelerator.gaussian_blur(self, img, ksize, sigma),
+        )
+
+    def sobel_abs_mean(self, gray: np.ndarray, dx: int, dy: int, axis: int) -> np.ndarray:
+        sobel = self._run(
+            gray,
+            lambda umat: cv2.Sobel(umat, cv2.CV_32F, dx, dy, ksize=3),
+            lambda: cv2.Sobel(gray, cv2.CV_32F, dx, dy, ksize=3),
+        )
+        return np.mean(np.abs(sobel), axis=axis)
 
     def apply_channel_luts(self, img_rgb: np.ndarray, luts: list[np.ndarray]) -> np.ndarray:
         channels = cv2.split(img_rgb)
@@ -190,7 +221,7 @@ class TorchAccelerator(ImageAccelerator):
     kernels, while Torch handles GPU-friendly resize and per-pixel transforms.
     """
 
-    accelerated_ops = ("resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "3d-lut")
+    accelerated_ops = ("resize", "rgb-gray", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "3d-lut")
     cpu_fallback_ops = ("histogram",)
 
     def __init__(self, torch_module=None, device: str | None = None) -> None:
@@ -243,6 +274,14 @@ class TorchAccelerator(ImageAccelerator):
             return self._to_numpy(self.torch.stack([l_ch, a_ch, b_ch], dim=2)).astype(np.float32)
         except Exception:
             return ImageAccelerator.rgb_to_lab_float(self, rgb)
+
+    def rgb_to_gray_u8(self, rgb: np.ndarray) -> np.ndarray:
+        try:
+            rgb_t = self._tensor(rgb.astype(np.float32))
+            gray = rgb_t[:, :, 0] * 0.299 + rgb_t[:, :, 1] * 0.587 + rgb_t[:, :, 2] * 0.114
+            return np.clip(np.rint(self._to_numpy(gray)), 0, 255).astype(np.uint8)
+        except Exception:
+            return ImageAccelerator.rgb_to_gray_u8(self, rgb)
 
     def lab_to_rgb_uint8(self, lab: np.ndarray) -> np.ndarray:
         try:
@@ -301,6 +340,25 @@ class TorchAccelerator(ImageAccelerator):
             return out.astype(img.dtype, copy=False)
         except Exception:
             return ImageAccelerator.resize_area(self, img, target)
+
+    def gaussian_blur(self, img: np.ndarray, ksize: tuple[int, int], sigma: float = 0.0) -> np.ndarray:
+        return ImageAccelerator.gaussian_blur(self, img, ksize, sigma)
+
+    def sobel_abs_mean(self, gray: np.ndarray, dx: int, dy: int, axis: int) -> np.ndarray:
+        try:
+            src_t = self._tensor(gray.astype(np.float32))[None, None, :, :]
+            if dx == 1 and dy == 0:
+                kernel = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+            elif dx == 0 and dy == 1:
+                kernel = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
+            else:
+                return ImageAccelerator.sobel_abs_mean(self, gray, dx, dy, axis)
+            kernel_t = self._tensor(kernel)[None, None, :, :]
+            sobel = self.torch.nn.functional.conv2d(src_t, kernel_t, padding=1)
+            out = self._to_numpy(sobel[0, 0])
+            return np.mean(np.abs(out), axis=axis)
+        except Exception:
+            return ImageAccelerator.sobel_abs_mean(self, gray, dx, dy, axis)
 
     def apply_channel_luts(self, img_rgb: np.ndarray, luts: list[np.ndarray]) -> np.ndarray:
         try:
@@ -376,7 +434,7 @@ class TorchAccelerator(ImageAccelerator):
 class HybridTorchOpenCLAccelerator(ImageAccelerator):
     """Combine OpenCL image kernels with Torch per-pixel GPU transforms."""
 
-    accelerated_ops = ("resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram", "3d-lut")
+    accelerated_ops = ("resize", "rgb-gray", "gaussian-blur", "sobel-profile", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram", "3d-lut")
     cpu_fallback_ops: tuple[str, ...] = ()
 
     def __init__(self, torch_accelerator: TorchAccelerator, opencl_accelerator: OpenCLUMatAccelerator | None = None) -> None:
@@ -394,6 +452,9 @@ class HybridTorchOpenCLAccelerator(ImageAccelerator):
     def rgb_to_hsv(self, rgb: np.ndarray) -> np.ndarray:
         return self.opencl_accelerator.rgb_to_hsv(rgb)
 
+    def rgb_to_gray_u8(self, rgb: np.ndarray) -> np.ndarray:
+        return self.opencl_accelerator.rgb_to_gray_u8(rgb)
+
     def rgb_to_lab_float(self, rgb: np.ndarray) -> np.ndarray:
         return self.opencl_accelerator.rgb_to_lab_float(rgb)
 
@@ -402,6 +463,12 @@ class HybridTorchOpenCLAccelerator(ImageAccelerator):
 
     def resize_area(self, img: np.ndarray, target: tuple[int, int]) -> np.ndarray:
         return self.opencl_accelerator.resize_area(img, target)
+
+    def gaussian_blur(self, img: np.ndarray, ksize: tuple[int, int], sigma: float = 0.0) -> np.ndarray:
+        return self.opencl_accelerator.gaussian_blur(img, ksize, sigma)
+
+    def sobel_abs_mean(self, gray: np.ndarray, dx: int, dy: int, axis: int) -> np.ndarray:
+        return self.opencl_accelerator.sobel_abs_mean(gray, dx, dy, axis)
 
     def calc_hist(self, img_rgb: np.ndarray, channel: int, bins: int, mask: np.ndarray | None = None) -> np.ndarray:
         return self.opencl_accelerator.calc_hist(img_rgb, channel, bins, mask)

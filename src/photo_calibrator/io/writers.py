@@ -92,8 +92,23 @@ def export_tiff16(buf: ImageBuffer, path: str | Path) -> None:
             raise OSError(f"Failed to write 16-bit TIFF: {path}")
 
 
-def write_image(buf: ImageBuffer, path: str | Path, quality: int = 92) -> None:
+def write_image(
+    buf: ImageBuffer,
+    path: str | Path,
+    quality: int = 92,
+    *,
+    embed_icc: bool = True,
+    preserve_metadata: bool = True,
+    transform: str = "auto",
+    export_profile=None,
+    user_profile_path: str | Path | None = None,
+    ocio_config_path: str | Path | None = None,
+    ocio_display_space: str = "sRGB - Display",
+    ocio_scene_linear_space: str = "scene_linear",
+) -> None:
     """Write ImageBuffer to disk, auto-selecting format by extension."""
+    del embed_icc, preserve_metadata, transform, export_profile, user_profile_path
+    del ocio_config_path, ocio_display_space, ocio_scene_linear_space
     suffix = Path(path).suffix.lower()
     if suffix in {".jpg", ".jpeg"}:
         export_jpeg(buf, path, quality)
@@ -108,5 +123,13 @@ def write_image(buf: ImageBuffer, path: str | Path, quality: int = 92) -> None:
             rgb = _to_uint8(buf.data)
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
             cv2.imwrite(str(path), bgr)
+    elif suffix in {".exr", ".hdr", ".rgbe"}:
+        from photo_calibrator.io.oiio import oiio_write
+
+        data = buf.data.astype(np.float32, copy=False)
+        if np.issubdtype(buf.data.dtype, np.integer):
+            data = data / float(np.iinfo(buf.data.dtype).max)
+        if not oiio_write(data, path):
+            raise OSError(f"Failed to write HDR image: {path}")
     else:
         raise ValueError(f"Unsupported export format: {suffix}")

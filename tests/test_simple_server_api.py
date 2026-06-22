@@ -32,6 +32,7 @@ from photo_calibrator.backend.simple_server import (
     _calibrate_paths_payload,
     _calibrate_session_payload,
     _decode_data_url,
+    _export_payload,
     _film_scan_payload,
     _plugins_payload,
     _plugin_analyze_payload,
@@ -40,16 +41,34 @@ from photo_calibrator.backend.simple_server import (
     _prepare_uploaded_image,
     _session_load_payload,
     _session_save_payload,
+    _workspace_open_payload,
+    _history_commit_payload,
+    _history_move_payload,
 )
 
 
 BACKEND_NAMES = {"cpu-opencv", "opencl-umat", "torch-cuda", "torch-mps", "hybrid-opencl-cuda", "hybrid-opencl-mps"}
 
 
+def assert_preview_url(value: str) -> None:
+    assert value.startswith("http://127.0.0.1:")
+    assert "/api/preview-image/" in value
+
+
 def sample_data_url() -> str:
     img = np.zeros((48, 48, 3), dtype=np.uint8)
     img[:, :] = (120, 130, 160)
     img[8:40, 8:40] = (178, 132, 104)
+    ok, encoded = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    assert ok
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def sample_data_url_size(width: int, height: int) -> str:
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    img[:, :] = (120, 130, 160)
+    img[max(1, height // 4) : max(2, (height * 3) // 4), max(1, width // 4) : max(2, (width * 3) // 4)] = (178, 132, 104)
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     assert ok
     payload = base64.b64encode(encoded.tobytes()).decode("ascii")
@@ -110,8 +129,8 @@ def test_calibrate_payload_returns_metrics_and_preview_image() -> None:
         }
     )
 
-    assert payload["calibrated_image"].startswith("data:image/jpeg;base64,")
-    assert payload["original_preview"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["calibrated_image"])
+    assert_preview_url(payload["original_preview"])
     assert payload["input"]["lab"]["strength"] >= payload["output"]["lab"]["strength"]
     assert "global" in payload["input"]["zones"]
     assert payload["charts"]["rgb_histogram"]["bins"] == 256
@@ -156,7 +175,7 @@ def test_preview_payload_returns_session_and_preview_image() -> None:
     )
 
     assert payload["session_id"]
-    assert payload["original_preview"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["original_preview"])
     assert payload["processing"]["analysis_width"] <= 240
     assert payload["processing"]["preview_source"]
 
@@ -533,8 +552,8 @@ def test_calibrate_payload_accepts_tiff_data_url() -> None:
     )
 
     assert payload["input"]["width"] == 48
-    assert payload["original_preview"].startswith("data:image/jpeg;base64,")
-    assert payload["calibrated_image"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["original_preview"])
+    assert_preview_url(payload["calibrated_image"])
 
 
 def test_film_scan_payload_returns_normalized_crop_rect() -> None:
@@ -554,6 +573,10 @@ def test_film_scan_payload_returns_normalized_crop_rect() -> None:
     assert 0.0 <= payload["crop_rect"]["top"] <= 1.0
     assert 0.1 <= payload["crop_rect"]["width"] <= 1.0
     assert 0.1 <= payload["crop_rect"]["height"] <= 1.0
+    debug = payload["film_scan"]["debug"]
+    assert debug["safe_inset"]["x"] > 0
+    assert debug["safe_inset"]["y"] > 0
+    assert debug["selected_crop"]["left"] > debug["detected_crop"]["left"]
 
 
 def test_film_scan_payload_reuses_existing_session() -> None:
@@ -569,6 +592,100 @@ def test_film_scan_payload_reuses_existing_session() -> None:
 
     assert payload["session_id"] == calibration["session_id"]
     assert payload["processing"]["analysis_width"] == calibration["processing"]["analysis_width"]
+
+
+def test_calibrate_and_export_apply_crop_rect() -> None:
+    calibration = _calibrate_payload(
+        {
+            "image_data": sample_data_url(),
+            "file_name": "crop-source.png",
+            "mode": "global",
+            "strength": 0.8,
+            "crop_rect": {"left": 0.25, "top": 0.25, "width": 0.5, "height": 0.5},
+        }
+    )
+
+    assert calibration["output"]["width"] == 24
+    assert calibration["output"]["height"] == 24
+    assert calibration["processing"]["crop_applied"] is True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = Path(tmp) / "cropped.png"
+        payload = _export_payload(
+            {
+                "image_data": sample_data_url(),
+                "file_name": "crop-source.png",
+                "output_path": str(output_path),
+                "format": "png",
+                "mode": "global",
+                "strength": 0.8,
+                "crop_rect": {"left": 0.25, "top": 0.25, "width": 0.5, "height": 0.5},
+            }
+        )
+        exported = cv2.imread(payload["path"], cv2.IMREAD_UNCHANGED)
+
+    assert exported is not None
+    assert exported.shape[:2] == (24, 24)
+
+
+def test_calibrate_and_export_apply_image_transform() -> None:
+    calibration = _calibrate_payload(
+        {
+            "image_data": sample_data_url_size(width=64, height=32),
+            "file_name": "rotate-source.png",
+            "mode": "global",
+            "strength": 0.8,
+            "image_transform": {"rotation": 90, "flipH": True, "flipV": False},
+        }
+    )
+
+    assert calibration["output"]["width"] == 32
+    assert calibration["output"]["height"] == 64
+    assert calibration["processing"]["image_transform_applied"] is True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = Path(tmp) / "rotated.png"
+        payload = _export_payload(
+            {
+                "image_data": sample_data_url_size(width=64, height=32),
+                "file_name": "rotate-source.png",
+                "output_path": str(output_path),
+                "format": "png",
+                "mode": "global",
+                "strength": 0.8,
+                "image_transform": {"rotation": 90, "flipH": True, "flipV": False},
+            }
+        )
+        exported = cv2.imread(payload["path"], cv2.IMREAD_UNCHANGED)
+
+    assert exported is not None
+    assert exported.shape[:2] == (64, 32)
+
+
+def test_crop_region_rotates_with_image_in_preview_and_export() -> None:
+    body = {
+        "image_data": sample_data_url_size(width=80, height=40),
+        "file_name": "crop-then-rotate.png",
+        "mode": "global",
+        "strength": 0.8,
+        "crop_rect": {"left": 0.25, "top": 0.25, "width": 0.5, "height": 0.25},
+        "image_transform": {"rotation": 90, "flipH": False, "flipV": False},
+    }
+
+    calibration = _calibrate_payload(body)
+
+    assert calibration["output"]["width"] == 10
+    assert calibration["output"]["height"] == 40
+    assert calibration["processing"]["crop_applied"] is True
+    assert calibration["processing"]["image_transform_applied"] is True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = Path(tmp) / "crop-then-rotate.png"
+        payload = _export_payload({**body, "output_path": str(output_path), "format": "png"})
+        exported = cv2.imread(payload["path"], cv2.IMREAD_UNCHANGED)
+
+    assert exported is not None
+    assert exported.shape[:2] == (40, 10)
 
 
 def test_calibrate_payload_supports_plugin_reader(monkeypatch) -> None:
@@ -688,7 +805,7 @@ def test_calibrate_batch_payload_processes_uploaded_images_in_parallel() -> None
 
     assert payload["workers"] == 2
     assert len(payload["results"]) == 2
-    assert all(result["calibrated_image"].startswith("data:image/jpeg;base64,") for result in payload["results"])
+    assert all("/api/preview-image/" in result["calibrated_image"] for result in payload["results"])
     assert payload["results"][0]["processing"]["cache_key"].endswith(":a.png:80")
     assert payload["results"][1]["processing"]["cache_key"].endswith(":b.tif:80")
 
@@ -737,7 +854,7 @@ def test_calibrate_batch_http_route_processes_uploaded_images() -> None:
         thread.join(timeout=5)
 
     assert payload["workers"] == 1
-    assert payload["results"][0]["calibrated_image"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["results"][0]["calibrated_image"])
 
 
 def test_calibrate_payload_downsamples_large_input_for_analysis() -> None:
@@ -811,7 +928,7 @@ def test_calibrate_path_payload_accepts_local_tiff_path(tmp_path) -> None:
     payload = _calibrate_path_payload({"path": str(path), "analysis_max_side": 80})
 
     assert payload["processing"]["analysis_width"] == 80
-    assert payload["original_preview"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["original_preview"])
 
 
 def test_calibrate_paths_payload_processes_multiple_files(tmp_path) -> None:
@@ -827,7 +944,7 @@ def test_calibrate_paths_payload_processes_multiple_files(tmp_path) -> None:
 
     assert payload["workers"] == 2
     assert len(payload["results"]) == 2
-    assert all(result["calibrated_image"].startswith("data:image/jpeg;base64,") for result in payload["results"])
+    assert all("/api/preview-image/" in result["calibrated_image"] for result in payload["results"])
 
 
 def test_parallel_duplicate_paths_share_single_analysis_build(tmp_path, monkeypatch) -> None:
@@ -1496,7 +1613,7 @@ def test_document_render_payload_replays_current_document() -> None:
     )
     payload = _document_render_payload({"session_id": calibration["session_id"]})
     assert payload["ok"] is True
-    assert payload["calibrated_image"].startswith("data:image/jpeg;base64,")
+    assert_preview_url(payload["calibrated_image"])
     assert payload["processing"]["document_replayable_ops"] >= 1
 
 
@@ -1924,3 +2041,41 @@ def test_params_from_body_invalid_curve_returns_none() -> None:
 
     params2 = _calibration_params_from_body({"mode": "rgb-curves", "r_curve": [[1, 2, 3]]})
     assert params2.r_curve is None
+
+
+def test_workspace_open_restores_committed_state_and_invalidates_modified_file(tmp_path: Path) -> None:
+    image_path = tmp_path / "photo.png"
+    image = np.full((32, 32, 3), (160, 130, 100), dtype=np.uint8)
+    assert cv2.imwrite(str(image_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+    first_open = _workspace_open_payload({"workspace_root": str(tmp_path), "paths": [str(image_path)]})
+    assert first_open["files"][0]["status"] == "fresh"
+
+    calibration = _calibrate_payload({"path": str(image_path), "mode": "global", "strength": 0.7})
+    before_state = {"mode": "global", "strength": 0.8, "accelerator": "auto", "curves": {"l": [[0, 0], [255, 255]], "r": [[0, 0], [255, 255]], "g": [[0, 0], [255, 255]], "b": [[0, 0], [255, 255]]}}
+    after_state = {**before_state, "strength": 0.7, "runtimeSessionId": calibration["session_id"]}
+    committed = _history_commit_payload({
+        "workspace_root": str(tmp_path),
+        "source_path": str(image_path),
+        "persistent_session_id": "workspace-photo",
+        "description": "strength",
+        "action_type": "strength",
+        "before_state": before_state,
+        "after_state": after_state,
+        "calibrated_image": calibration["calibrated_image"],
+    })
+    assert committed["history_cursor"] == 0
+
+    restored = _workspace_open_payload({"workspace_root": str(tmp_path), "paths": [str(image_path)]})["files"][0]
+    assert restored["status"] == "restored"
+    assert restored["state"]["strength"] == 0.7
+    assert restored["calibrated_image"].startswith("data:image/jpeg;base64,")
+
+    undone = _history_move_payload({"workspace_root": str(tmp_path), "persistent_session_id": "workspace-photo"}, -1)
+    assert undone["state"]["strength"] == 0.8
+
+    time.sleep(0.01)
+    image_path.write_bytes(image_path.read_bytes() + b"changed")
+    modified = _workspace_open_payload({"workspace_root": str(tmp_path), "paths": [str(image_path)]})["files"][0]
+    assert modified["status"] == "modified"
+    assert "state" not in modified

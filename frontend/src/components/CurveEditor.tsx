@@ -151,7 +151,6 @@ function histogramFillPath(data: number[], maxVal: number): string {
 export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEditorProps) {
   const [visibleChannels, setVisibleChannels] = useState<Record<ChannelKey, boolean>>({ r: true, g: true, b: true, l: false });
   const [selected, setSelected] = useState<{ channel: ChannelKey; index: number } | null>(null);
-  const [dragTooltip, setDragTooltip] = useState<{ x: number; y: number; value: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const curvesRef = useRef(curves);
   curvesRef.current = curves;
@@ -175,8 +174,7 @@ export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEdi
     const move = (pointerEvent: PointerEvent) => {
       const point = resolveDataPoint(pointerEvent.clientX, pointerEvent.clientY);
       if (!point) return;
-      const { dataX, dataY, displayX, displayY } = point;
-      setDragTooltip({ x: displayX, y: displayY, value: dataY });
+      const { dataX, dataY } = point;
       setSelected({ channel, index });
       const currentCurve = curvesRef.current[channel];
       if (!currentCurve) return;
@@ -185,7 +183,6 @@ export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEdi
     };
 
     const stop = () => {
-      setDragTooltip(null);
       window.removeEventListener("pointermove", move);
       onChangeRef.current({ ...curvesRef.current }, { interaction: "commit" });
     };
@@ -345,15 +342,6 @@ export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEdi
               })
             : null,
         )}
-
-        {dragTooltip ? (
-          <g className="pc-curve-tooltip">
-            <rect x={clamp(dragTooltip.x - 20, 0, SIZE - 40)} y={clamp(dragTooltip.y - 28, 0, SIZE - 22)} width="40" height="18" rx="4" />
-            <text x={clamp(dragTooltip.x, 20, SIZE - 20)} y={clamp(dragTooltip.y - 15, 13, SIZE - 9)} textAnchor="middle">
-              {dragTooltip.value}
-            </text>
-          </g>
-        ) : null}
       </svg>
     </div>
   );

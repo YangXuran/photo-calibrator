@@ -12,11 +12,6 @@ const INSPECTOR_TAB_META: Record<InspectorTab, TabMeta> = {
     meta: "基础校准参数",
     icon: svg('<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'),
   },
-  color: {
-    title: "Color",
-    meta: "色彩平衡与白平衡",
-    icon: svg('<circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 7 17H5A10 10 0 0 1 12 2z"/><path d="M12 2v20"/>'),
-  },
   curves: {
     title: "Curves",
     meta: "RGB 曲线与色调映射",
@@ -26,11 +21,6 @@ const INSPECTOR_TAB_META: Record<InspectorTab, TabMeta> = {
     title: "Compose",
     meta: "裁切、旋转与透视",
     icon: svg('<rect x="6" y="4" width="12" height="16" rx="2"/><path d="M3 3v18M21 3v18"/>'),
-  },
-  analysis: {
-    title: "Analysis",
-    meta: "指标、图表与分区数据",
-    icon: svg('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
   },
   ai: {
     title: "AI",

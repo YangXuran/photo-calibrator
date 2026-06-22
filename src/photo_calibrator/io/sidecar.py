@@ -16,6 +16,9 @@ def write_sidecar_json(
     calibration_params: dict[str, Any],
     algorithm_version: str = SIDECAR_VERSION,
     input_metadata: dict[str, Any] | None = None,
+    ai_evaluations: dict[str, Any] | None = None,
+    session_metadata: dict[str, Any] | None = None,
+    export_settings: dict[str, Any] | None = None,
 ) -> None:
     """Write calibration sidecar JSON file."""
     path = Path(path)
@@ -27,6 +30,12 @@ def write_sidecar_json(
     }
     if input_metadata:
         doc["input_metadata"] = input_metadata
+    if ai_evaluations:
+        doc["ai_evaluations"] = ai_evaluations
+    if session_metadata:
+        doc["session_metadata"] = session_metadata
+    if export_settings:
+        doc["export_settings"] = export_settings
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")

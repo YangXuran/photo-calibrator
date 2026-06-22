@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { AnalysisPane } from "./AnalysisPane";
 import { InspectorPane } from "./InspectorPane";
-import { LibraryPane } from "./LibraryPane";
 import { ThreePaneWorkbenchLayout } from "./ThreePaneWorkbenchLayout";
 import { ViewerPane } from "./ViewerPane";
 import { getWorkbenchViewerSources } from "./workbenchSources";
@@ -22,9 +22,9 @@ export function WorkbenchLayout({ workbench }: WorkbenchLayoutProps) {
     <ThreePaneWorkbenchLayout
       center={<ViewerPane calibratedSrc={calibratedSrc} onContainerResize={workbench.setStageContainerSize} originalSrc={originalSrc} workbench={workbench} />}
       layoutKey="unified"
-      left={<LibraryPane workbench={workbench} />}
+      left={<AnalysisPane workbench={workbench} />}
       right={<InspectorPane workbench={workbench} />}
-      showLeft={workbench.layoutState.showLibraryPane}
+      showLeft={workbench.layoutState.showAnalysisPane}
       showRight={workbench.layoutState.showInspectorPane}
     />
   );

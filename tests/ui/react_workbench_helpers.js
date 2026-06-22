@@ -6,6 +6,11 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
 const TINY_PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sZqDbgAAAAASUVORK5CYII=";
+const VENV_PYTHON = path.join(process.cwd(), ".venv", "bin", "python");
+
+function pythonCommand() {
+  return fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : "python3";
+}
 
 function makeImage(filePath, rgb) {
   const script = `
@@ -22,7 +27,7 @@ else:
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 cv2.imwrite(path, img)
 `;
-  const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+  const result = spawnSync(pythonCommand(), ["-c", script], { encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(result.stderr);
   }
@@ -51,7 +56,7 @@ async function fulfillJsonAfterDelay(route, payload, delay = 300) {
 }
 
 function startBackend(port) {
-  return spawn("python3", ["-m", "photo_calibrator.backend.simple_server", "--port", String(port)], {
+  return spawn(pythonCommand(), ["-m", "photo_calibrator.backend.simple_server", "--port", String(port)], {
     cwd: process.cwd(),
     env: { ...process.env, PYTHONPATH: path.join(process.cwd(), "src") },
     stdio: "pipe",

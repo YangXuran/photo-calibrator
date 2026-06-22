@@ -25,6 +25,7 @@ class CalibrationMode(str, Enum):
     LUT3D = "lut3d"
     SELECTIVE = "selective"
     FILM = "film"
+    NEGATIVE_FILM = "negative-film"
 
 
 @dataclass(frozen=True)
@@ -540,6 +541,61 @@ def calibrate_film(
     return preserve_luminance(img_rgb, selective, amount=0.7)
 
 
+def calibrate_negative_film(
+    img_rgb: np.ndarray,
+    strength: float = DEFAULT_STRENGTH,
+) -> np.ndarray:
+    """Convert a color negative into a positive image and refine its balance.
+
+    The pipeline is intentionally simple and robust:
+    1. invert the negative,
+    2. auto-level each channel to suppress the film base/orange mask,
+    3. apply a mild positive-film correction stack.
+    """
+
+    src, dtype, scale = _working_rgb(img_rgb)
+    height, width = src.shape[:2]
+    margin = max(16, min(height, width) // 20)
+    strips = np.concatenate(
+        [
+            src[:margin, :, :].reshape(-1, 3),
+            src[-margin:, :, :].reshape(-1, 3),
+            src[:, :margin, :].reshape(-1, 3),
+            src[:, -margin:, :].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    strip_luminance = strips.mean(axis=1)
+    film_base = strips[strip_luminance >= np.percentile(strip_luminance, 85)].mean(axis=0).astype(np.float32)
+    normalized = np.clip(src / np.maximum(film_base.reshape(1, 1, 3), 1e-4), 0.0, 1.0)
+    positive = np.clip(1.0 - normalized, 0.0, 1.0)
+
+    low = np.percentile(positive, 0.5, axis=(0, 1)).astype(np.float32)
+    high = np.percentile(positive, 99.5, axis=(0, 1)).astype(np.float32)
+    span = np.maximum(high - low, 1e-4)
+    leveled = np.clip((positive - low.reshape(1, 1, 3)) / span.reshape(1, 1, 3), 0.0, 1.0)
+
+    luminance = np.percentile(leveled, 85, axis=2)
+    highlight_mask = luminance >= np.percentile(luminance, 60)
+    if int(highlight_mask.sum()) >= 256:
+        means = leveled[highlight_mask].mean(axis=0)
+    else:
+        means = leveled.reshape(-1, 3).mean(axis=0)
+    target = float(np.median(means))
+    gains = np.clip(target / np.maximum(means, 1e-4), 0.7, 1.6).astype(np.float32)
+    balanced = np.clip(leveled * gains.reshape(1, 1, 3), 0.0, 1.0)
+
+    mid = float(np.percentile(balanced.mean(axis=2), 50))
+    if 0.05 < mid < 0.95:
+        gamma = float(np.clip(np.log(0.45) / np.log(max(mid, 1e-4)), 0.85, 1.2))
+        balanced = np.power(np.clip(balanced, 0.0, 1.0), 1.0 / gamma).astype(np.float32)
+
+    balanced_img = _restore_dtype(balanced, dtype, scale)
+    matrixed = apply_color_matrix(balanced_img, strength=min(0.22, 0.08 + strength * 0.1))
+    zoned = calibrate_tone_zone(matrixed, strength=min(0.18, 0.06 + strength * 0.08))
+    return preserve_luminance(balanced_img, zoned, amount=0.1)
+
+
 def make_comparison(original: np.ndarray, calibrated: np.ndarray) -> np.ndarray:
     original_u8 = ensure_uint8_rgb(original)
     calibrated_u8 = ensure_uint8_rgb(calibrated)
@@ -616,6 +672,8 @@ def calibrate_image_from_analysis(
             calibrated_working = calibrate_selective(working_img, params.strength)
         elif params.mode == CalibrationMode.FILM:
             calibrated_working = calibrate_film(working_img, params.strength)
+        elif params.mode == CalibrationMode.NEGATIVE_FILM:
+            calibrated_working = calibrate_negative_film(working_img, params.strength)
         else:
             calibrated_working = working_img.copy()
     elif params.mode == CalibrationMode.GLOBAL:
@@ -660,6 +718,8 @@ def calibrate_image_from_analysis(
         calibrated_working = calibrate_selective(working_img, params.strength)
     elif params.mode == CalibrationMode.FILM:
         calibrated_working = calibrate_film(working_img, params.strength)
+    elif params.mode == CalibrationMode.NEGATIVE_FILM:
+        calibrated_working = calibrate_negative_film(working_img, params.strength)
     else:
         raise ValueError(f"Unsupported calibration mode: {params.mode}")
 

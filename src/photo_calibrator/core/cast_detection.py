@@ -83,12 +83,38 @@ class CastReport:
         return max(means) - min(means)
 
 
-def ensure_uint8_rgb(img_rgb: np.ndarray) -> np.ndarray:
+def ensure_rgb_image(img_rgb: np.ndarray) -> np.ndarray:
     if img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
         raise ValueError("Expected an HxWx3 RGB image")
-    if img_rgb.dtype != np.uint8:
-        raise ValueError("Phase 1 core expects uint8 RGB images")
+    if not (
+        np.issubdtype(img_rgb.dtype, np.integer)
+        or np.issubdtype(img_rgb.dtype, np.floating)
+    ):
+        raise ValueError("Expected an integer or floating-point RGB image")
     return img_rgb
+
+
+def ensure_uint8_rgb(img_rgb: np.ndarray) -> np.ndarray:
+    """Return an uint8 RGB analysis view without changing the source array."""
+
+    img_rgb = ensure_rgb_image(img_rgb)
+    if img_rgb.dtype == np.uint8:
+        return img_rgb
+    if np.issubdtype(img_rgb.dtype, np.integer):
+        info = np.iinfo(img_rgb.dtype)
+        scale = float(info.max) if info.max > 0 else 1.0
+        normalized = img_rgb.astype(np.float32) / scale
+    else:
+        normalized = np.nan_to_num(
+            img_rgb.astype(np.float32, copy=False),
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+        )
+        max_value = float(normalized.max()) if normalized.size else 1.0
+        if max_value > 1.0:
+            normalized = normalized / max_value
+    return np.clip(np.rint(normalized * 255.0), 0, 255).astype(np.uint8)
 
 
 def rgb_to_lab_float(img_rgb: np.ndarray) -> np.ndarray:
@@ -150,16 +176,24 @@ def _find_haarcascade(filename: str) -> str:
     """Locate a Haar cascade XML file across different OpenCV distributions.
 
     - pip opencv-python: cv2.data.haarcascades + filename
-    - Fedora system package: /usr/share/opencv4/haarcascades/ + filename
+    - Homebrew/macOS: /opt/homebrew or /usr/local OpenCV share paths
+    - Fedora/Debian system package: /usr/share/opencv4/haarcascades/ + filename
     - Fallback: search common paths.
     """
+    import os
+
     # pip-installed opencv-python
     if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
-        return cv2.data.haarcascades + filename
+        candidate = os.path.join(cv2.data.haarcascades, filename)
+        if os.path.isfile(candidate):
+            return candidate
 
-    # Fedora / Debian system packages
-    import os
+    # Homebrew / Fedora / Debian system packages
     system_paths = [
+        "/opt/homebrew/opt/opencv/share/opencv4/haarcascades",
+        "/opt/homebrew/share/opencv4/haarcascades",
+        "/usr/local/opt/opencv/share/opencv4/haarcascades",
+        "/usr/local/share/opencv4/haarcascades",
         "/usr/share/opencv4/haarcascades",
         "/usr/share/opencv/haarcascades",
     ]
