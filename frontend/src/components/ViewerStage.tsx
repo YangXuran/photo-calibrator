@@ -143,7 +143,6 @@ export function ViewerStage({
           cropEditable={cropEditable}
           cropDiagnostics={cropDiagnostics}
           cropRect={cropRect}
-          loading={loading}
           onContainerResize={onContainerResize}
           onCropChange={onCropChange}
           originalSrc={original}
@@ -163,7 +162,7 @@ export function ViewerStage({
     return (
       <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
         {hud}
-        <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} loading={loading} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+        <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         {renderCurvePreviewOverlay()}
       </ViewerStageSurface>
     );
@@ -173,14 +172,14 @@ export function ViewerStage({
     <ViewerStageCompareBoard
       calibratedStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={calibratedStageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} loading={loading} onContainerResize={onContainerResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
           {renderCurvePreviewOverlay()}
         </ViewerStageSurface>
       }
       hud={hud}
       originalStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Original" imageKey={imageKey} imageSrc={original} loading={loading} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Original" imageKey={imageKey} imageSrc={original} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         </ViewerStageSurface>
       }
     />

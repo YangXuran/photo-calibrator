@@ -29,7 +29,6 @@ type ViewerStageSplitSceneProps = {
   cropDiagnostics?: CropDiagnostics;
   cropRect?: CropRect;
   imageKey?: string;
-  loading?: boolean;
   onContainerResize?: (size: ContainerSize) => void;
   onCropChange?: (cropRect: CropRect, options?: { interaction?: "drag" | "commit" }) => void;
   onSettledCalibratedImage?: () => void;
@@ -41,7 +40,7 @@ type ViewerStageSplitSceneProps = {
 };
 
 export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
-  calibratedPreviewBitmap, calibratedSrc, children, cropDiagnostics, cropEditable, cropRect, imageKey, loading = false,
+  calibratedPreviewBitmap, calibratedSrc, children, cropDiagnostics, cropEditable, cropRect, imageKey,
   onContainerResize, onCropChange, onSettledCalibratedImage, originalSrc, panOffset, splitPosition, zoomMode, zoomScale,
 }: ViewerStageSplitSceneProps) {
   const [displayPair, setDisplayPair] = useState<LoadedImagePair | null>(null);
@@ -69,10 +68,6 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
       });
   }, [calibratedPreviewBitmap, calibratedSrc, imageKey, onSettledCalibratedImage, originalSrc]);
 
-  const showLoading = loading || (!displayPair && !imageError);
-  const loadingStyle = {
-    "--pc-stage-loading-scale": String(zoomMode === "manual" ? 1 / zoomScale : 1),
-  } as CSSProperties;
   const handleResize = (size: ContainerSize) => {
     setContainerSize(size);
     onContainerResize?.(size);
@@ -92,14 +87,6 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
 
   return (
     <ViewerStageMedia onContainerResize={handleResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale}>
-      {showLoading ? (
-        <div className="pc-stage-loading" style={loadingStyle}>
-          <div className="pc-stage-loading-content">
-            <span className="pc-spinner" />
-            <span className="pc-stage-loading-label">Loading preview…</span>
-          </div>
-        </div>
-      ) : null}
       <div className="pc-stage-image-frame" style={frameStyle}>
         {displayPair ? (
           <img alt="Calibrated" className="pc-stage-image" src={displayPair.calibratedSrc} onError={() => setImageError(true)} />

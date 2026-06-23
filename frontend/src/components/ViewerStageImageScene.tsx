@@ -13,7 +13,6 @@ type ViewerStageImageSceneProps = {
   imageAlt: string;
   imageKey?: string;
   imageSrc: string;
-  loading?: boolean;
   onContainerResize?: (size: ContainerSize) => void;
   onCropChange?: (cropRect: CropRect, options?: { interaction?: "drag" | "commit" }) => void;
   onSettledPreviewImage?: () => void;
@@ -24,7 +23,7 @@ type ViewerStageImageSceneProps = {
 };
 
 export const ViewerStageImageScene = memo(function ViewerStageImageScene({
-  cropDiagnostics, cropEditable, cropRect, imageAlt, imageSrc, loading = false,
+  cropDiagnostics, cropEditable, cropRect, imageAlt, imageSrc,
   imageKey, onContainerResize, onCropChange, onSettledPreviewImage, panOffset, previewBitmap, zoomMode, zoomScale,
 }: ViewerStageImageSceneProps) {
   const [displaySrc, setDisplaySrc] = useState(imageSrc);
@@ -63,10 +62,6 @@ export const ViewerStageImageScene = memo(function ViewerStageImageScene({
   }, [imageKey, imageSrc, onSettledPreviewImage, previewBitmap]);
 
   const showImage = !!displaySrc && !imageError;
-  const showLoading = loading;
-  const loadingStyle = {
-    "--pc-stage-loading-scale": String(zoomMode === "manual" ? 1 / zoomScale : 1),
-  } as CSSProperties;
   const handleResize = (size: ContainerSize) => {
     setContainerSize(size);
     onContainerResize?.(size);
@@ -84,14 +79,6 @@ export const ViewerStageImageScene = memo(function ViewerStageImageScene({
   }, [containerSize, naturalSize, zoomMode]);
   return (
     <ViewerStageMedia onContainerResize={handleResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale}>
-      {showLoading ? (
-        <div className="pc-stage-loading" style={loadingStyle}>
-          <div className="pc-stage-loading-content">
-            <span className="pc-spinner" />
-            <span className="pc-stage-loading-label">Loading preview…</span>
-          </div>
-        </div>
-      ) : null}
       <div className="pc-stage-image-frame" style={frameStyle}>
         {showImage ? (
           <img alt={imageAlt} className="pc-stage-image" src={displaySrc} onError={() => setImageError(true)} />
