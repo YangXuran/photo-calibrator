@@ -249,6 +249,7 @@ test.describe("electron desktop e2e", () => {
       await window.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await window.mouse.down();
       await window.mouse.move(box.x + box.width - 8, box.y + box.height / 2, { steps: 5 });
+      await expect(window.locator(".pc-stage-loading")).toHaveCount(0);
       await window.waitForFunction((previous) => {
         const img = Array.from(document.querySelectorAll("img"))
           .find((node) => node.getAttribute("alt") === "Calibrated");

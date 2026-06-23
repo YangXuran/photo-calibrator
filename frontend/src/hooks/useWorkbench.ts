@@ -1167,6 +1167,7 @@ export function useWorkbench() {
     const modeChanged = prev.mode !== mode;
     const negativeBaseChanged = prev.negativeBaseEnabled !== negativeBaseEnabled;
     const lookChanged = prev.lookSignature !== lookSignature;
+    const lookOnlyChanged = lookChanged && !fileChanged && !modeChanged && !negativeBaseChanged && prev.strength === strength;
     const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || lookChanged || prev.strength !== strength;
     prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength, lookSignature };
     debugLog("calib.effect", { fileId: selectedFile?.id?.substring(0, 20), fileChanged: fileOrParamsChanged, mode, strength });
@@ -1183,7 +1184,7 @@ export function useWorkbench() {
     const currentRequest = ++requestRef.current;
     const run = async () => {
       perfMark("run.start");
-      if (fileOrParamsChanged) setLoading(true);
+      if (fileOrParamsChanged && !lookOnlyChanged) setLoading(true);
       setActionState("calibration", "running", selectedFile.name);
       try {
         let payload: CalibrationPayload;
@@ -1293,14 +1294,14 @@ export function useWorkbench() {
           notify("error", "Calibration failed", String(error));
         }
       } finally {
-        if (fileOrParamsChanged) setLoading(false);
+        if (fileOrParamsChanged && !lookOnlyChanged) setLoading(false);
       }
     };
     const timer = window.setTimeout(run, debounceMs);
     return () => {
       window.clearTimeout(timer);
       calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
-      if (fileOrParamsChanged) setLoading(false);
+      if (fileOrParamsChanged && !lookOnlyChanged) setLoading(false);
     };
   }, [
     selectedFile?.id,
