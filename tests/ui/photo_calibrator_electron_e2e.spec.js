@@ -220,6 +220,50 @@ test.describe("electron desktop e2e", () => {
     }
   });
 
+  test("updates preview while dragging look wheel and resets on double click", async () => {
+    const backendPort = await getFreePort();
+    const backend = startBackend(backendPort);
+    await waitForUrl(`http://127.0.0.1:${backendPort}/api/health`, (r) => r.ok);
+    const electronApp = await launchElectron(backendPort);
+
+    try {
+      const window = await electronApp.firstWindow();
+      await window.waitForLoadState("domcontentloaded");
+      await expect(window.getByTestId("app-shell")).toBeVisible({ timeout: 15000 });
+      await importPhotos(electronApp, [TEST_PHOTOS[0]]);
+      await expect(window.getByTestId("filmstrip-item")).toHaveCount(1, { timeout: 30000 });
+      await expect(window.getByTestId("viewer-status-state")).toContainText(/Calibrated|Prepared|Imported/, { timeout: 30000 });
+
+      const initialSrc = await window.waitForFunction(() => {
+        const img = Array.from(document.querySelectorAll("img"))
+          .find((node) => node.getAttribute("alt") === "Calibrated");
+        return img instanceof HTMLImageElement && img.src ? img.src : null;
+      }, null, { timeout: 30000 });
+      const beforeSrc = await initialSrc.jsonValue();
+
+      await window.getByTestId("inspector-tab-look").click();
+      await expect(window.getByTestId("look-wheels-section")).toBeVisible();
+      const wheel = window.getByTestId("look-wheel-global").locator("svg");
+      const box = await wheel.boundingBox();
+      expect(box).toBeTruthy();
+      await window.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await window.mouse.down();
+      await window.mouse.move(box.x + box.width - 8, box.y + box.height / 2, { steps: 5 });
+      await window.waitForFunction((previous) => {
+        const img = Array.from(document.querySelectorAll("img"))
+          .find((node) => node.getAttribute("alt") === "Calibrated");
+        return img instanceof HTMLImageElement && img.src && img.src !== previous;
+      }, beforeSrc, { timeout: 10000 });
+      await window.mouse.up();
+
+      await wheel.dblclick({ position: { x: box.width / 2, y: box.height / 2 } });
+      await expect(window.getByTestId("look-wheel-global")).toContainText(/0\.00/, { timeout: 10000 });
+    } finally {
+      await electronApp.close();
+      stopServer(backend);
+    }
+  });
+
   test("keeps inspector panels uniquely assigned to their tabs", async () => {
     const backendPort = await getFreePort();
     const backend = startBackend(backendPort);

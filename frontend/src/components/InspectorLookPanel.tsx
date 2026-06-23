@@ -14,6 +14,14 @@ const WHEEL_ZONES: Array<{ key: keyof LookAdjustments["colorGrade"]; label: stri
   { key: "global", label: "全局" },
 ];
 
+const DEFAULT_WHEELS: Record<string, LookWheel> = {
+  shadows: { hue: 225, saturation: 0, luminance: 0 },
+  midtones: { hue: 35, saturation: 0, luminance: 0 },
+  highlights: { hue: 45, saturation: 0, luminance: 0 },
+  global: { hue: 35, saturation: 0, luminance: 0 },
+  point: { hue: 120, saturation: 1, luminance: 0 },
+};
+
 function clamp(value: number, low: number, high: number) {
   return Math.min(high, Math.max(low, value));
 }
@@ -45,6 +53,7 @@ function LookColorWheel({
   onPreview,
   onCommit,
   onBegin,
+  onReset,
   testId,
 }: {
   label: string;
@@ -52,10 +61,17 @@ function LookColorWheel({
   onPreview: (next: LookWheel) => void;
   onCommit: (next: LookWheel) => void;
   onBegin: () => void;
+  onReset: () => void;
   testId: string;
 }) {
   const size = 104;
   const point = polarToWheel(wheel.hue, wheel.saturation, size);
+  const resetOnDoubleClick = (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onBegin();
+    onReset();
+  };
 
   function update(event: PointerEvent<SVGSVGElement>, commit = false) {
     const next = { ...wheel, ...wheelFromPointer(event, size) };
@@ -64,9 +80,19 @@ function LookColorWheel({
   }
 
   return (
-    <div className="pc-look-wheel-card" data-testid={testId}>
+    <div
+      className="pc-look-wheel-card"
+      data-testid={testId}
+      onDoubleClick={resetOnDoubleClick}
+    >
       <svg
         className="pc-look-wheel"
+        onClick={(event) => {
+          if (event.detail >= 2) resetOnDoubleClick(event);
+        }}
+        onDoubleClick={(event) => {
+          resetOnDoubleClick(event);
+        }}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           onBegin();
@@ -169,10 +195,16 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           <svg
             className="pc-look-lab-pad"
             data-testid="look-lab-pad"
-            onPointerDown={(event) => {
+          onPointerDown={(event) => {
               event.currentTarget.setPointerCapture(event.pointerId);
               workbench.beginEdit();
               updateLabFromPointer(event);
+            }}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              workbench.beginEdit();
+              updateLook({ ...look, labBias: { a: 0, b: 0 } }, true, "重置色偏");
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) return;
@@ -224,6 +256,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
               onBegin={workbench.beginEdit}
               onCommit={(next) => updateWheel(key, next, true)}
               onPreview={(next) => updateWheel(key, next)}
+              onReset={() => updateWheel(key, DEFAULT_WHEELS[String(key)], true)}
               testId={`look-wheel-${key}`}
               wheel={look.colorGrade[key] as LookWheel}
             />
@@ -281,6 +314,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           onBegin={workbench.beginEdit}
           onCommit={(next) => updatePointColor({ hue: next.hue }, true)}
           onPreview={(next) => updatePointColor({ hue: next.hue })}
+          onReset={() => updatePointColor({ hue: DEFAULT_WHEELS.point.hue }, true)}
           testId="look-point-hue"
           wheel={{ hue: look.pointColor.hue, saturation: 1, luminance: 0 }}
         />

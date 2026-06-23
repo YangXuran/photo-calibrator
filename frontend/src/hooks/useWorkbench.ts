@@ -1176,7 +1176,6 @@ export function useWorkbench() {
       && !fileChanged
       && !modeChanged
       && !negativeBaseChanged
-      && !lookChanged
       && hasAnalysisCharts(selectedFile.result.charts),
     );
     const debounceMs = fastMode ? 0 : 160;
