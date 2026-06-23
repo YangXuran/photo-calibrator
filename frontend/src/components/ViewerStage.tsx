@@ -95,8 +95,8 @@ export function ViewerStage({
     : undefined;
   const renderCurvePreviewOverlay = () => calibratedPreviewBitmap ? (
     <>
-      <ViewerStageBitmapCanvas alt="Live curve preview" bitmap={calibratedPreviewBitmap} className="pc-stage-preview-overlay" style={previewOverlayStyle} />
-      <span className="pc-stage-preview-badge">Live curve preview</span>
+      <ViewerStageBitmapCanvas alt="Live preview" bitmap={calibratedPreviewBitmap} className="pc-stage-preview-overlay" style={previewOverlayStyle} />
+      <span className="pc-stage-preview-badge">Live preview</span>
     </>
   ) : null;
 

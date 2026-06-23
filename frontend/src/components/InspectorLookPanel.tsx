@@ -195,19 +195,20 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           <svg
             className="pc-look-lab-pad"
             data-testid="look-lab-pad"
-          onPointerDown={(event) => {
+            onPointerDown={(event) => {
               event.currentTarget.setPointerCapture(event.pointerId);
-              workbench.beginEdit();
+              workbench.beginLookEdit();
               updateLabFromPointer(event);
             }}
             onDoubleClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              workbench.beginEdit();
+              workbench.beginLookEdit();
               updateLook({ ...look, labBias: { a: 0, b: 0 } }, true, "重置色偏");
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) return;
+              workbench.beginLookEdit();
               updateLabFromPointer(event);
             }}
             onPointerUp={(event) => updateLabFromPointer(event, true)}

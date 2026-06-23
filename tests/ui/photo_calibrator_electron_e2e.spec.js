@@ -232,7 +232,7 @@ test.describe("electron desktop e2e", () => {
       await expect(window.getByTestId("app-shell")).toBeVisible({ timeout: 15000 });
       await importPhotos(electronApp, [TEST_PHOTOS[0]]);
       await expect(window.getByTestId("filmstrip-item")).toHaveCount(1, { timeout: 30000 });
-      await expect(window.getByTestId("viewer-status-state")).toContainText(/Calibrated|Prepared|Imported/, { timeout: 30000 });
+      await expect(window.getByTestId("viewer-status-state")).toContainText(/Calibrated/, { timeout: 30000 });
 
       const initialSrc = await window.waitForFunction(() => {
         const img = Array.from(document.querySelectorAll("img"))
@@ -242,6 +242,17 @@ test.describe("electron desktop e2e", () => {
       const beforeSrc = await initialSrc.jsonValue();
 
       await window.getByTestId("inspector-tab-look").click();
+      await expect(window.getByTestId("look-lab-section")).toBeVisible();
+      const labPad = window.getByTestId("look-lab-pad");
+      const labBox = await labPad.boundingBox();
+      expect(labBox).toBeTruthy();
+      await window.mouse.move(labBox.x + labBox.width / 2, labBox.y + labBox.height / 2);
+      await window.mouse.down();
+      await window.mouse.move(labBox.x + labBox.width - 12, labBox.y + 12, { steps: 4 });
+      await expect(window.locator(".pc-stage-loading")).toHaveCount(0);
+      await expect(window.getByLabel("Live preview")).toBeVisible({ timeout: 5000 });
+      await window.mouse.up();
+
       await expect(window.getByTestId("look-wheels-section")).toBeVisible();
       const wheel = window.getByTestId("look-wheel-global").locator("svg");
       const box = await wheel.boundingBox();

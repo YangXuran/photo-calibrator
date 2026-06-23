@@ -53,6 +53,7 @@ type SessionOptions = {
 };
 
 type CurveInteraction = "idle" | "drag";
+type LookInteraction = "idle" | "drag";
 type CurvePreviewFallbackCache = {
   key: string;
   width: number;
@@ -164,6 +165,10 @@ function createIdentityManualCurves(): ManualCurves {
 
 function serializeCurve(curve: ChannelCurve): string {
   return curve.map(([x, y]) => `${x}:${y}`).join("|");
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(high, Math.max(low, value));
 }
 
 function curvesFromState(l: ChannelCurve, r: ChannelCurve, g: ChannelCurve, b: ChannelCurve): ManualCurves {
@@ -455,6 +460,7 @@ export function useWorkbench() {
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
   const [stageContainerSize, setStageContainerSizeState] = useState<{ width: number; height: number } | null>(null);
   const [curveInteraction, setCurveInteraction] = useState<CurveInteraction>("idle");
+  const [lookInteraction, setLookInteraction] = useState<LookInteraction>("idle");
   const [localCurvePreviewBitmap, setLocalCurvePreviewBitmap] = useState<ImageBitmap | null>(null);
   const [localCurvePreviewHistogram, setLocalCurvePreviewHistogram] = useState<HistogramPayload | null>(null);
   const [curveStateFileId, setCurveStateFileId] = useState<string>();
@@ -476,6 +482,8 @@ export function useWorkbench() {
   const curvePreviewSequenceRef = useRef(0);
   const curvePreviewLastDragMsRef = useRef(0);
   const curveInteractionRef = useRef<CurveInteraction>("idle");
+  const lookInteractionRef = useRef<LookInteraction>("idle");
+  const lookPreviewBaseRef = useRef<LookAdjustments | null>(null);
   const persistenceWarningShownRef = useRef<Set<string>>(new Set());
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
   type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve; lookAdjustments: LookAdjustments };
@@ -527,6 +535,14 @@ export function useWorkbench() {
       editBeforeRef.current = currentEditState();
       activeCommitKeyRef.current = null;
     }
+  }
+
+  function beginLookEdit() {
+    if (lookInteractionRef.current === "drag") return;
+    lookInteractionRef.current = "drag";
+    beginEdit();
+    lookPreviewBaseRef.current = cloneLookAdjustments(lookAdjustments);
+    setLookInteraction("drag");
   }
 
   async function persistCommittedEdit(
@@ -615,12 +631,19 @@ export function useWorkbench() {
     setLookAdjustments(normalized);
     if (selectedFile) {
       fileLookRef.current.set(selectedFile.id, normalized);
+      const previewTarget = filesRef.current.find((item) => item.id === selectedFile.id) ?? selectedFile;
+      const baseLook = lookPreviewBaseRef.current ?? lookAdjustments;
+      renderLocalLookPreview(previewTarget, baseLook, normalized);
     }
   }
 
   function commitLookAdjustments(next: LookAdjustments, description = "片色调整") {
     const normalized = cloneLookAdjustments(next);
     previewLookAdjustments(normalized);
+    lookPreviewBaseRef.current = null;
+    lookInteractionRef.current = "idle";
+    setLookInteraction("idle");
+    settleLocalCurvePreview();
     commitEdit(description, "look", currentEditState({ lookAdjustments: normalized }));
   }
 
@@ -879,6 +902,38 @@ export function useWorkbench() {
     debugLog("curve.preview.fallback.done", { fileId: targetFile.id, cacheKey: cached.key });
   }, [buildCurvePreviewHistogram, disposeCurvePreviewBitmap, prepareCurvePreviewFallbackCache]);
 
+  const renderLocalLookPreviewFallback = useCallback(async (targetFile: WorkspaceFile, baseLook: LookAdjustments, nextLook: LookAdjustments) => {
+    const cached = await prepareCurvePreviewFallbackCache(targetFile);
+    if (!cached || typeof window === "undefined") return;
+    debugLog("look.preview.fallback.start", { fileId: targetFile.id, cacheKey: cached.key });
+
+    const deltaA = nextLook.labBias.a - baseLook.labBias.a;
+    const deltaB = nextLook.labBias.b - baseLook.labBias.b;
+    const rgba = new Uint8ClampedArray(cached.data);
+    for (let index = 0; index < rgba.length; index += 4) {
+      const red = rgba[index]!;
+      const green = rgba[index + 1]!;
+      const blue = rgba[index + 2]!;
+      rgba[index] = clamp(red + deltaA * 2.0 + deltaB * 1.2, 0, 255);
+      rgba[index + 1] = clamp(green - deltaA * 1.4 + deltaB * 0.8, 0, 255);
+      rgba[index + 2] = clamp(blue - deltaB * 1.8, 0, 255);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = cached.width;
+    canvas.height = cached.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Look preview fallback output context is unavailable");
+    }
+    context.putImageData(new ImageData(rgba, cached.width, cached.height), 0, 0);
+    const bitmap = await createImageBitmap(canvas);
+    const previousBitmap = curvePreviewBitmapRef.current;
+    curvePreviewBitmapRef.current = bitmap;
+    setLocalCurvePreviewBitmap(bitmap);
+    disposeCurvePreviewBitmap(previousBitmap);
+    debugLog("look.preview.fallback.done", { fileId: targetFile.id, cacheKey: cached.key });
+  }, [disposeCurvePreviewBitmap, prepareCurvePreviewFallbackCache]);
+
   const prewarmLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined) => {
     if (!targetFile) return;
     void prepareCurvePreviewFallbackCache(targetFile).catch((error) => {
@@ -894,6 +949,15 @@ export function useWorkbench() {
       console.warn("[curve-preview] fallback failed:", error);
     });
   }, [renderLocalCurvePreviewFallback, resolveCurvePreviewCacheKey, resolveCurvePreviewSource]);
+
+  const renderLocalLookPreview = useCallback((targetFile: WorkspaceFile, baseLook: LookAdjustments, nextLook: LookAdjustments) => {
+    const sourceUrl = resolveCurvePreviewSource(targetFile);
+    const cacheKey = resolveCurvePreviewCacheKey(targetFile);
+    if (!sourceUrl || !cacheKey) return;
+    void renderLocalLookPreviewFallback(targetFile, baseLook, nextLook).catch((error) => {
+      console.warn("[look-preview] fallback failed:", error);
+    });
+  }, [renderLocalLookPreviewFallback, resolveCurvePreviewCacheKey, resolveCurvePreviewSource]);
 
   const scheduleLocalCurvePreview = useCallback((targetFile: WorkspaceFile | undefined, nextCurves: ManualCurves, interaction: CurveInteraction) => {
     if (!targetFile) return;
@@ -1141,6 +1205,10 @@ export function useWorkbench() {
       debugLog("calib.skip.drag", { fileId: selectedFile.id });
       return;
     }
+    if (lookInteraction === "drag" || lookInteractionRef.current === "drag") {
+      debugLog("calib.skip.look-drag", { fileId: selectedFile.id });
+      return;
+    }
     const manualCurves = committedCurves;
     const effectiveCurves = composeManualCurves(manualCurves);
     const lookPayload = lookPayloadForRequest(lookAdjustments);
@@ -1321,6 +1389,7 @@ export function useWorkbench() {
     accelerator,
     committedCurves,
     curveInteraction,
+    lookInteraction,
   ]);
 
   /* push calibration snapshots to undo stack (debounced 600ms) */
@@ -1429,6 +1498,24 @@ export function useWorkbench() {
     bCurve,
     resolveCurvePreviewSource,
     scheduleLocalCurvePreview,
+  ]);
+
+  useEffect(() => {
+    if (lookInteraction !== "drag" || !selectedFile || localCurvePreviewBitmap) return;
+    const latest = filesRef.current.find((item) => item.id === selectedFile.id) ?? selectedFile;
+    if (!resolveCurvePreviewSource(latest)) return;
+    renderLocalLookPreview(latest, lookPreviewBaseRef.current ?? lookAdjustments, lookAdjustments);
+  }, [
+    lookInteraction,
+    localCurvePreviewBitmap,
+    selectedFile?.id,
+    selectedFile?.highResPreview?.original_preview,
+    selectedFile?.preview?.original_preview,
+    selectedFile?.result?.calibrated_image,
+    selectedFile?.displayUrl,
+    lookAdjustments,
+    resolveCurvePreviewSource,
+    renderLocalLookPreview,
   ]);
 
   useEffect(() => {
@@ -2416,6 +2503,7 @@ export function useWorkbench() {
     previewLookAdjustments,
     commitLookAdjustments,
     resetLookAdjustments,
+    beginLookEdit,
     beginEdit,
     commitEdit,
     accelerator,
