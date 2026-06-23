@@ -21,6 +21,7 @@ import type {
   HistoryEntry,
   ImageTransform,
   InspectorTab,
+  LookAdjustments,
   ManualCurves,
   NotificationItem,
   PluginInfo,
@@ -97,7 +98,7 @@ function loadInspectorTab(): InspectorTab {
     if (!raw) return "adjust";
     const parsed = JSON.parse(raw) as string;
     if (parsed === "color" || parsed === "analysis") return "adjust";
-    if (["adjust", "curves", "compose", "ai", "export", "session", "settings"].includes(parsed)) {
+    if (["adjust", "look", "curves", "compose", "ai", "export", "session", "settings"].includes(parsed)) {
       return parsed as InspectorTab;
     }
     return "adjust";
@@ -189,12 +190,83 @@ function composeManualCurves(curves: ManualCurves): { r: ChannelCurve; g: Channe
   };
 }
 
+const DEFAULT_LOOK_ADJUSTMENTS: LookAdjustments = {
+  labBias: { a: 0, b: 0 },
+  colorGrade: {
+    shadows: { hue: 225, saturation: 0, luminance: 0 },
+    midtones: { hue: 35, saturation: 0, luminance: 0 },
+    highlights: { hue: 45, saturation: 0, luminance: 0 },
+    global: { hue: 35, saturation: 0, luminance: 0 },
+    blending: 0.55,
+    balance: 0,
+  },
+  pointColor: {
+    enabled: false,
+    hue: 120,
+    range: 24,
+    hueShift: 0,
+    saturation: 0,
+    luminance: 0,
+  },
+};
+
+function cloneLookAdjustments(look?: Partial<LookAdjustments>): LookAdjustments {
+  return {
+    labBias: {
+      a: Number(look?.labBias?.a ?? DEFAULT_LOOK_ADJUSTMENTS.labBias.a),
+      b: Number(look?.labBias?.b ?? DEFAULT_LOOK_ADJUSTMENTS.labBias.b),
+    },
+    colorGrade: {
+      shadows: { ...DEFAULT_LOOK_ADJUSTMENTS.colorGrade.shadows, ...look?.colorGrade?.shadows },
+      midtones: { ...DEFAULT_LOOK_ADJUSTMENTS.colorGrade.midtones, ...look?.colorGrade?.midtones },
+      highlights: { ...DEFAULT_LOOK_ADJUSTMENTS.colorGrade.highlights, ...look?.colorGrade?.highlights },
+      global: { ...DEFAULT_LOOK_ADJUSTMENTS.colorGrade.global, ...look?.colorGrade?.global },
+      blending: Number(look?.colorGrade?.blending ?? DEFAULT_LOOK_ADJUSTMENTS.colorGrade.blending),
+      balance: Number(look?.colorGrade?.balance ?? DEFAULT_LOOK_ADJUSTMENTS.colorGrade.balance),
+    },
+    pointColor: {
+      ...DEFAULT_LOOK_ADJUSTMENTS.pointColor,
+      ...look?.pointColor,
+      enabled: Boolean(look?.pointColor?.enabled),
+    },
+  };
+}
+
+function serializeLookAdjustments(look: LookAdjustments): string {
+  const normalized = cloneLookAdjustments(look);
+  return JSON.stringify(normalized);
+}
+
+function lookPayloadForRequest(look: LookAdjustments) {
+  const normalized = cloneLookAdjustments(look);
+  return {
+    lab_bias: normalized.labBias,
+    color_grade: {
+      shadows: normalized.colorGrade.shadows,
+      midtones: normalized.colorGrade.midtones,
+      highlights: normalized.colorGrade.highlights,
+      global: normalized.colorGrade.global,
+      blending: normalized.colorGrade.blending,
+      balance: normalized.colorGrade.balance,
+    },
+    point_color: {
+      enabled: normalized.pointColor.enabled,
+      hue: normalized.pointColor.hue,
+      range: normalized.pointColor.range,
+      hue_shift: normalized.pointColor.hueShift,
+      saturation: normalized.pointColor.saturation,
+      luminance: normalized.pointColor.luminance,
+    },
+  };
+}
+
 function buildCalibrationSignature(
   mode: string,
   strength: number,
   negativeBaseEnabled: boolean,
   accelerator: string,
   curves: ManualCurves,
+  lookAdjustments: LookAdjustments,
   cropRect?: CropRect,
   imageTransform?: ImageTransform,
 ): string {
@@ -207,6 +279,7 @@ function buildCalibrationSignature(
     serializeCurve(curves.r),
     serializeCurve(curves.g),
     serializeCurve(curves.b),
+    serializeLookAdjustments(lookAdjustments),
     serializeCropRect(cropRect),
     serializeImageTransform(imageTransform),
   ].join("::");
@@ -283,6 +356,7 @@ function buildDefaultExportState(
   item: WorkspaceFile,
   accelerator: string,
   curves: ManualCurves,
+  lookAdjustments: LookAdjustments,
 ): PersistedEditState {
   return {
     mode: "global",
@@ -290,6 +364,7 @@ function buildDefaultExportState(
     negativeBaseEnabled: false,
     accelerator,
     curves,
+    lookAdjustments: cloneLookAdjustments(lookAdjustments),
     crop: item.crop,
     cropEdited: item.cropEdited,
     cropApplied: isCropApplied(item),
@@ -322,6 +397,7 @@ export function useWorkbench() {
   const [mode, setMode] = useState("global");
   const [negativeBaseEnabled, setNegativeBaseEnabled] = useState(false);
   const [strength, setStrength] = useState(0.8);
+  const [lookAdjustments, setLookAdjustments] = useState<LookAdjustments>(() => cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS));
   const [accelerator, setAccelerator] = useState("auto");
   const [loading, setLoading] = useState(false);
   const [highResLoading, setHighResLoading] = useState(false);
@@ -385,8 +461,9 @@ export function useWorkbench() {
   const requestRef = useRef(0);
   const calibrationDepthRef = useRef(0);
   const currentResMaxSideRef = useRef(320);
-  const prevDepsRef = useRef<{ id?: string; mode: string; negativeBaseEnabled: boolean; strength: number }>({ mode: "global", negativeBaseEnabled: false, strength: 0.8 });
+  const prevDepsRef = useRef<{ id?: string; mode: string; negativeBaseEnabled: boolean; strength: number; lookSignature: string }>({ mode: "global", negativeBaseEnabled: false, strength: 0.8, lookSignature: serializeLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS) });
   const fileCurvesRef = useRef<Map<string, ManualCurves>>(new Map());
+  const fileLookRef = useRef<Map<string, LookAdjustments>>(new Map());
   const highResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highResRequestRef = useRef(0);
   const highResSessionRef = useRef<string | null>(null);
@@ -401,7 +478,7 @@ export function useWorkbench() {
   const curveInteractionRef = useRef<CurveInteraction>("idle");
   const persistenceWarningShownRef = useRef<Set<string>>(new Set());
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
-  type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
+  type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve; lookAdjustments: LookAdjustments };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
   const undoIndexRef = useRef(-1);
   const undoingRef = useRef(false);
@@ -423,6 +500,7 @@ export function useWorkbench() {
       negativeBaseEnabled,
       accelerator,
       curves: cloneManualCurves({ l: lCurve, r: rCurve, g: gCurve, b: bCurve }),
+      lookAdjustments: cloneLookAdjustments(lookAdjustments),
       crop: selectedFile?.crop,
       cropEdited: selectedFile?.cropEdited,
       cropApplied: isCropApplied(selectedFile),
@@ -505,7 +583,7 @@ export function useWorkbench() {
     if (activeCommitKeyRef.current === commitKey) return;
     activeCommitKeyRef.current = commitKey;
     pendingCommitRef.current = { description, actionType, state };
-    const signature = buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, state.curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
+    const signature = buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, state.curves, cloneLookAdjustments(state.lookAdjustments), state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
     if (
       selectedFile?.result?.calibrated_image
       && selectedFile.calibrationSignature === signature
@@ -530,6 +608,25 @@ export function useWorkbench() {
 
   function commitStrength(value: number) {
     commitEdit("强度调整", "strength", currentEditState({ strength: value }));
+  }
+
+  function previewLookAdjustments(next: LookAdjustments) {
+    const normalized = cloneLookAdjustments(next);
+    setLookAdjustments(normalized);
+    if (selectedFile) {
+      fileLookRef.current.set(selectedFile.id, normalized);
+    }
+  }
+
+  function commitLookAdjustments(next: LookAdjustments, description = "片色调整") {
+    const normalized = cloneLookAdjustments(next);
+    previewLookAdjustments(normalized);
+    commitEdit(description, "look", currentEditState({ lookAdjustments: normalized }));
+  }
+
+  function resetLookAdjustments() {
+    beginEdit();
+    commitLookAdjustments(cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS), "重置片色");
   }
   const displayedSelectedFile = selectedFile;
   const selectionDisplayReady = true;
@@ -605,7 +702,8 @@ export function useWorkbench() {
       g: item.gCurve ?? DEFAULT_IDENTITY_CURVE,
       b: item.bCurve ?? DEFAULT_IDENTITY_CURVE,
     });
-    return buildDefaultExportState(item, accelerator, curves);
+    const itemLook = fileLookRef.current.get(item.id) ?? cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS);
+    return buildDefaultExportState(item, accelerator, curves, itemLook);
   }
 
   function updateViewerState(patch: Partial<ViewerWorkspaceState>) {
@@ -933,6 +1031,8 @@ export function useWorkbench() {
     setNegativeBaseEnabled(Boolean(state.negativeBaseEnabled));
     setStrength(state.strength);
     setAccelerator(state.accelerator);
+    const nextLook = cloneLookAdjustments(state.lookAdjustments);
+    setLookAdjustments(nextLook);
     const curves = cloneManualCurves(state.curves);
     setLCurve(curves.l);
     setRCurve(curves.r);
@@ -943,6 +1043,7 @@ export function useWorkbench() {
       if (state.cropApplied) appliedCropIdsRef.current.add(selectedFile.id);
       else appliedCropIdsRef.current.delete(selectedFile.id);
       fileCurvesRef.current.set(selectedFile.id, curves);
+      fileLookRef.current.set(selectedFile.id, nextLook);
       setFiles((items) => items.map((item) => item.id === selectedFile.id ? {
         ...item,
         sessionId: item.sessionId,
@@ -951,7 +1052,7 @@ export function useWorkbench() {
         cropApplied: state.cropApplied,
         persistedState: state,
         imageTransform: normalizeImageTransform(state.imageTransform),
-        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
+        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, curves, cloneLookAdjustments(state.lookAdjustments), state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
         result: calibratedImage && item.result ? { ...item.result, calibrated_image: calibratedImage } : item.result,
       } : item));
     }
@@ -989,6 +1090,9 @@ export function useWorkbench() {
     setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    const snapLook = cloneLookAdjustments(snap.lookAdjustments);
+    setLookAdjustments(snapLook);
+    if (selectedFile) fileLookRef.current.set(selectedFile.id, snapLook);
     setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
     setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
     setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
@@ -1014,6 +1118,9 @@ export function useWorkbench() {
     setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
+    const snapLook = cloneLookAdjustments(snap.lookAdjustments);
+    setLookAdjustments(snapLook);
+    if (selectedFile) fileLookRef.current.set(selectedFile.id, snapLook);
     setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
     setRCurve(snap.rCurve.map((p) => [...p] as [number, number]));
     setGCurve(snap.gCurve.map((p) => [...p] as [number, number]));
@@ -1036,10 +1143,12 @@ export function useWorkbench() {
     }
     const manualCurves = committedCurves;
     const effectiveCurves = composeManualCurves(manualCurves);
+    const lookPayload = lookPayloadForRequest(lookAdjustments);
+    const lookSignature = serializeLookAdjustments(lookAdjustments);
     const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
     const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
     const requestImageTransform = imageTransformForRequest(imageTransform);
-    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, cropRect, imageTransform);
+    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, lookAdjustments, cropRect, imageTransform);
     if (
       selectedFile.result?.calibrated_image
       && selectedFile.calibrationSignature === signature
@@ -1057,8 +1166,9 @@ export function useWorkbench() {
     const fileChanged = prev.id !== selectedFile?.id;
     const modeChanged = prev.mode !== mode;
     const negativeBaseChanged = prev.negativeBaseEnabled !== negativeBaseEnabled;
-    const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || prev.strength !== strength;
-    prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength };
+    const lookChanged = prev.lookSignature !== lookSignature;
+    const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || lookChanged || prev.strength !== strength;
+    prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength, lookSignature };
     debugLog("calib.effect", { fileId: selectedFile?.id?.substring(0, 20), fileChanged: fileOrParamsChanged, mode, strength });
     const fastMode = Boolean(
       selectedFile.sessionId
@@ -1066,6 +1176,7 @@ export function useWorkbench() {
       && !fileChanged
       && !modeChanged
       && !negativeBaseChanged
+      && !lookChanged
       && hasAnalysisCharts(selectedFile.result.charts),
     );
     const debounceMs = fastMode ? 0 : 160;
@@ -1085,6 +1196,7 @@ export function useWorkbench() {
             mode,
             strength,
             negative_base: negativeBaseEnabled,
+            look: lookPayload,
             accelerator,
             include_original: Boolean(cropRect),
             fast: fastMode,
@@ -1100,6 +1212,7 @@ export function useWorkbench() {
             mode,
             strength,
             negative_base: negativeBaseEnabled,
+            look: lookPayload,
             accelerator,
             fast: fastMode,
             crop_rect: cropRect,
@@ -1146,7 +1259,7 @@ export function useWorkbench() {
             if (!sid) return;
             try {
               const cal = await postCalibrationSession({
-                session_id: sid, mode, strength, negative_base: negativeBaseEnabled, accelerator,
+                session_id: sid, mode, strength, negative_base: negativeBaseEnabled, look: lookPayload, accelerator,
                 include_original: Boolean(cropRect),
                 crop_rect: cropRect,
                 image_transform: requestImageTransform,
@@ -1204,6 +1317,7 @@ export function useWorkbench() {
     mode,
     negativeBaseEnabled,
     strength,
+    lookAdjustments,
     accelerator,
     committedCurves,
     curveInteraction,
@@ -1215,7 +1329,7 @@ export function useWorkbench() {
     const prevTimer = pushTimerRef.current;
     if (prevTimer) clearTimeout(prevTimer);
     pushTimerRef.current = setTimeout(() => {
-      const snap: UndoSnapshot = { mode, strength, negativeBaseEnabled, accelerator, lCurve, rCurve, gCurve, bCurve };
+      const snap: UndoSnapshot = { mode, strength, negativeBaseEnabled, accelerator, lCurve, rCurve, gCurve, bCurve, lookAdjustments: cloneLookAdjustments(lookAdjustments) };
       const stack = undoStackRef.current;
       const idx = undoIndexRef.current;
       const last = stack[idx];
@@ -1225,6 +1339,7 @@ export function useWorkbench() {
         && last.negativeBaseEnabled === snap.negativeBaseEnabled
         && last.strength === snap.strength
         && last.accelerator === snap.accelerator
+        && serializeLookAdjustments(last.lookAdjustments) === serializeLookAdjustments(snap.lookAdjustments)
       ) return;
       undoStackRef.current = stack.slice(0, idx + 1);
       undoStackRef.current.push(snap);
@@ -1234,7 +1349,7 @@ export function useWorkbench() {
       undoIndexRef.current = undoStackRef.current.length - 1;
     }, 600);
     return () => { const t = pushTimerRef.current; if (t) clearTimeout(t); };
-  }, [mode, strength, accelerator, lCurve, rCurve, gCurve, bCurve]);
+  }, [mode, negativeBaseEnabled, strength, accelerator, lCurve, rCurve, gCurve, bCurve, lookAdjustments]);
 
   useEffect(() => {
     setCurveStateFileId(undefined);
@@ -1258,7 +1373,12 @@ export function useWorkbench() {
       setNegativeBaseEnabled(Boolean(restoredState.negativeBaseEnabled));
       setStrength(restoredState.strength);
       setAccelerator(restoredState.accelerator);
+      setLookAdjustments(cloneLookAdjustments(restoredState.lookAdjustments));
     }
+    const savedLook = fileLookRef.current.get(selectedFile.id);
+    const nextLook = cloneLookAdjustments(savedLook ?? restoredState?.lookAdjustments);
+    setLookAdjustments(nextLook);
+    fileLookRef.current.set(selectedFile.id, nextLook);
     const saved = fileCurvesRef.current.get(selectedFile.id);
     const nextCurves = cloneManualCurves(saved ?? {
       l: restoredState?.curves.l ?? selectedFile.lCurve ?? DEFAULT_IDENTITY_CURVE,
@@ -1367,6 +1487,7 @@ export function useWorkbench() {
       setHighResLoading(true);
       try {
         const effectiveCurves = composeManualCurves(committedCurves);
+        const lookPayload = lookPayloadForRequest(lookAdjustments);
         const preview = await postPreview({
           session_id: selectedFile.sessionId,
           analysis_max_side: requiredMaxSide,
@@ -1389,6 +1510,7 @@ export function useWorkbench() {
           mode,
           strength,
           negative_base: negativeBaseEnabled,
+          look: lookPayload,
           accelerator,
           include_original: true,
           fast: true,
@@ -1445,6 +1567,7 @@ export function useWorkbench() {
     curveStateFileId,
     mode,
     strength,
+    lookAdjustments,
     accelerator,
     committedCurves,
   ]);
@@ -1571,7 +1694,7 @@ export function useWorkbench() {
           sessionId: undefined,
           result: restoredResult,
           calibrationSignature: restoredResult && restoredState && hasAnalysisCharts(restoredResult.charts)
-            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, Boolean(restoredState.negativeBaseEnabled), restoredState.accelerator, restoredState.curves, restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
+            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, Boolean(restoredState.negativeBaseEnabled), restoredState.accelerator, restoredState.curves, cloneLookAdjustments(restoredState.lookAdjustments), restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
             : undefined,
           crop: restoredState?.crop,
           cropEdited: restoredState?.cropEdited,
@@ -1609,6 +1732,7 @@ export function useWorkbench() {
       setNegativeBaseEnabled(Boolean(firstRestoredState.negativeBaseEnabled));
       setStrength(firstRestoredState.strength);
       setAccelerator(firstRestoredState.accelerator);
+      setLookAdjustments(cloneLookAdjustments(firstRestoredState.lookAdjustments));
       setLCurve(restoredCurves.l);
       setRCurve(restoredCurves.r);
       setGCurve(restoredCurves.g);
@@ -1699,11 +1823,13 @@ export function useWorkbench() {
     try {
       setActionState("export", "running", exportOptions.outputPath);
       const filePathVal = (selectedFile.file as any)?.path as string | undefined;
+      const effectiveCurves = composeManualCurves(committedCurves);
       const body: Record<string, unknown> = {
         file_name: selectedFile.name,
         mode: effectiveExportMode(mode, selectedFile),
         strength,
         negative_base: negativeBaseEnabled,
+        look: lookPayloadForRequest(lookAdjustments),
         accelerator,
         output_path: exportOptions.outputPath,
         format: exportOptions.format,
@@ -1713,6 +1839,9 @@ export function useWorkbench() {
         export_transform: exportOptions.exportTransform,
         crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
         image_transform: imageTransformForRequest(selectedFile.imageTransform),
+        r_curve: effectiveCurves.r,
+        g_curve: effectiveCurves.g,
+        b_curve: effectiveCurves.b,
       };
       if (filePathVal) {
         body.path = filePathVal;
@@ -1750,6 +1879,7 @@ export function useWorkbench() {
           mode: effectiveExportMode(state.mode, item),
           strength: state.strength,
           negative_base: Boolean(state.negativeBaseEnabled),
+          look: lookPayloadForRequest(cloneLookAdjustments(state.lookAdjustments)),
           accelerator: state.accelerator,
           output_path: suggestExportPathInDirectory(item.name, exportOptions.format, outputDir),
           format: exportOptions.format,
@@ -2282,6 +2412,10 @@ export function useWorkbench() {
     strength,
     setStrength,
     commitStrength,
+    lookAdjustments,
+    previewLookAdjustments,
+    commitLookAdjustments,
+    resetLookAdjustments,
     beginEdit,
     commitEdit,
     accelerator,
@@ -2359,7 +2493,7 @@ export function useWorkbench() {
   }), [
     backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
     selectedId, selectedFile, displayedSelectedFile, selectionDisplayReady, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
-    viewerPan, mode, negativeBaseEnabled, strength, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
+    viewerPan, mode, negativeBaseEnabled, strength, lookAdjustments, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
     exportResult, batchExportResults, documentRender, sessionOptions, sessionSaveResult, savedSessions,
     selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
     actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,

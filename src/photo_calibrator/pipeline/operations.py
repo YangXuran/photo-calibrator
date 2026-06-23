@@ -120,6 +120,17 @@ class Lut3DOp(Operation):
 
 
 @dataclass(frozen=True)
+class LookAdjustmentOp(Operation):
+    """Creative look adjustment applied after objective calibration."""
+
+    name: str = "look-adjustment"
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        from photo_calibrator.core.look import apply_look_adjustments
+        return apply_look_adjustments(image, self.params)
+
+
+@dataclass(frozen=True)
 class NegativeFilmBaseOp(Operation):
     """Remove color mask and invert a color negative into a positive baseline."""
 

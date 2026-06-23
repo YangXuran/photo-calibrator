@@ -234,6 +234,36 @@ def test_negative_base_can_stack_with_global_calibration() -> None:
     assert [item["name"] for item in payload["document"]["operations"][-2:]] == ["negative-film-base", "calibration"]
 
 
+def test_calibrate_payload_applies_look_adjustment_node() -> None:
+    payload = _calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "look.png",
+        "mode": "global",
+        "strength": 0.8,
+        "look": {
+            "lab_bias": {"a": 10, "b": -6},
+            "color_grade": {
+                "global": {"hue": 42, "saturation": 0.25, "luminance": 0.0},
+            },
+            "point_color": {
+                "enabled": True,
+                "hue": 25,
+                "range": 35,
+                "hue_shift": -8,
+                "saturation": 0.1,
+                "luminance": 0.0,
+            },
+        },
+    })
+
+    assert payload["processing"]["look_enabled"] is True
+    assert payload["processing"]["look_adjustments"]["lab_bias"]["a"] == pytest.approx(10)
+    assert payload["document"]["operations"][-1]["name"] == "look-adjustment"
+    rendered = _document_render_payload({"session_id": payload["session_id"]})
+    assert rendered["document"]["replayable_operations"][-1]["name"] == "look-adjustment"
+    assert_preview_url(rendered["calibrated_image"])
+
+
 def test_auto_best_selects_candidate_mode() -> None:
     payload = _calibrate_payload({
         "image_data": sample_data_url(),

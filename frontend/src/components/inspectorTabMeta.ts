@@ -12,6 +12,11 @@ const INSPECTOR_TAB_META: Record<InspectorTab, TabMeta> = {
     meta: "基础校准参数",
     icon: svg('<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'),
   },
+  look: {
+    title: "Look",
+    meta: "个性化片色",
+    icon: svg('<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18"/><path d="M3.6 8.5h16.8"/><path d="M3.6 15.5h16.8"/>'),
+  },
   curves: {
     title: "Curves",
     meta: "RGB 曲线与色调映射",

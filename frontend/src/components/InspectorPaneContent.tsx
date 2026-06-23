@@ -6,6 +6,7 @@ import { PaneGroup } from "./PaneGroup";
 import { InspectorAdjustPanel } from "./InspectorAdjustPanel";
 import { InspectorAIPanel } from "./InspectorAIPanel";
 import { InspectorExportPanel } from "./InspectorExportPanel";
+import { InspectorLookPanel } from "./InspectorLookPanel";
 import { InspectorSessionPanel } from "./InspectorSessionPanel";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel";
 
@@ -24,6 +25,7 @@ export function InspectorPaneContent({ workbench }: InspectorPaneContentProps) {
       testId="inspector-pane-group"
     >
       {workbench.activeInspectorTab === "adjust" ? <InspectorAdjustPanel order={sectionOrder} workbench={workbench} /> : null}
+      {workbench.activeInspectorTab === "look" ? <InspectorLookPanel workbench={workbench} /> : null}
       {workbench.activeInspectorTab === "curves" ? <CurvesToolPanel workbench={workbench} /> : null}
       {workbench.activeInspectorTab === "compose" ? <ComposeToolPanel workbench={workbench} /> : null}
       {workbench.activeInspectorTab === "ai" ? <InspectorAIPanel order={sectionOrder} workbench={workbench} /> : null}

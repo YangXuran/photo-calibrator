@@ -6,7 +6,7 @@ import numpy as np
 
 from photo_calibrator.pipeline.document import PipelineDocument
 from photo_calibrator.core.calibration import calibrate_negative_film
-from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp, NegativeFilmBaseOp, NegativeFilmRefineOp
+from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp
 
 
 def test_identity_op_returns_same_image() -> None:
@@ -87,6 +87,16 @@ def test_calibration_op_replays_current_backend_mode() -> None:
     result = op.apply(img)
     assert result.shape == img.shape
     assert result.dtype == np.uint8
+
+
+def test_look_adjustment_op_changes_color_without_shape_change() -> None:
+    img = np.zeros((24, 24, 3), dtype=np.uint8)
+    img[:, :] = (128, 128, 128)
+    op = LookAdjustmentOp(params={"lab_bias": {"a": 12, "b": -8}})
+    result = op.apply(img)
+    assert result.shape == img.shape
+    assert result.dtype == np.uint8
+    assert not np.array_equal(result, img)
 
 
 def test_negative_film_pipeline_nodes_match_composite_mode() -> None:

@@ -1,6 +1,6 @@
 export type CompareMode = "side-by-side" | "split" | "calibrated-only";
 export type ViewerZoomMode = "fit" | "fill" | "manual";
-export type InspectorTab = "adjust" | "curves" | "compose" | "ai" | "export" | "session" | "settings";
+export type InspectorTab = "adjust" | "look" | "curves" | "compose" | "ai" | "export" | "session" | "settings";
 
 export type ViewerPan = {
   x: number;
@@ -62,6 +62,35 @@ export type ZoneDatum = {
   a: number;
   b: number;
   pixels: number;
+};
+
+export type LookWheel = {
+  hue: number;
+  saturation: number;
+  luminance: number;
+};
+
+export type LookAdjustments = {
+  labBias: {
+    a: number;
+    b: number;
+  };
+  colorGrade: {
+    shadows: LookWheel;
+    midtones: LookWheel;
+    highlights: LookWheel;
+    global: LookWheel;
+    blending: number;
+    balance: number;
+  };
+  pointColor: {
+    enabled: boolean;
+    hue: number;
+    range: number;
+    hueShift: number;
+    saturation: number;
+    luminance: number;
+  };
 };
 
 export type CalibrationPayload = {
@@ -143,6 +172,7 @@ export type CalibrationPayload = {
     auto_best?: {
       selected_mode: string;
       score: number;
+      eval_max_side?: number;
       candidates: Array<{
         mode: string;
         score: number;
@@ -151,6 +181,8 @@ export type CalibrationPayload = {
         reduction_pct: number;
       }>;
     };
+    look_enabled?: boolean;
+    look_adjustments?: Record<string, unknown>;
   };
   document?: Record<string, unknown>;
 };
@@ -480,5 +512,6 @@ export type PersistedEditState = {
   cropEdited?: boolean;
   cropApplied?: boolean;
   imageTransform?: ImageTransform;
+  lookAdjustments?: LookAdjustments;
   runtimeSessionId?: string;
 };

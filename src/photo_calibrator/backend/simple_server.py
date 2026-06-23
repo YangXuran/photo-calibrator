@@ -39,13 +39,14 @@ from photo_calibrator.core.calibration import (
 )
 from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, ensure_uint8_rgb, rgb_to_lab_float
 from photo_calibrator.core.film_scan import detect_film_frame
+from photo_calibrator.core.look import apply_look_adjustments, is_identity_look, normalize_look_adjustments
 from photo_calibrator.backend.schemas import AnalysisEntry, PreparedImage
 from photo_calibrator.ai import EvalImageRef, EvalInput, MockProvider, OpenAICompatibleProvider, ProviderConfig
 from photo_calibrator.core.image_model import ImageBuffer
 from photo_calibrator.io import read_image
 from photo_calibrator.io.icc_profiles import ExportProfile
 from photo_calibrator.io.raw import decode_raw_image, is_raw_extension
-from photo_calibrator.pipeline import CalibrationOp, NegativeFilmBaseOp, NegativeFilmRefineOp, PipelineDocument
+from photo_calibrator.pipeline import CalibrationOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp, PipelineDocument
 from photo_calibrator.services import AIEvaluationService, PluginService
 from photo_calibrator.services.contracts import HookNotSupportedError, ServiceError
 from photo_calibrator.backend.workspace_db import get_workspace_db
@@ -439,7 +440,7 @@ def _document_operations_from_payload(payload: dict) -> list[dict[str, object]]:
             "replayable": True,
         })
     if params.mode == CalibrationMode.NEGATIVE_FILM:
-        return [
+        operations.extend([
             {
                 "name": NegativeFilmBaseOp().name,
                 "params": {"mode": params.mode.value, "stage": "base"},
@@ -450,23 +451,31 @@ def _document_operations_from_payload(payload: dict) -> list[dict[str, object]]:
                 "params": {"strength": params.strength, "stage": "refine"},
                 "replayable": True,
             },
-        ]
-    op = CalibrationOp(
-        params={
-            "mode": params.mode.value,
-            "a_shift": payload.get("shift", {}).get("a"),
-            "b_shift": payload.get("shift", {}).get("b"),
-            "strength": params.strength,
-            "highlight_pct": params.highlight_pct,
-            "sat_pct": params.sat_pct,
-            "curve_low_pct": params.curve_low_pct,
-            "curve_high_pct": params.curve_high_pct,
-            "gamma": list(params.gamma) if params.gamma is not None else None,
-            "matrix": [list(row) for row in params.matrix] if params.matrix is not None else None,
-            "lut_size": params.lut_size,
-        },
-    )
-    operations.append({"name": op.name, "params": _json_safe(op.params), "replayable": True})
+        ])
+    else:
+        op = CalibrationOp(
+            params={
+                "mode": params.mode.value,
+                "a_shift": payload.get("shift", {}).get("a"),
+                "b_shift": payload.get("shift", {}).get("b"),
+                "strength": params.strength,
+                "highlight_pct": params.highlight_pct,
+                "sat_pct": params.sat_pct,
+                "curve_low_pct": params.curve_low_pct,
+                "curve_high_pct": params.curve_high_pct,
+                "gamma": list(params.gamma) if params.gamma is not None else None,
+                "matrix": [list(row) for row in params.matrix] if params.matrix is not None else None,
+                "lut_size": params.lut_size,
+            },
+        )
+        operations.append({"name": op.name, "params": _json_safe(op.params), "replayable": True})
+    look_adjustments = payload.get("look_adjustments") or processing.get("look_adjustments")
+    if look_adjustments is not None and not is_identity_look(look_adjustments):
+        operations.append({
+            "name": LookAdjustmentOp().name,
+            "params": _json_safe(normalize_look_adjustments(look_adjustments)),
+            "replayable": True,
+        })
     return operations
 
 
@@ -490,6 +499,9 @@ def _render_document_from_metadata(entry: AnalysisEntry) -> tuple[dict[str, obje
             replayable_ops.append(op)
         elif op.get("name") == "negative-film-refine":
             doc.add_op(NegativeFilmRefineOp(params=dict(op.get("params", {}))))
+            replayable_ops.append(op)
+        elif op.get("name") == "look-adjustment":
+            doc.add_op(LookAdjustmentOp(params=dict(op.get("params", {}))))
             replayable_ops.append(op)
     rendered = doc.render() if replayable_ops else source
     return {
@@ -1567,6 +1579,10 @@ def _negative_base_enabled(body: dict) -> bool:
     return bool(body.get("negative_base", body.get("negative_base_enabled", False)))
 
 
+def _look_adjustments_from_body(body: dict) -> dict:
+    return normalize_look_adjustments(body.get("look") or body.get("look_adjustments") or {})
+
+
 def _plugin_calibrator_id(body: dict) -> str | None:
     plugin_id = body.get("calibrator_plugin")
     if plugin_id in {"", None}:
@@ -1791,6 +1807,7 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
     calibrator_id = _plugin_calibrator_id(body)
     requested_mode = str(body.get("mode", params.mode.value))
     negative_base = _negative_base_enabled(body)
+    look_adjustments = _look_adjustments_from_body(body)
     fast = bool(body.get("fast", False)) and requested_mode != AUTO_BEST_MODE
     if calibrator_id:
         payload = _apply_plugin_calibration(entry, image, params, calibrator_id, fast=fast)
@@ -1803,8 +1820,20 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
             requested_mode=requested_mode,
             negative_base=negative_base,
         )
+    if not is_identity_look(look_adjustments):
+        payload["image"] = ensure_uint8_rgb(apply_look_adjustments(payload["image"], look_adjustments))
+        payload.setdefault("metadata", {})["look_adjustments"] = look_adjustments
+        payload.setdefault("metadata", {})["look_enabled"] = "true"
+        if not fast:
+            post_report = analyze_image_array(payload["image"])
+            input_report = payload.get("input_report") or entry.input_report
+            before = input_report.lab.cast_strength
+            after = post_report.lab.cast_strength
+            payload["post_report"] = post_report
+            payload["reduction_pct"] = (1.0 - after / max(before, 0.01)) * 100.0
     payload["params"] = payload.pop("params_override", params)
     payload["calibrator_plugin"] = calibrator_id
+    payload["look_adjustments"] = look_adjustments
     return payload
 
 
@@ -2125,6 +2154,8 @@ def _calibration_response(
             "auto_best_selected_mode": metadata.get("auto_best_selected_mode"),
             "auto_best_score": metadata.get("auto_best_score"),
             "auto_best": calibration.get("auto_best"),
+            "look_enabled": metadata.get("look_enabled") == "true",
+            "look_adjustments": calibration.get("look_adjustments"),
             "crop_rect": crop_rect,
             "crop_applied": bool(crop_rect),
             "image_transform": image_transform,

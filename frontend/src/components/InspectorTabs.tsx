@@ -6,7 +6,7 @@ type InspectorTabsProps = {
   onChange: (value: InspectorTab) => void;
 };
 
-const TOOL_TABS: InspectorTab[] = ["adjust", "curves", "compose"];
+const TOOL_TABS: InspectorTab[] = ["adjust", "look", "curves", "compose"];
 const SECONDARY_TABS: InspectorTab[] = ["ai", "export", "session", "settings"];
 
 function TabButton({ tabId, active, onChange }: { tabId: InspectorTab; active: InspectorTab; onChange: (value: InspectorTab) => void }) {
