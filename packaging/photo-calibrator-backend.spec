@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_all
 repo_root = Path(SPECPATH).resolve().parent
 datas = []
 binaries = []
-hiddenimports = []
+hiddenimports = ["torch"]
 
 for package in ("cv2", "rawpy", "imageio", "tifffile", "OpenImageIO", "PyOpenColorIO"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
@@ -22,7 +22,7 @@ analysis = Analysis(
     hiddenimports=hiddenimports,
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["torch", "matplotlib", "pytest"],
+    excludes=["matplotlib", "pytest"],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)

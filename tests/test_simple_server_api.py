@@ -47,7 +47,7 @@ from photo_calibrator.backend.simple_server import (
 )
 
 
-BACKEND_NAMES = {"cpu-opencv", "opencl-umat", "torch-cuda", "torch-mps", "hybrid-opencl-cuda", "hybrid-opencl-mps"}
+BACKEND_NAMES = {"cpu-opencv", "opencl-umat", "torch-cuda", "torch-mps", "hybrid-opencl-cuda", "hybrid-opencl-mps", "hybrid-cpu-cuda", "hybrid-cpu-mps"}
 
 
 def assert_preview_url(value: str) -> None:
@@ -59,6 +59,13 @@ def sample_data_url() -> str:
     img = np.zeros((48, 48, 3), dtype=np.uint8)
     img[:, :] = (120, 130, 160)
     img[8:40, 8:40] = (178, 132, 104)
+    ok, encoded = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    assert ok
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def data_url_from_rgb(img: np.ndarray) -> str:
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     assert ok
     payload = base64.b64encode(encoded.tobytes()).decode("ascii")
@@ -146,6 +153,101 @@ def test_calibrate_payload_returns_metrics_and_preview_image() -> None:
     assert "session_id" in payload
     assert payload["document"]["operations"][-1]["name"] == "calibration"
     assert payload["processing"]["accelerator_backend"] in BACKEND_NAMES
+
+
+def test_negative_film_payload_reports_positive_base_charts() -> None:
+    from photo_calibrator.core.calibration import prepare_negative_film_base
+    from photo_calibrator.core.cast_detection import analyze_image_array
+
+    x = np.linspace(20, 235, 64, dtype=np.uint8)
+    xx, yy = np.meshgrid(x, x)
+    positive = np.stack([xx, yy, ((xx.astype(int) + yy.astype(int)) // 2).astype(np.uint8)], axis=2)
+    negative = 255 - positive
+    base = prepare_negative_film_base(negative)
+    base_report = analyze_image_array(base)
+    negative_report = analyze_image_array(negative)
+
+    payload = _calibrate_payload(
+        {
+            "image_data": data_url_from_rgb(negative),
+            "file_name": "negative.png",
+            "mode": "negative-film",
+            "strength": 0.8,
+        }
+    )
+
+    assert payload["processing"]["analysis_basis"] == "negative-positive-base"
+    assert payload["input"]["rgb"]["r"] == pytest.approx(base_report.rgb.r_mean, abs=1.0)
+    assert abs(payload["input"]["rgb"]["r"] - negative_report.rgb.r_mean) > 10.0
+    assert payload["charts"]["lab_vectors"][0]["name"] == "Positive base"
+    assert payload["charts"]["strengths"][0]["name"] == "Positive base"
+    assert payload["charts"]["rgb_histogram"]["bins"] == 256
+    assert payload["charts"]["calibrated_rgb_histogram"]["bins"] == 256
+
+
+def test_negative_film_document_is_split_into_pipeline_nodes() -> None:
+    x = np.linspace(20, 235, 48, dtype=np.uint8)
+    xx, yy = np.meshgrid(x, x)
+    positive = np.stack([xx, yy, ((xx.astype(int) + yy.astype(int)) // 2).astype(np.uint8)], axis=2)
+    negative = 255 - positive
+
+    calibration = _calibrate_payload(
+        {
+            "image_data": data_url_from_rgb(negative),
+            "file_name": "negative-doc.png",
+            "mode": "negative-film",
+            "strength": 0.8,
+        }
+    )
+
+    names = [item["name"] for item in calibration["document"]["operations"][-2:]]
+    assert names == ["negative-film-base", "negative-film-refine"]
+
+    rendered = _document_render_payload({"session_id": calibration["session_id"]})
+    replayed_names = [item["name"] for item in rendered["document"]["replayable_operations"][-2:]]
+    assert replayed_names == names
+    assert_preview_url(rendered["calibrated_image"])
+
+
+def test_negative_base_can_stack_with_global_calibration() -> None:
+    from photo_calibrator.core.calibration import prepare_negative_film_base
+    from photo_calibrator.core.cast_detection import analyze_image_array
+
+    x = np.linspace(20, 235, 64, dtype=np.uint8)
+    xx, yy = np.meshgrid(x, x)
+    positive = np.stack([xx, yy, ((xx.astype(int) + yy.astype(int)) // 2).astype(np.uint8)], axis=2)
+    negative = 255 - positive
+    base_report = analyze_image_array(prepare_negative_film_base(negative))
+
+    payload = _calibrate_payload({
+        "image_data": data_url_from_rgb(negative),
+        "file_name": "negative-stack.png",
+        "mode": "global",
+        "negative_base": True,
+        "strength": 0.8,
+    })
+
+    assert payload["mode"] == "global"
+    assert payload["processing"]["negative_base_enabled"] is True
+    assert payload["processing"]["analysis_basis"] == "negative-positive-base"
+    assert payload["input"]["rgb"]["r"] == pytest.approx(base_report.rgb.r_mean, abs=1.0)
+    assert [item["name"] for item in payload["document"]["operations"][-2:]] == ["negative-film-base", "calibration"]
+
+
+def test_auto_best_selects_candidate_mode() -> None:
+    payload = _calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "auto-best.png",
+        "mode": "auto-best",
+        "strength": 0.8,
+    })
+
+    assert payload["mode"] in {"global", "midtones-only", "highlights-only", "preserve-split-tone", "tone-zone", "matrix", "selective", "film"}
+    assert payload["processing"]["requested_mode"] == "auto-best"
+    assert payload["processing"]["auto_best_selected_mode"] == payload["mode"]
+    assert payload["processing"]["auto_best"]["selected_mode"] == payload["mode"]
+    assert payload["processing"]["auto_best"]["eval_max_side"] == 480
+    assert len(payload["processing"]["auto_best"]["candidates"]) >= 3
 
 
 def test_calibrate_payload_supports_plugin_calibrator() -> None:
@@ -554,6 +656,66 @@ def test_calibrate_payload_accepts_tiff_data_url() -> None:
     assert payload["input"]["width"] == 48
     assert_preview_url(payload["original_preview"])
     assert_preview_url(payload["calibrated_image"])
+
+
+def test_fast_session_calibration_reuses_analysis(monkeypatch) -> None:
+    import photo_calibrator.backend.simple_server as simple_server
+    import photo_calibrator.core.calibration as calibration_module
+
+    initial = _calibrate_payload(
+        {
+            "image_data": sample_data_url(),
+            "file_name": "fast-session.png",
+            "mode": "global",
+            "strength": 0.8,
+        }
+    )
+
+    def unexpected_analysis(*_args, **_kwargs):
+        raise AssertionError("fast calibration must reuse cached analysis")
+
+    monkeypatch.setattr(simple_server, "analyze_image_array", unexpected_analysis)
+    monkeypatch.setattr(calibration_module, "analyze_image_array", unexpected_analysis)
+    monkeypatch.setattr(calibration_module, "auto_detect_cast", unexpected_analysis)
+
+    payload = _calibrate_session_payload(
+        {
+            "session_id": initial["session_id"],
+            "mode": "global",
+            "strength": 0.65,
+            "fast": True,
+            "include_original": False,
+        }
+    )
+
+    assert payload["_timing"]["fast"] is True
+    assert payload["charts"] == {}
+    assert_preview_url(payload["calibrated_image"])
+
+
+def test_fast_session_transform_updates_output_geometry() -> None:
+    initial = _calibrate_payload(
+        {
+            "image_data": sample_data_url(),
+            "file_name": "fast-transform.png",
+            "mode": "global",
+            "strength": 0.8,
+        }
+    )
+
+    payload = _calibrate_session_payload(
+        {
+            "session_id": initial["session_id"],
+            "mode": "global",
+            "strength": 0.8,
+            "fast": True,
+            "include_original": False,
+            "image_transform": {"rotation": 90, "flip_h": False, "flip_v": False},
+        }
+    )
+
+    assert payload["output"]["width"] == initial["output"]["height"]
+    assert payload["output"]["height"] == initial["output"]["width"]
 
 
 def test_film_scan_payload_returns_normalized_crop_rect() -> None:

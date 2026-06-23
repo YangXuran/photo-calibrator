@@ -29,7 +29,7 @@ io = [
   "tifffile",
 ]
 gpu = [
-  "torch",
+  "torch==2.12.1",
 ]
 color = [
   "OpenImageIO",
@@ -37,7 +37,7 @@ color = [
 ]
 all = [
   "rawpy",
-  "torch",
+  "torch==2.12.1",
   "imageio",
   "tifffile",
   "OpenImageIO",

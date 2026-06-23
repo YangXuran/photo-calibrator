@@ -1,4 +1,4 @@
-import { MODE_DESCRIPTIONS, MODE_OPTIONS } from "../constants";
+import { MODE_OPTIONS } from "../constants";
 import type { WorkbenchController } from "../hooks/useWorkbench";
 import { InspectorPanelSections } from "./InspectorPanelSections";
 import { PaneSection } from "./PaneSection";
@@ -10,7 +10,8 @@ type InspectorAdjustPanelProps = {
 
 export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelProps) {
   const collapseScope = "workbench";
-  const modeDescription = MODE_DESCRIPTIONS[workbench.mode];
+  const autoBest = workbench.selectedFile?.result?.processing?.auto_best;
+  const selectedAutoMode = workbench.selectedFile?.result?.processing?.auto_best_selected_mode;
 
   return (
     <InspectorPanelSections
@@ -29,6 +30,15 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
               meta="参数更改后自动刷新后端预览"
             >
               <div className="pc-form-stack">
+                <label className="pc-field pc-field-checkbox">
+                  <input
+                    checked={workbench.negativeBaseEnabled}
+                    data-testid="negative-base-toggle"
+                    onChange={(event) => workbench.setNegativeBaseCommitted(event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span>负片去色罩</span>
+                </label>
                 <label className="pc-field">
                   <span>模式</span>
                   <select data-testid="mode-select" onChange={(event) => workbench.setModeCommitted(event.target.value)} value={workbench.mode}>
@@ -38,8 +48,15 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                       </option>
                     ))}
                   </select>
-                  {modeDescription ? (
-                    <span className="pc-field-hint" data-testid="mode-description">{modeDescription}</span>
+                  {workbench.mode === "auto-best" && selectedAutoMode ? (
+                    <span className="pc-field-hint" data-testid="auto-best-result">
+                      已选择 {selectedAutoMode}，评分 {workbench.selectedFile?.result?.processing?.auto_best_score?.toFixed(2) ?? "-"}
+                    </span>
+                  ) : null}
+                  {workbench.mode === "auto-best" && autoBest?.candidates?.length ? (
+                    <span className="pc-field-hint" data-testid="auto-best-candidates">
+                      候选: {autoBest.candidates.slice(0, 3).map((item) => `${item.mode} ${item.score.toFixed(1)}`).join(" / ")}
+                    </span>
                   ) : null}
                 </label>
                 <label className="pc-field">

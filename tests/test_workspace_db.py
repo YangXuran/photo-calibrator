@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -24,6 +25,46 @@ from photo_calibrator.backend.workspace_db import (
 def db(tmp_path: Path) -> WorkspaceDB:
     db_path = tmp_path / ".cache" / "workspace.db"
     return WorkspaceDB(db_path)
+
+
+def test_partial_migration_is_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / "partial.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata (key, value) VALUES ('db_version', '2');
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            source_path TEXT,
+            session_data_json TEXT NOT NULL,
+            document_json TEXT,
+            ai_evaluations_json TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            history_cursor INTEGER NOT NULL DEFAULT -1
+        );
+        CREATE TABLE action_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            description TEXT NOT NULL,
+            action_type TEXT NOT NULL DEFAULT 'calibration',
+            params_json TEXT,
+            created_at REAL NOT NULL
+        );
+        """
+    )
+    conn.close()
+
+    workspace = WorkspaceDB(db_path)
+
+    assert workspace.stats()["session_count"] == 0
+    check = sqlite3.connect(db_path)
+    session_columns = {row[1] for row in check.execute("PRAGMA table_info(sessions)")}
+    action_columns = {row[1] for row in check.execute("PRAGMA table_info(action_history)")}
+    check.close()
+    assert {"history_cursor", "calibrated_preview_blob", "calibrated_preview_mime"}.issubset(session_columns)
+    assert {"sequence_no", "before_state_json", "after_state_json", "preview_blob", "preview_mime"}.issubset(action_columns)
 
 
 def _make_preview(

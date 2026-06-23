@@ -522,27 +522,37 @@ cv2.imwrite(path, img)
       await window.getByTestId("focus-crop-detect").click();
       await expect(window.locator(".pc-crop-overlay")).toBeVisible({ timeout: 30000 });
       await window.getByTestId("inspector-tab-compose").click();
-      const cropApplyResponse = window.waitForResponse(
-        async (response) => {
-          if (!/\/api\/calibrate(-session)?$/.test(new URL(response.url()).pathname) || !response.ok()) return false;
-          const payload = await response.json().catch(() => null);
-          return payload?.processing?.crop_applied === true;
-        },
-        { timeout: 60000 },
-      );
-      await window.getByTestId("crop-apply-button").click();
-      await cropApplyResponse;
+      const cropApplyButton = window.getByTestId("crop-apply-button");
+      if ((await cropApplyButton.textContent()) !== "已应用") {
+        await cropApplyButton.click();
+        await expect(cropApplyButton).toHaveText("已应用", { timeout: 15000 });
+      }
       await expect(window.locator(".pc-crop-overlay")).toHaveCount(0);
 
       await window.getByTestId("inspector-tab-adjust").click();
       await window.getByTestId("mode-select").selectOption("global");
       await window.waitForTimeout(500);
-      const calibrationResponse = window.waitForResponse(
-        (response) => /\/api\/calibrate(?:-session)?$/.test(response.url()) && response.ok(),
+      const negativeBaseResponse = window.waitForResponse(
+        async (response) => {
+          if (!/\/api\/calibrate(?:-session)?$/.test(response.url()) || !response.ok()) return false;
+          const payload = await response.json().catch(() => null);
+          return payload?.processing?.negative_base_enabled === true;
+        },
         { timeout: 60000 },
       );
-      await window.getByTestId("mode-select").selectOption("negative-film");
-      await calibrationResponse;
+      await window.getByTestId("negative-base-toggle").check();
+      await negativeBaseResponse;
+      const autoBestResponse = window.waitForResponse(
+        async (response) => {
+          if (!/\/api\/calibrate(?:-session)?$/.test(response.url()) || !response.ok()) return false;
+          const payload = await response.json().catch(() => null);
+          return payload?.processing?.negative_base_enabled === true && payload?.processing?.auto_best_selected_mode;
+        },
+        { timeout: 60000 },
+      );
+      await window.getByTestId("mode-select").selectOption("auto-best");
+      await autoBestResponse;
+      await expect(window.getByTestId("auto-best-result")).toBeVisible({ timeout: 15000 });
       await window.getByTestId("inspector-tab-compose").click();
       await expect(window.getByTestId("crop-apply-button")).toHaveText("已应用");
       await expect(window.locator(".pc-crop-overlay")).toHaveCount(0);

@@ -55,6 +55,7 @@ class CalibrationResult:
     post_report: CastReport
     a_shift: float
     b_shift: float
+    analysis_image: np.ndarray | None = None
     metadata: dict[str, float | str] = field(default_factory=dict)
 
     @property
@@ -545,12 +546,28 @@ def calibrate_negative_film(
     img_rgb: np.ndarray,
     strength: float = DEFAULT_STRENGTH,
 ) -> np.ndarray:
-    """Convert a color negative into a positive image and refine its balance.
+    """Convert a color negative into a positive image and refine its balance."""
 
-    The pipeline is intentionally simple and robust:
-    1. invert the negative,
-    2. auto-level each channel to suppress the film base/orange mask,
-    3. apply a mild positive-film correction stack.
+    balanced_img = prepare_negative_film_base(img_rgb)
+    return refine_negative_film_positive(balanced_img, strength=strength)
+
+
+def refine_negative_film_positive(
+    img_rgb: np.ndarray,
+    strength: float = DEFAULT_STRENGTH,
+) -> np.ndarray:
+    """Apply a mild positive-film refinement after negative inversion/mask removal."""
+
+    matrixed = apply_color_matrix(img_rgb, strength=min(0.22, 0.08 + strength * 0.1))
+    zoned = calibrate_tone_zone(matrixed, strength=min(0.18, 0.06 + strength * 0.08))
+    return preserve_luminance(img_rgb, zoned, amount=0.1)
+
+
+def prepare_negative_film_base(img_rgb: np.ndarray) -> np.ndarray:
+    """Remove film-base color mask and invert a negative into a positive baseline.
+
+    This is intentionally separate from the creative/refinement step so analysis
+    and subsequent manual grading can use the positive image as their reference.
     """
 
     src, dtype, scale = _working_rgb(img_rgb)
@@ -590,10 +607,7 @@ def calibrate_negative_film(
         gamma = float(np.clip(np.log(0.45) / np.log(max(mid, 1e-4)), 0.85, 1.2))
         balanced = np.power(np.clip(balanced, 0.0, 1.0), 1.0 / gamma).astype(np.float32)
 
-    balanced_img = _restore_dtype(balanced, dtype, scale)
-    matrixed = apply_color_matrix(balanced_img, strength=min(0.22, 0.08 + strength * 0.1))
-    zoned = calibrate_tone_zone(matrixed, strength=min(0.18, 0.06 + strength * 0.08))
-    return preserve_luminance(balanced_img, zoned, amount=0.1)
+    return _restore_dtype(balanced, dtype, scale)
 
 
 def make_comparison(original: np.ndarray, calibrated: np.ndarray) -> np.ndarray:
@@ -628,14 +642,29 @@ def calibrate_image_from_analysis(
     *,
     color_space: str = "sRGB",
     data_range: tuple[float, float] | None = None,
+    reuse_input_analysis: bool = False,
+    analyze_output: bool = True,
 ) -> CalibrationResult:
     working_img, working_context = _to_calibration_working_space(
         img_rgb,
         color_space=color_space,
         data_range=data_range,
     )
-    working_pre_report = analyze_image_array(working_img)
-    working_zones = auto_detect_cast(working_img)
+    analysis_image: np.ndarray | None = None
+    can_reuse_analysis = (
+        reuse_input_analysis
+        and working_context["working_branch"] == "display-referred"
+        and working_img.shape[:2] == img_rgb.shape[:2]
+        and params.mode != CalibrationMode.NEGATIVE_FILM
+    )
+    if params.mode == CalibrationMode.NEGATIVE_FILM and not reuse_input_analysis:
+        negative_base_working = prepare_negative_film_base(working_img)
+        analysis_image = _from_calibration_working_space(negative_base_working, working_context)
+        working_pre_report = analyze_image_array(analysis_image)
+        working_zones = auto_detect_cast(analysis_image)
+    else:
+        working_pre_report = pre_report if can_reuse_analysis else analyze_image_array(working_img)
+        working_zones = zones if can_reuse_analysis else auto_detect_cast(working_img)
     estimate_cast = working_zones.get("neutral", working_zones["global"])
     manual_shift = params.a_shift is not None or params.b_shift is not None
     auto_cast_source = "neutral" if "neutral" in working_zones else "global"
@@ -743,24 +772,27 @@ def calibrate_image_from_analysis(
             )
 
     calibrated = _from_calibration_working_space(calibrated_working, working_context)
-    post_report = analyze_image_array(calibrated)
+    post_report = analyze_image_array(calibrated) if analyze_output else working_pre_report
     return CalibrationResult(
         image=calibrated,
         params=params,
         mode=params.mode,
-        pre_report=pre_report,
+        pre_report=working_pre_report,
         post_report=post_report,
         a_shift=float(a_shift),
         b_shift=float(b_shift),
+        analysis_image=analysis_image,
         metadata={
-            "pre_cast_strength": pre_report.lab.cast_strength,
+            "pre_cast_strength": working_pre_report.lab.cast_strength,
             "post_cast_strength": post_report.lab.cast_strength,
-            "reduction_pct": (1.0 - post_report.lab.cast_strength / max(pre_report.lab.cast_strength, 0.01)) * 100.0,
+            "reduction_pct": (1.0 - post_report.lab.cast_strength / max(working_pre_report.lab.cast_strength, 0.01)) * 100.0,
             "auto_cast_source": auto_cast_source,
             "auto_cast_confidence": estimate_cast.confidence,
             "working_color_space": color_space,
             "working_branch": str(working_context["working_branch"]),
             "working_pre_cast_strength": working_pre_report.lab.cast_strength,
+            "source_pre_cast_strength": pre_report.lab.cast_strength,
+            **({"analysis_basis": "negative-positive-base"} if analysis_image is not None else {}),
         },
     )
 

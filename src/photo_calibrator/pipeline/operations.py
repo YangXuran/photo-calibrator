@@ -117,3 +117,26 @@ class Lut3DOp(Operation):
         size = int(self.params.get("lut_size", 17))
         from photo_calibrator.core.calibration import apply_3d_lut
         return apply_3d_lut(image, strength=strength, size=size)
+
+
+@dataclass(frozen=True)
+class NegativeFilmBaseOp(Operation):
+    """Remove color mask and invert a color negative into a positive baseline."""
+
+    name: str = "negative-film-base"
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        from photo_calibrator.core.calibration import prepare_negative_film_base
+        return prepare_negative_film_base(image)
+
+
+@dataclass(frozen=True)
+class NegativeFilmRefineOp(Operation):
+    """Refine the positive baseline produced by NegativeFilmBaseOp."""
+
+    name: str = "negative-film-refine"
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        strength = float(self.params.get("strength", 0.8))
+        from photo_calibrator.core.calibration import refine_negative_film_positive
+        return refine_negative_film_positive(image, strength=strength)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from photo_calibrator.core.calibration import (
     CalibrationMode,
@@ -18,6 +19,7 @@ from photo_calibrator.core.calibration import (
     curve_interpolate,
     estimate_color_matrix,
     make_comparison,
+    prepare_negative_film_base,
     preserve_luminance,
 )
 from photo_calibrator.core.cast_detection import analyze_image_array, rgb_to_lab_float
@@ -210,6 +212,22 @@ def test_negative_film_mode_inverts_a_negative_image() -> None:
     assert out.dtype == np.uint8
     assert float(out.mean()) > float(negative.mean())
     assert np.mean(np.abs(out.astype(np.float32) - negative.astype(np.float32))) > 20.0
+
+
+def test_negative_film_analysis_uses_positive_base() -> None:
+    positive = gradient_image()
+    negative = 255 - positive
+    base = prepare_negative_film_base(negative)
+    result = calibrate_image(negative, CalibrationParams(mode=CalibrationMode.NEGATIVE_FILM, strength=0.8))
+
+    base_report = analyze_image_array(base)
+    negative_report = analyze_image_array(negative)
+
+    assert result.metadata["analysis_basis"] == "negative-positive-base"
+    assert result.analysis_image is not None
+    assert np.mean(np.abs(result.analysis_image.astype(np.float32) - base.astype(np.float32))) < 1.0
+    assert result.pre_report.rgb.r_mean == pytest.approx(base_report.rgb.r_mean, abs=1.0)
+    assert abs(result.pre_report.rgb.r_mean - negative_report.rgb.r_mean) > 10.0
 
 
 def test_preserve_luminance_restores_original_lightness() -> None:

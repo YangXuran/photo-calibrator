@@ -27,7 +27,7 @@
 - CPU 多线程：OpenCV optimized + 线程数配置；本地路径批处理 API `/api/calibrate-paths` 和上传批处理 API `/api/calibrate-batch` 都使用 worker 并行，并保持输入顺序返回结果。
 - 缓存：本地预览 JPEG 缓存、内存 `PreparedImage`/输入分析/静态图表缓存；同一 `cache_key` 有 per-key lock，重复上传/重复路径并行处理只构建一次分析结果；前端通过 `session_id` 调参，滑杆 `input` 防抖调用 `/api/calibrate-session`，不重解码。
 - Accelerator 后端：`cpu-opencv`、`opencl-umat`、可选 `torch-cuda`/`torch-mps`/`metal-mps`。没有 GPU 或依赖时必须自动 fallback 到 CPU。
-- 高收益算子接口：resize、RGB/Lab、Lab/RGB、曲线 LUT、矩阵、直方图、3D LUT 已进入 accelerator 调用面。OpenCL 覆盖 resize/RGB-Lab/Lab-RGB/LUT/matrix/histogram；Torch 覆盖 resize/RGB-Lab/Lab-RGB/曲线 LUT/matrix/3D LUT；`auto` 在 Torch GPU 和 OpenCL 同时可用时可使用 hybrid 后端。
+- 高收益算子接口：resize、RGB/Lab、Lab/RGB、曲线 LUT、矩阵、直方图、3D LUT 已进入 accelerator 调用面。macOS 实测 OpenCL 和逐算子 Torch 往返慢于优化 CPU，因此 `auto` 使用 `hybrid-cpu-mps`：OpenCV CPU 处理常规算子，仅将明显更快的 3D LUT 交给 MPS。
 - Accelerator 验证：
   - API: `GET /api/accelerator-benchmark?backend=auto&image_side=256&lut_size=17&iterations=3`
   - CLI: `python -m photo_calibrator.backend.accelerator_benchmark --backend auto`
@@ -46,14 +46,14 @@ Phase 4 新增能力：
 - **已接入产品主流程**: 基础/负片校准、session 与自适应预览、缓存、结构化分析图表、TIFF/RAW/HDR/EXR I/O、原图全分辨率导出回放、film scan API、插件 service、AI evaluation API/UI、Electron bridge、文件夹数据库和持久化撤销/重做。
 - **裁切契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。预览和导出统一执行“校准 -> 原图坐标裁切 -> 翻转/旋转”。Original/Calibrated 使用同一裁切几何，滑动对比只改变 `clip-path`，不得改变图片尺寸。
 - **历史契约**: 滑杆/曲线拖动期间只预览，pointer/key release 后提交一次；每个文件独立历史，数据库最多保留 50 条并持久化 redo 游标。
-- **仍需外部环境确认**: 真实云 AI provider、不同相机 RAW profile、签名/公证后的 DMG、Linux 分发和实机 GPU 性能。
+- **仍需外部环境确认**: 真实云 AI provider、不同相机 RAW profile、签名/公证后的 DMG 和 Linux 分发。Apple Silicon MPS 已完成本机实测。
 
 主要限制：
 
 - 当前预览与原图导出已经分离，但内部工作色彩空间、相机 profile/DCP 和显示变换仍需进一步专业化。
 - 轻量 HTTP 服务是 MVP，不是最终 FastAPI/IPC 架构。
 - 当前校准仍以 Lab 通道平移、RGB 曲线、矩阵和 3D LUT 为主；ICC/OCIO/LUT 已有导出入口，但线性光处理、软打样和统一非破坏编辑图仍需完善。
-- GPU 可用性取决于运行环境。开发机若无 OpenCL/CUDA/MPS，只能验证 CPU fallback 和 fake torch 逻辑，不能宣称完成实机 GPU 性能验证。
+- GPU 可用性取决于运行环境。Apple Silicon 开发机已验证 Torch MPS；其他 macOS 设备和 CUDA/Linux 仍必须分别验证，且无 GPU 时必须自动回退 CPU。
 - AI 评估 API/UI 已接入；真实 provider 的隐私、成本和输出稳定性仍需专项验证。
 - 中文/英文输出有部分乱码和语义残缺，重构时应重新整理用户可见文案。
 

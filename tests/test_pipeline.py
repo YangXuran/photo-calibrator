@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 from photo_calibrator.pipeline.document import PipelineDocument
-from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp
+from photo_calibrator.core.calibration import calibrate_negative_film
+from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp, NegativeFilmBaseOp, NegativeFilmRefineOp
 
 
 def test_identity_op_returns_same_image() -> None:
@@ -86,3 +87,20 @@ def test_calibration_op_replays_current_backend_mode() -> None:
     result = op.apply(img)
     assert result.shape == img.shape
     assert result.dtype == np.uint8
+
+
+def test_negative_film_pipeline_nodes_match_composite_mode() -> None:
+    x = np.linspace(20, 235, 48, dtype=np.uint8)
+    xx, yy = np.meshgrid(x, x)
+    positive = np.stack([xx, yy, ((xx.astype(int) + yy.astype(int)) // 2).astype(np.uint8)], axis=2)
+    negative = 255 - positive
+    doc = PipelineDocument(source_image=negative)
+    doc.add_op(NegativeFilmBaseOp())
+    doc.add_op(NegativeFilmRefineOp(params={"strength": 0.8}))
+
+    rendered = doc.render()
+    composite = calibrate_negative_film(negative, strength=0.8)
+
+    assert rendered.shape == negative.shape
+    assert rendered.dtype == np.uint8
+    assert np.mean(np.abs(rendered.astype(np.float32) - composite.astype(np.float32))) < 1.0

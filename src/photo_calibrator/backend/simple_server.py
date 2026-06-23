@@ -4,7 +4,7 @@ import argparse
 import base64
 import io
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 import hashlib
 import json
 import mimetypes
@@ -16,7 +16,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -35,6 +35,7 @@ from photo_calibrator.core.calibration import (
     calibrate_image_from_analysis,
     calibrate_rgb_curves,
     curve_interpolate,
+    prepare_negative_film_base,
 )
 from photo_calibrator.core.cast_detection import analyze_image_array, auto_detect_cast, detect_neutral_mask, ensure_uint8_rgb, rgb_to_lab_float
 from photo_calibrator.core.film_scan import detect_film_frame
@@ -44,7 +45,7 @@ from photo_calibrator.core.image_model import ImageBuffer
 from photo_calibrator.io import read_image
 from photo_calibrator.io.icc_profiles import ExportProfile
 from photo_calibrator.io.raw import decode_raw_image, is_raw_extension
-from photo_calibrator.pipeline import CalibrationOp, PipelineDocument
+from photo_calibrator.pipeline import CalibrationOp, NegativeFilmBaseOp, NegativeFilmRefineOp, PipelineDocument
 from photo_calibrator.services import AIEvaluationService, PluginService
 from photo_calibrator.services.contracts import HookNotSupportedError, ServiceError
 from photo_calibrator.backend.workspace_db import get_workspace_db
@@ -59,6 +60,18 @@ DEFAULT_ANALYSIS_MAX_SIDE = 3200
 FILM_SCAN_MAX_SIDE = 960
 MEMORY_CACHE_LIMIT = 128
 BATCH_WORKERS = max(1, min(4, os.cpu_count() or 1))
+AUTO_BEST_EVAL_MAX_SIDE = 480
+AUTO_BEST_MODE = "auto-best"
+AUTO_BEST_CANDIDATES = (
+    CalibrationMode.GLOBAL,
+    CalibrationMode.MIDTONES_ONLY,
+    CalibrationMode.HIGHLIGHTS_ONLY,
+    CalibrationMode.PRESERVE_SPLIT_TONE,
+    CalibrationMode.TONE_ZONE,
+    CalibrationMode.MATRIX,
+    CalibrationMode.SELECTIVE,
+    CalibrationMode.FILM,
+)
 
 cv2.setUseOptimized(True)
 try:
@@ -400,12 +413,12 @@ def _source_input_metadata(source_buffer) -> dict[str, object]:
     }
 
 
-def _document_operation_from_payload(payload: dict) -> dict[str, object] | None:
+def _document_operations_from_payload(payload: dict) -> list[dict[str, object]]:
     processing = payload.get("processing", {})
     calibration_source = processing.get("calibration_source") or payload.get("metadata", {}).get("calibration_source")
     if calibration_source == "plugin":
         plugin_id = processing.get("calibration_plugin_id") or payload.get("metadata", {}).get("plugin_id")
-        return {
+        return [{
             "name": "plugin-calibration",
             "params": {
                 "plugin_id": plugin_id,
@@ -414,10 +427,30 @@ def _document_operation_from_payload(payload: dict) -> dict[str, object] | None:
                 "strength": payload.get("params").strength if payload.get("params") is not None else None,
             },
             "replayable": False,
-        }
+        }]
     params = payload.get("params")
     if params is None:
-        return None
+        return []
+    operations: list[dict[str, object]] = []
+    if processing.get("analysis_basis") == "negative-positive-base" and params.mode != CalibrationMode.NEGATIVE_FILM:
+        operations.append({
+            "name": NegativeFilmBaseOp().name,
+            "params": {"enabled": True, "stage": "base"},
+            "replayable": True,
+        })
+    if params.mode == CalibrationMode.NEGATIVE_FILM:
+        return [
+            {
+                "name": NegativeFilmBaseOp().name,
+                "params": {"mode": params.mode.value, "stage": "base"},
+                "replayable": True,
+            },
+            {
+                "name": NegativeFilmRefineOp().name,
+                "params": {"strength": params.strength, "stage": "refine"},
+                "replayable": True,
+            },
+        ]
     op = CalibrationOp(
         params={
             "mode": params.mode.value,
@@ -433,7 +466,8 @@ def _document_operation_from_payload(payload: dict) -> dict[str, object] | None:
             "lut_size": params.lut_size,
         },
     )
-    return {"name": op.name, "params": _json_safe(op.params), "replayable": True}
+    operations.append({"name": op.name, "params": _json_safe(op.params), "replayable": True})
+    return operations
 
 
 def _render_document_from_metadata(entry: AnalysisEntry) -> tuple[dict[str, object], np.ndarray]:
@@ -451,6 +485,12 @@ def _render_document_from_metadata(entry: AnalysisEntry) -> tuple[dict[str, obje
         if op.get("name") == "calibration":
             doc.add_op(CalibrationOp(params=dict(op.get("params", {}))))
             replayable_ops.append(op)
+        elif op.get("name") == "negative-film-base":
+            doc.add_op(NegativeFilmBaseOp(params=dict(op.get("params", {}))))
+            replayable_ops.append(op)
+        elif op.get("name") == "negative-film-refine":
+            doc.add_op(NegativeFilmRefineOp(params=dict(op.get("params", {}))))
+            replayable_ops.append(op)
     rendered = doc.render() if replayable_ops else source
     return {
         "source": stored.get("source", "session-analysis"),
@@ -466,12 +506,11 @@ def _session_document_payload(entry: AnalysisEntry, payload: dict | None = None)
         if existing is not None:
             return existing
         return {"source": "session-analysis", "operations": []}
-    op = _document_operation_from_payload(payload)
+    new_ops = _document_operations_from_payload(payload)
     operations = []
     if existing is not None:
         operations.extend(existing.get("operations", []))
-    if op is not None:
-        operations.append(op)
+    operations.extend(new_ops)
     return {"source": "session-analysis", "operations": operations}
 
 
@@ -1279,7 +1318,7 @@ def _histogram_payload(img_rgb: np.ndarray, bins: int = 256) -> dict:
     return {"bins": bins, "channels": histograms}
 
 
-def _static_chart_payload(input_report, img_rgb: np.ndarray) -> dict:
+def _static_chart_payload(input_report, img_rgb: np.ndarray, input_label: str = "Original") -> dict:
     zone_order = ["shadow", "midtone", "highlight"]
     zones = []
     for name in zone_order:
@@ -1292,7 +1331,7 @@ def _static_chart_payload(input_report, img_rgb: np.ndarray) -> dict:
         "pci": _pci_payload(input_report),
         "neutral_mask": _neutral_mask_payload(img_rgb),
         "zones": zones,
-        "input_lab_vector": {"name": "Original", "a": input_report.lab.a_mean, "b": input_report.lab.b_star_mean},
+        "input_lab_vector": {"name": input_label, "a": input_report.lab.a_mean, "b": input_report.lab.b_star_mean},
         "skin_lab_vector": (
             {"name": "Skin", "a": input_report.skin.a_mean, "b": input_report.skin.b_mean}
             if input_report.skin
@@ -1301,8 +1340,14 @@ def _static_chart_payload(input_report, img_rgb: np.ndarray) -> dict:
     }
 
 
-def _chart_payload(input_report, output_report, img_rgb: np.ndarray, static_charts: dict | None = None) -> dict:
-    static = static_charts or _static_chart_payload(input_report, img_rgb)
+def _chart_payload(
+    input_report,
+    output_report,
+    img_rgb: np.ndarray,
+    static_charts: dict | None = None,
+    input_label: str = "Original",
+) -> dict:
+    static = static_charts or _static_chart_payload(input_report, img_rgb, input_label=input_label)
     lab_vectors = [
         static["input_lab_vector"],
         {"name": "Calibrated", "a": output_report.lab.a_mean, "b": output_report.lab.b_star_mean},
@@ -1328,7 +1373,7 @@ def _chart_payload(input_report, output_report, img_rgb: np.ndarray, static_char
         },
         "lab_vectors": lab_vectors,
         "strengths": [
-            {"name": "Original", "value": input_report.lab.cast_strength},
+            {"name": input_label, "value": input_report.lab.cast_strength},
             {"name": "Calibrated", "value": output_report.lab.cast_strength},
         ],
         "zones": static["zones"],
@@ -1498,8 +1543,10 @@ def _calibration_params_from_body(body: dict) -> CalibrationParams:
             )
         return None
 
+    requested_mode = str(body.get("mode", CalibrationMode.GLOBAL.value))
+    mode = CalibrationMode.GLOBAL if requested_mode == AUTO_BEST_MODE else CalibrationMode(requested_mode)
     return CalibrationParams(
-        mode=CalibrationMode(body.get("mode", CalibrationMode.GLOBAL.value)),
+        mode=mode,
         a_shift=_opt_float("a_shift"),
         b_shift=_opt_float("b_shift"),
         strength=float(body.get("strength", 0.8)),
@@ -1516,6 +1563,10 @@ def _calibration_params_from_body(body: dict) -> CalibrationParams:
     )
 
 
+def _negative_base_enabled(body: dict) -> bool:
+    return bool(body.get("negative_base", body.get("negative_base_enabled", False)))
+
+
 def _plugin_calibrator_id(body: dict) -> str | None:
     plugin_id = body.get("calibrator_plugin")
     if plugin_id in {"", None}:
@@ -1528,6 +1579,7 @@ def _apply_plugin_calibration(
     image: np.ndarray,
     params: CalibrationParams,
     calibrator_id: str,
+    fast: bool = False,
 ) -> dict:
     params_dict = {
         "mode": params.mode.value,
@@ -1544,7 +1596,7 @@ def _apply_plugin_calibration(
         zones=entry.zones,
     )
     calibrated = ensure_uint8_rgb(plugin_result.image)
-    post_report = analyze_image_array(calibrated)
+    post_report = entry.input_report if fast else analyze_image_array(calibrated)
     before = entry.input_report.lab.cast_strength
     after = post_report.lab.cast_strength
     reduction_pct = (1.0 - after / max(before, 0.01)) * 100.0
@@ -1577,14 +1629,113 @@ def _is_identity_curve(curve: list[list[float]] | None) -> bool:
     return True
 
 
-def _apply_core_calibration(entry: AnalysisEntry, image: np.ndarray, params: CalibrationParams) -> dict:
+def _auto_best_score(input_report, output_report) -> float:
+    """Lower is better; prefer low residual cast without excessive RGB imbalance."""
+    cast_score = float(output_report.lab.cast_strength)
+    rgb_spread_score = float(output_report.channel_spread) / 32.0
+    regression_penalty = max(0.0, float(output_report.lab.cast_strength) - float(input_report.lab.cast_strength)) * 2.0
+    return cast_score + rgb_spread_score + regression_penalty
+
+
+def _apply_core_calibration(
+    entry: AnalysisEntry,
+    image: np.ndarray,
+    params: CalibrationParams,
+    fast: bool = False,
+    requested_mode: str | None = None,
+    negative_base: bool = False,
+) -> dict:
     prepared = entry.prepared
+    requested_mode = requested_mode or params.mode.value
+    use_negative_base = negative_base and params.mode != CalibrationMode.NEGATIVE_FILM
+    analysis_image: np.ndarray | None = None
+    input_image = image
+    input_report = entry.input_report
+    input_zones = entry.zones
+    if use_negative_base:
+        input_image = prepare_negative_film_base(image)
+        analysis_image = input_image
+        input_report = analyze_image_array(input_image)
+        input_zones = auto_detect_cast(input_image)
+
+    if requested_mode == AUTO_BEST_MODE:
+        fast = False
+        candidates = []
+        best_params = params
+        best_score = float("inf")
+        eval_image = _resize_to_max_side(input_image, AUTO_BEST_EVAL_MAX_SIDE)
+        eval_report = analyze_image_array(eval_image)
+        eval_zones = auto_detect_cast(eval_image)
+        for candidate_mode in AUTO_BEST_CANDIDATES:
+            candidate_params = replace(params, mode=candidate_mode)
+            eval_result = calibrate_image_from_analysis(
+                eval_image,
+                candidate_params,
+                eval_report,
+                eval_zones,
+                color_space=prepared.color_space,
+                data_range=prepared.data_range,
+                reuse_input_analysis=False,
+                analyze_output=True,
+            )
+            score = _auto_best_score(eval_report, eval_result.post_report)
+            candidates.append({
+                "mode": candidate_mode.value,
+                "score": score,
+                "input_strength": eval_report.lab.cast_strength,
+                "output_strength": eval_result.post_report.lab.cast_strength,
+                "reduction_pct": eval_result.reduction_pct,
+            })
+            if score < best_score:
+                best_score = score
+                best_params = candidate_params
+        if not candidates:
+            raise ValueError("auto-best did not produce a calibration candidate")
+        best_result = calibrate_image_from_analysis(
+            input_image,
+            best_params,
+            input_report,
+            input_zones,
+            color_space=prepared.color_space,
+            data_range=prepared.data_range,
+            reuse_input_analysis=False,
+            analyze_output=True,
+        )
+        metadata = {
+            **best_result.metadata,
+            "calibration_source": "core",
+            "requested_mode": AUTO_BEST_MODE,
+            "auto_best_selected_mode": best_params.mode.value,
+            "auto_best_score": best_score,
+            "auto_best_eval_max_side": AUTO_BEST_EVAL_MAX_SIDE,
+        }
+        if use_negative_base:
+            metadata["analysis_basis"] = "negative-positive-base"
+            metadata["negative_base_enabled"] = "true"
+        return {
+            "image": best_result.image,
+            "input_report": input_report,
+            "analysis_image": analysis_image if analysis_image is not None else best_result.analysis_image,
+            "post_report": best_result.post_report,
+            "mode": best_params.mode.value,
+            "shift": {"a": best_result.a_shift, "b": best_result.b_shift},
+            "metadata": metadata,
+            "reduction_pct": best_result.reduction_pct,
+            "params_override": best_params,
+            "auto_best": {
+                "selected_mode": best_params.mode.value,
+                "score": best_score,
+                "eval_max_side": AUTO_BEST_EVAL_MAX_SIDE,
+                "candidates": candidates,
+            },
+        }
+
     has_curves = params.r_curve is not None or params.g_curve is not None or params.b_curve is not None
     all_identity = _is_identity_curve(params.r_curve) and _is_identity_curve(params.g_curve) and _is_identity_curve(params.b_curve)
     cached_img = getattr(prepared, "cached_working_img", None)
     cached_ctx = getattr(prepared, "cached_working_context", None)
 
-    if not all_identity and cached_img is not None and cached_ctx is not None:
+    if not use_negative_base and not all_identity and cached_img is not None and cached_ctx is not None:
         try:
             curved = calibrate_rgb_curves(
                 cached_img, params.strength, params.curve_low_pct, params.curve_high_pct,
@@ -1604,25 +1755,33 @@ def _apply_core_calibration(entry: AnalysisEntry, image: np.ndarray, params: Cal
             object.__setattr__(prepared, "cached_working_context", None)
 
     result = calibrate_image_from_analysis(
-        image, params, entry.input_report, entry.zones,
+        input_image, params, input_report, input_zones,
         color_space=prepared.color_space, data_range=prepared.data_range,
+        reuse_input_analysis=fast and not use_negative_base,
+        analyze_output=not fast,
     )
-    if cached_img is None and not all_identity:
+    if not use_negative_base and cached_img is None and not all_identity:
         try:
             wi, wc = _to_calibration_working_space(
-                image, color_space=prepared.color_space, data_range=prepared.data_range,
+                input_image, color_space=prepared.color_space, data_range=prepared.data_range,
             )
             shifted = calibrate_global(wi, result.a_shift, result.b_shift, params.strength)
             object.__setattr__(prepared, "cached_working_img", shifted)
             object.__setattr__(prepared, "cached_working_context", wc)
         except Exception:
             pass
+    metadata = {**result.metadata, "calibration_source": "core"}
+    if use_negative_base:
+        metadata["analysis_basis"] = "negative-positive-base"
+        metadata["negative_base_enabled"] = "true"
     return {
         "image": result.image,
+        "input_report": input_report if use_negative_base else result.pre_report,
+        "analysis_image": analysis_image if analysis_image is not None else result.analysis_image,
         "post_report": result.post_report,
         "mode": result.mode.value,
         "shift": {"a": result.a_shift, "b": result.b_shift},
-        "metadata": {**result.metadata, "calibration_source": "core"},
+        "metadata": metadata,
         "reduction_pct": result.reduction_pct,
     }
 
@@ -1630,11 +1789,21 @@ def _apply_core_calibration(entry: AnalysisEntry, image: np.ndarray, params: Cal
 def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> dict:
     params = _calibration_params_from_body(body)
     calibrator_id = _plugin_calibrator_id(body)
+    requested_mode = str(body.get("mode", params.mode.value))
+    negative_base = _negative_base_enabled(body)
+    fast = bool(body.get("fast", False)) and requested_mode != AUTO_BEST_MODE
     if calibrator_id:
-        payload = _apply_plugin_calibration(entry, image, params, calibrator_id)
+        payload = _apply_plugin_calibration(entry, image, params, calibrator_id, fast=fast)
     else:
-        payload = _apply_core_calibration(entry, image, params)
-    payload["params"] = params
+        payload = _apply_core_calibration(
+            entry,
+            image,
+            params,
+            fast=fast,
+            requested_mode=requested_mode,
+            negative_base=negative_base,
+        )
+    payload["params"] = payload.pop("params_override", params)
     payload["calibrator_plugin"] = calibrator_id
     return payload
 
@@ -1743,7 +1912,15 @@ def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> 
     if crop_rect or image_transform:
         calibration = dict(calibration)
         calibration["image"] = _apply_crop_and_transform(calibration["image"], crop_rect, image_transform)
-        calibration["post_report"] = analyze_image_array(calibration["image"])
+        if bool(body.get("fast", False)) and is_dataclass(calibration["post_report"]):
+            transformed = calibration["image"]
+            calibration["post_report"] = replace(
+                calibration["post_report"],
+                width=int(transformed.shape[1]),
+                height=int(transformed.shape[0]),
+            )
+        else:
+            calibration["post_report"] = analyze_image_array(calibration["image"])
         metadata = dict(calibration.get("metadata") or {})
         metadata["crop_applied"] = bool(crop_rect)
         metadata["image_transform_applied"] = bool(image_transform)
@@ -1872,6 +2049,7 @@ def _calibration_response(
 ) -> dict:
     prepared = entry.prepared
     accelerator = _accelerator_payload()
+    input_report = calibration.get("input_report") or entry.input_report
     post_report = calibration["post_report"]
     metadata = calibration.get("metadata", {})
     original_preview = _render_preview_rgb(
@@ -1884,7 +2062,19 @@ def _calibration_response(
         color_space=prepared.color_space,
         data_range=prepared.data_range,
     )
-    charts = {} if fast else _chart_payload(entry.input_report, post_report, original_preview, entry.static_charts)
+    analysis_image = calibration.get("analysis_image")
+    analysis_preview = (
+        _render_preview_rgb(
+            analysis_image,
+            color_space=prepared.color_space,
+            data_range=prepared.data_range,
+        )
+        if isinstance(analysis_image, np.ndarray)
+        else original_preview
+    )
+    input_label = "Positive base" if metadata.get("analysis_basis") == "negative-positive-base" else "Original"
+    static_charts = None if isinstance(analysis_image, np.ndarray) else entry.static_charts
+    charts = {} if fast else _chart_payload(input_report, post_report, analysis_preview, static_charts, input_label=input_label)
     if not fast:
         charts["calibrated_rgb_histogram"] = _histogram_payload(calibrated_preview, bins=256)
         cal_params = calibration.get("params")
@@ -1894,7 +2084,7 @@ def _calibration_response(
                 charts["lut_analysis"] = lut_analysis
     payload = {
         "session_id": entry.cache_key,
-        "input": _report_payload(entry.input_report),
+        "input": _report_payload(input_report),
         "output": _report_payload(post_report),
         "mode": calibration["mode"],
         "shift": calibration["shift"],
@@ -1929,6 +2119,12 @@ def _calibration_response(
             "calibration_source": metadata.get("calibration_source", "core"),
             "calibration_plugin_id": metadata.get("plugin_id"),
             "calibration_plugin_name": metadata.get("plugin_name"),
+            "analysis_basis": metadata.get("analysis_basis"),
+            "negative_base_enabled": metadata.get("negative_base_enabled") == "true",
+            "requested_mode": metadata.get("requested_mode"),
+            "auto_best_selected_mode": metadata.get("auto_best_selected_mode"),
+            "auto_best_score": metadata.get("auto_best_score"),
+            "auto_best": calibration.get("auto_best"),
             "crop_rect": crop_rect,
             "crop_applied": bool(crop_rect),
             "image_transform": image_transform,
@@ -3771,7 +3967,9 @@ class Handler(BaseHTTPRequestHandler):
 def run(host: str = "127.0.0.1", port: int = 8765, accelerator: str = "auto") -> None:
     global _BASE_URL
     _BASE_URL = f"http://{host}:{port}"
-    _set_accelerator_payload(accelerator)
+    deferred_auto = accelerator == "auto" and bool(getattr(ACCELERATOR, "deferred_auto", False))
+    if not deferred_auto:
+        _set_accelerator_payload(accelerator)
     _startup_workspace_sync()
     # Clean up stale preview cache files older than 24h
     if PREVIEW_CACHE_DIR.exists():
@@ -3784,6 +3982,13 @@ def run(host: str = "127.0.0.1", port: int = 8765, accelerator: str = "auto") ->
                 pass
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"Photo Calibrator UI: http://{host}:{port} ({_accelerator_payload()['active_backend']})")
+    if deferred_auto:
+        def initialize_accelerator() -> None:
+            time.sleep(1.0)
+            payload = _set_accelerator_payload("auto")
+            print(f"Accelerator ready: {payload['active_backend']}")
+
+        Thread(target=initialize_accelerator, name="accelerator-init", daemon=True).start()
     httpd.serve_forever()
 
 

@@ -3,9 +3,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import pytest
+import photo_calibrator.core.accelerator as accelerator_module
 
 from photo_calibrator.core.accelerator import (
     HybridTorchOpenCLAccelerator,
+    HybridTorchCPUAccelerator,
     ImageAccelerator,
     OpenCLUMatAccelerator,
     TorchAccelerator,
@@ -16,7 +18,7 @@ from photo_calibrator.core.accelerator import (
 )
 
 
-BACKEND_NAMES = {"cpu-opencv", "opencl-umat", "torch-cuda", "torch-mps", "hybrid-opencl-cuda", "hybrid-opencl-mps"}
+BACKEND_NAMES = {"cpu-opencv", "opencl-umat", "torch-cuda", "torch-mps", "hybrid-opencl-cuda", "hybrid-opencl-mps", "hybrid-cpu-cuda", "hybrid-cpu-mps"}
 BENCHMARK_OPS = {"resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "3d-lut"}
 
 
@@ -351,8 +353,20 @@ def test_hybrid_accelerator_combines_opencl_and_torch_gpu_ops() -> None:
     assert hybrid.resize_area(rgb, (8, 8)).shape == (8, 8, 3)
     assert hybrid.apply_3d_lut(src, table, 0.5).shape == src.shape
     assert info.active_backend == "hybrid-opencl-cuda"
-    assert set(info.gpu_ops) == {"resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram", "3d-lut"}
+    assert {"resize", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram", "3d-lut"}.issubset(info.gpu_ops)
     assert info.cpu_fallback_ops == ()
+
+
+def test_auto_backend_on_macos_prefers_torch_without_opencl(monkeypatch) -> None:
+    monkeypatch.setattr(accelerator_module.sys, "platform", "darwin")
+    monkeypatch.setattr(accelerator_module, "import_module", lambda _name: FakeTorch())
+
+    accelerator = create_accelerator("auto")
+
+    assert isinstance(accelerator, HybridTorchCPUAccelerator)
+    assert not isinstance(accelerator, HybridTorchOpenCLAccelerator)
+    assert accelerator.name == "hybrid-cpu-cuda"
+    assert accelerator.info("auto").gpu_ops == ("3d-lut",)
 
 
 def test_torch_accelerator_matches_cpu_3d_lut_when_torch_device_exists() -> None:

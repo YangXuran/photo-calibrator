@@ -192,6 +192,7 @@ function composeManualCurves(curves: ManualCurves): { r: ChannelCurve; g: Channe
 function buildCalibrationSignature(
   mode: string,
   strength: number,
+  negativeBaseEnabled: boolean,
   accelerator: string,
   curves: ManualCurves,
   cropRect?: CropRect,
@@ -200,6 +201,7 @@ function buildCalibrationSignature(
   return [
     mode,
     strength.toFixed(4),
+    negativeBaseEnabled ? "negative-base:on" : "negative-base:off",
     accelerator,
     serializeCurve(curves.l),
     serializeCurve(curves.r),
@@ -208,6 +210,14 @@ function buildCalibrationSignature(
     serializeCropRect(cropRect),
     serializeImageTransform(imageTransform),
   ].join("::");
+}
+
+function hasAnalysisCharts(charts?: CalibrationPayload["charts"]): boolean {
+  return Boolean(
+    charts?.rgb_histogram
+    && charts.lab_vectors?.length
+    && charts.strengths?.length,
+  );
 }
 
 function serializeCropRect(cropRect?: CropRect): string {
@@ -277,6 +287,7 @@ function buildDefaultExportState(
   return {
     mode: "global",
     strength: 0.8,
+    negativeBaseEnabled: false,
     accelerator,
     curves,
     crop: item.crop,
@@ -285,6 +296,11 @@ function buildDefaultExportState(
     imageTransform: normalizeImageTransform(item.imageTransform),
     runtimeSessionId: item.sessionId,
   };
+}
+
+function effectiveExportMode(stateMode: string, item?: WorkspaceFile): string {
+  if (stateMode !== "auto-best") return stateMode;
+  return item?.result?.processing?.auto_best_selected_mode ?? stateMode;
 }
 
 function resolvePreviewMaxSide(preview?: WorkspaceFile["highResPreview"] | WorkspaceFile["preview"]): number | null {
@@ -304,6 +320,7 @@ export function useWorkbench() {
   const [selectedId, setSelectedId] = useState<string>();
   const [viewerState, setViewerState] = useState<ViewerWorkspaceState>(() => loadViewerState());
   const [mode, setMode] = useState("global");
+  const [negativeBaseEnabled, setNegativeBaseEnabled] = useState(false);
   const [strength, setStrength] = useState(0.8);
   const [accelerator, setAccelerator] = useState("auto");
   const [loading, setLoading] = useState(false);
@@ -368,7 +385,7 @@ export function useWorkbench() {
   const requestRef = useRef(0);
   const calibrationDepthRef = useRef(0);
   const currentResMaxSideRef = useRef(320);
-  const prevDepsRef = useRef<{ id?: string; mode: string; strength: number }>({ mode: "global", strength: 0.8 });
+  const prevDepsRef = useRef<{ id?: string; mode: string; negativeBaseEnabled: boolean; strength: number }>({ mode: "global", negativeBaseEnabled: false, strength: 0.8 });
   const fileCurvesRef = useRef<Map<string, ManualCurves>>(new Map());
   const highResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highResRequestRef = useRef(0);
@@ -384,7 +401,7 @@ export function useWorkbench() {
   const curveInteractionRef = useRef<CurveInteraction>("idle");
   const persistenceWarningShownRef = useRef<Set<string>>(new Set());
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
-  type UndoSnapshot = { mode: string; strength: number; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
+  type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
   const undoIndexRef = useRef(-1);
   const undoingRef = useRef(false);
@@ -403,6 +420,7 @@ export function useWorkbench() {
     return {
       mode,
       strength,
+      negativeBaseEnabled,
       accelerator,
       curves: cloneManualCurves({ l: lCurve, r: rCurve, g: gCurve, b: bCurve }),
       crop: selectedFile?.crop,
@@ -487,8 +505,12 @@ export function useWorkbench() {
     if (activeCommitKeyRef.current === commitKey) return;
     activeCommitKeyRef.current = commitKey;
     pendingCommitRef.current = { description, actionType, state };
-    const signature = buildCalibrationSignature(state.mode, state.strength, state.accelerator, state.curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
-    if (selectedFile?.result?.calibrated_image && selectedFile.calibrationSignature === signature) {
+    const signature = buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, state.curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
+    if (
+      selectedFile?.result?.calibrated_image
+      && selectedFile.calibrationSignature === signature
+      && hasAnalysisCharts(selectedFile.result.charts)
+    ) {
       pendingCommitRef.current = null;
       void persistCommittedEdit(description, actionType, state, selectedFile.result.calibrated_image);
     }
@@ -498,6 +520,12 @@ export function useWorkbench() {
     beginEdit();
     setMode(value);
     commitEdit(`模式 ${value}`, "mode", currentEditState({ mode: value }));
+  }
+
+  function setNegativeBaseCommitted(value: boolean) {
+    beginEdit();
+    setNegativeBaseEnabled(value);
+    commitEdit(value ? "启用负片基础" : "关闭负片基础", "negative-base", currentEditState({ negativeBaseEnabled: value }));
   }
 
   function commitStrength(value: number) {
@@ -902,6 +930,7 @@ export function useWorkbench() {
   function applyPersistedState(state: PersistedEditState, calibratedImage?: string) {
     undoingRef.current = true;
     setMode(state.mode);
+    setNegativeBaseEnabled(Boolean(state.negativeBaseEnabled));
     setStrength(state.strength);
     setAccelerator(state.accelerator);
     const curves = cloneManualCurves(state.curves);
@@ -922,7 +951,7 @@ export function useWorkbench() {
         cropApplied: state.cropApplied,
         persistedState: state,
         imageTransform: normalizeImageTransform(state.imageTransform),
-        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, state.accelerator, curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
+        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, curves, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
         result: calibratedImage && item.result ? { ...item.result, calibrated_image: calibratedImage } : item.result,
       } : item));
     }
@@ -957,6 +986,7 @@ export function useWorkbench() {
     undoIndexRef.current = idx - 1;
     const snap = stack[idx - 1];
     setMode(snap.mode);
+    setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
     setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
@@ -981,6 +1011,7 @@ export function useWorkbench() {
     undoIndexRef.current = idx + 1;
     const snap = stack[idx + 1];
     setMode(snap.mode);
+    setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
     setAccelerator(snap.accelerator);
     setLCurve(snap.lCurve.map((p) => [...p] as [number, number]));
@@ -1008,8 +1039,12 @@ export function useWorkbench() {
     const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
     const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
     const requestImageTransform = imageTransformForRequest(imageTransform);
-    const signature = buildCalibrationSignature(mode, strength, accelerator, manualCurves, cropRect, imageTransform);
-    if (selectedFile.result?.calibrated_image && selectedFile.calibrationSignature === signature) {
+    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, cropRect, imageTransform);
+    if (
+      selectedFile.result?.calibrated_image
+      && selectedFile.calibrationSignature === signature
+      && hasAnalysisCharts(selectedFile.result.charts)
+    ) {
       return;
     }
     const depth = ++calibrationDepthRef.current;
@@ -1019,10 +1054,20 @@ export function useWorkbench() {
       return;
     }
     const prev = prevDepsRef.current;
-    const fileOrParamsChanged = prev.id !== selectedFile?.id || prev.mode !== mode || prev.strength !== strength;
-    prevDepsRef.current = { id: selectedFile?.id, mode, strength };
+    const fileChanged = prev.id !== selectedFile?.id;
+    const modeChanged = prev.mode !== mode;
+    const negativeBaseChanged = prev.negativeBaseEnabled !== negativeBaseEnabled;
+    const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || prev.strength !== strength;
+    prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength };
     debugLog("calib.effect", { fileId: selectedFile?.id?.substring(0, 20), fileChanged: fileOrParamsChanged, mode, strength });
-    const fastMode = !fileOrParamsChanged;
+    const fastMode = Boolean(
+      selectedFile.sessionId
+      && selectedFile.result?.calibrated_image
+      && !fileChanged
+      && !modeChanged
+      && !negativeBaseChanged
+      && hasAnalysisCharts(selectedFile.result.charts),
+    );
     const debounceMs = fastMode ? 0 : 160;
     if (fastMode) perfMark(`effect.fire(debounce=${debounceMs}ms)`);
     const currentRequest = ++requestRef.current;
@@ -1039,6 +1084,7 @@ export function useWorkbench() {
             session_id: selectedFile.sessionId,
             mode,
             strength,
+            negative_base: negativeBaseEnabled,
             accelerator,
             include_original: Boolean(cropRect),
             fast: fastMode,
@@ -1053,6 +1099,7 @@ export function useWorkbench() {
             file_name: selectedFile.name,
             mode,
             strength,
+            negative_base: negativeBaseEnabled,
             accelerator,
             fast: fastMode,
             crop_rect: cropRect,
@@ -1099,7 +1146,7 @@ export function useWorkbench() {
             if (!sid) return;
             try {
               const cal = await postCalibrationSession({
-                session_id: sid, mode, strength, accelerator,
+                session_id: sid, mode, strength, negative_base: negativeBaseEnabled, accelerator,
                 include_original: Boolean(cropRect),
                 crop_rect: cropRect,
                 image_transform: requestImageTransform,
@@ -1155,6 +1202,7 @@ export function useWorkbench() {
     selectedFile?.imageTransform?.flipV,
     curveStateFileId,
     mode,
+    negativeBaseEnabled,
     strength,
     accelerator,
     committedCurves,
@@ -1167,11 +1215,17 @@ export function useWorkbench() {
     const prevTimer = pushTimerRef.current;
     if (prevTimer) clearTimeout(prevTimer);
     pushTimerRef.current = setTimeout(() => {
-      const snap: UndoSnapshot = { mode, strength, accelerator, lCurve, rCurve, gCurve, bCurve };
+      const snap: UndoSnapshot = { mode, strength, negativeBaseEnabled, accelerator, lCurve, rCurve, gCurve, bCurve };
       const stack = undoStackRef.current;
       const idx = undoIndexRef.current;
       const last = stack[idx];
-      if (last && last.mode === snap.mode && last.strength === snap.strength && last.accelerator === snap.accelerator) return;
+      if (
+        last
+        && last.mode === snap.mode
+        && last.negativeBaseEnabled === snap.negativeBaseEnabled
+        && last.strength === snap.strength
+        && last.accelerator === snap.accelerator
+      ) return;
       undoStackRef.current = stack.slice(0, idx + 1);
       undoStackRef.current.push(snap);
       if (undoStackRef.current.length > 50) {
@@ -1201,6 +1255,7 @@ export function useWorkbench() {
     const restoredState = selectedFile.persistedState;
     if (restoredState) {
       setMode(restoredState.mode);
+      setNegativeBaseEnabled(Boolean(restoredState.negativeBaseEnabled));
       setStrength(restoredState.strength);
       setAccelerator(restoredState.accelerator);
     }
@@ -1294,7 +1349,7 @@ export function useWorkbench() {
     const dpr = window.devicePixelRatio || 1;
 
     let requiredMaxSide = Math.max(containerWidth, containerHeight) * viewerZoomScale * dpr;
-    requiredMaxSide = Math.max(320, Math.min(3200, Math.round(requiredMaxSide)));
+    requiredMaxSide = Math.max(320, Math.min(1600, Math.round(requiredMaxSide)));
 
     const currentMaxSide = currentResMaxSideRef.current;
     const diff = Math.abs(requiredMaxSide - currentMaxSide) / currentMaxSide;
@@ -1333,8 +1388,10 @@ export function useWorkbench() {
           session_id: highResSessionId,
           mode,
           strength,
+          negative_base: negativeBaseEnabled,
           accelerator,
           include_original: true,
+          fast: true,
           crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
           image_transform: imageTransformForRequest(selectedFile.imageTransform),
           r_curve: effectiveCurves.r,
@@ -1345,7 +1402,16 @@ export function useWorkbench() {
         setFiles((items) =>
           items.map((item) =>
             item.id === capturedFileId
-              ? { ...item, cropApplied: Boolean(calibration.processing?.crop_applied) || item.cropApplied, result: calibration }
+              ? {
+                  ...item,
+                  cropApplied: Boolean(calibration.processing?.crop_applied) || item.cropApplied,
+                  result: {
+                    ...calibration,
+                    charts: Object.keys(calibration.charts ?? {}).length === 0
+                      ? item.result?.charts ?? {}
+                      : calibration.charts,
+                  },
+                }
               : item,
           ),
         );
@@ -1481,7 +1547,7 @@ export function useWorkbench() {
         const restoredState = restored?.state;
         const restoredHistory = historyFromApi(restored?.history ?? []);
         const calibratedImage = restored?.calibrated_image;
-        const restoredResult = calibratedImage && restoredState ? {
+        const restoredResult: CalibrationPayload | undefined = calibratedImage && restoredState ? {
           calibrated_image: calibratedImage,
           reduction_pct: 0,
           input: { direction: "restored", lab: { strength: 0, a_mean: 0, b_star_mean: 0 } },
@@ -1504,8 +1570,8 @@ export function useWorkbench() {
           historyPersistent: restored?.status === "restored",
           sessionId: undefined,
           result: restoredResult,
-          calibrationSignature: restoredResult && restoredState
-            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, restoredState.accelerator, restoredState.curves, restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
+          calibrationSignature: restoredResult && restoredState && hasAnalysisCharts(restoredResult.charts)
+            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, Boolean(restoredState.negativeBaseEnabled), restoredState.accelerator, restoredState.curves, restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
             : undefined,
           crop: restoredState?.crop,
           cropEdited: restoredState?.cropEdited,
@@ -1540,6 +1606,7 @@ export function useWorkbench() {
     if (firstRestoredState) {
       const restoredCurves = cloneManualCurves(firstRestoredState.curves);
       setMode(firstRestoredState.mode);
+      setNegativeBaseEnabled(Boolean(firstRestoredState.negativeBaseEnabled));
       setStrength(firstRestoredState.strength);
       setAccelerator(firstRestoredState.accelerator);
       setLCurve(restoredCurves.l);
@@ -1577,6 +1644,7 @@ export function useWorkbench() {
         cropSuggestedRect: undefined,
         cropEdited: false,
         cropApplied: false,
+        calibrationSignature: undefined,
         result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
       } : item));
       let payload: CropPayload;
@@ -1610,6 +1678,7 @@ export function useWorkbench() {
                 cropSuggestedRect: payload.crop_rect,
                 cropEdited: false,
                 cropApplied: false,
+                calibrationSignature: undefined,
                 result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
               }
             : item,
@@ -1632,8 +1701,9 @@ export function useWorkbench() {
       const filePathVal = (selectedFile.file as any)?.path as string | undefined;
       const body: Record<string, unknown> = {
         file_name: selectedFile.name,
-        mode,
+        mode: effectiveExportMode(mode, selectedFile),
         strength,
+        negative_base: negativeBaseEnabled,
         accelerator,
         output_path: exportOptions.outputPath,
         format: exportOptions.format,
@@ -1677,8 +1747,9 @@ export function useWorkbench() {
         const effectiveCurves = composeManualCurves(state.curves);
         const body: Record<string, unknown> = {
           file_name: item.name,
-          mode: state.mode,
+          mode: effectiveExportMode(state.mode, item),
           strength: state.strength,
+          negative_base: Boolean(state.negativeBaseEnabled),
           accelerator: state.accelerator,
           output_path: suggestExportPathInDirectory(item.name, exportOptions.format, outputDir),
           format: exportOptions.format,
@@ -1779,6 +1850,7 @@ export function useWorkbench() {
         session_id: loaded.session_id,
         mode,
         strength,
+        negative_base: negativeBaseEnabled,
         accelerator,
       });
       const nextItem: WorkspaceFile = {
@@ -1880,6 +1952,7 @@ export function useWorkbench() {
                   },
               cropEdited: true,
               cropApplied: false,
+              calibrationSignature: undefined,
               result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
             }
           : item,
@@ -1912,6 +1985,7 @@ export function useWorkbench() {
                   },
               cropEdited: false,
               cropApplied: false,
+              calibrationSignature: undefined,
               result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
             }
           : item,
@@ -1926,7 +2000,7 @@ export function useWorkbench() {
     beginEdit();
     appliedCropIdsRef.current.add(selectedFile.id);
     setFiles((items) => items.map((item) =>
-      item.id === selectedFile.id ? { ...item, cropApplied: true } : item,
+      item.id === selectedFile.id ? { ...item, cropApplied: true, calibrationSignature: undefined } : item,
     ));
     commitEdit("应用裁切", "crop-apply", currentEditState({ cropApplied: true }));
   }
@@ -2203,6 +2277,8 @@ export function useWorkbench() {
     mode,
     setMode,
     setModeCommitted,
+    negativeBaseEnabled,
+    setNegativeBaseCommitted,
     strength,
     setStrength,
     commitStrength,
@@ -2283,7 +2359,7 @@ export function useWorkbench() {
   }), [
     backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
     selectedId, selectedFile, displayedSelectedFile, selectionDisplayReady, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
-    viewerPan, mode, strength, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
+    viewerPan, mode, negativeBaseEnabled, strength, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
     exportResult, batchExportResults, documentRender, sessionOptions, sessionSaveResult, savedSessions,
     selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
     actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,

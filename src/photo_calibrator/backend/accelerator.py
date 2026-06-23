@@ -1,6 +1,7 @@
 from photo_calibrator.core.accelerator import (
     ACCELERATOR,
     AcceleratorInfo,
+    HybridTorchCPUAccelerator,
     HybridTorchOpenCLAccelerator,
     ImageAccelerator,
     OpenCLUMatAccelerator,
@@ -13,6 +14,7 @@ from photo_calibrator.core.accelerator import (
 __all__ = [
     "ACCELERATOR",
     "AcceleratorInfo",
+    "HybridTorchCPUAccelerator",
     "HybridTorchOpenCLAccelerator",
     "ImageAccelerator",
     "OpenCLUMatAccelerator",

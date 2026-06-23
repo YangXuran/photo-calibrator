@@ -70,7 +70,10 @@ The main local workflow is integrated end to end:
 
 ### Accelerator
 
-- Available backends include `cpu-opencv`, `opencl-umat`, optional Torch CUDA/MPS and hybrid selection.
+- Available backends include `cpu-opencv`, `opencl-umat`, Torch CUDA/MPS and hybrid selection.
+- macOS `auto` uses `hybrid-cpu-mps`: optimized 10-thread OpenCV handles the faster image/color kernels and MPS handles 3D LUTs.
+- Torch `2.12.1` is bundled in the arm64 backend; MPS initializes after HTTP startup so the UI is not blocked by Torch loading.
+- Interactive previews are capped at 1600px and `fast` session requests reuse cached input analysis instead of recalculating input/output reports.
 - Unsupported GPU operations fall back to CPU rather than failing the edit.
 - Benchmark coverage includes resize, RGB/Lab, Lab/RGB, curve LUT, matrix and 3D LUT operations.
 
@@ -81,6 +84,7 @@ The main local workflow is integrated end to end:
   - `npm --prefix frontend run package:dmg:arm64`
 - Electron Builder includes the PyInstaller backend as an application resource.
 - A local unsigned DMG can be produced for testing.
+- The Torch-enabled arm64 build is approximately 849MB installed / 288MB DMG; signing and notarization are still required.
 - Distribution hardening still requires signing, notarization, minimum-macOS validation and repeatable native dependency checks.
 - Linux AppImage packaging remains outstanding.
 
@@ -169,6 +173,6 @@ Recent targeted verification on 2026-06-22 includes:
 - Split comparison at 20% and 80% with invariant image geometry.
 - Manual Computer Use inspection of a cropped negative in Electron.
 
-Full Python suite result on 2026-06-22: `309 passed / 1 skipped / 1 failed`. The remaining failure is `test_hybrid_accelerator_combines_opencl_and_torch_gpu_ops`: the test expects the older GPU operation set, while the implementation also reports `rgb-gray`, `gaussian-blur`, and `sobel-profile`. This is a stale capability assertion, not a runtime processing failure, and remains a required test cleanup.
+Full Python suite result on 2026-06-23: `315 passed`. The stale accelerator capability assertion has been replaced with a required-subset assertion. On `Capture00183.NEF`, a cached 1600px fast calibration measured about 101ms versus about 4.8s for the previous 3200px full-analysis path. Frozen MPS 3D LUT measured about 48ms after warm-up versus about 301ms on CPU.
 
 Code and current test output take precedence over historical numbers.

@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from .document import PipelineDocument
-from .operations import CalibrationOp, IdentityOp, LabShiftOp, Lut3DOp, MatrixOp, Operation, RgbCurvesOp
+from .operations import (
+    CalibrationOp,
+    IdentityOp,
+    LabShiftOp,
+    Lut3DOp,
+    MatrixOp,
+    NegativeFilmBaseOp,
+    NegativeFilmRefineOp,
+    Operation,
+    RgbCurvesOp,
+)
 
 __all__ = [
     "Operation",
@@ -12,6 +22,8 @@ __all__ = [
     "LabShiftOp",
     "Lut3DOp",
     "MatrixOp",
+    "NegativeFilmBaseOp",
+    "NegativeFilmRefineOp",
     "RgbCurvesOp",
     "PipelineDocument",
 ]

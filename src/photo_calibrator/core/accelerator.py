@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from importlib import import_module
+import sys
 
 import cv2
 import numpy as np
@@ -245,6 +246,18 @@ class TorchAccelerator(ImageAccelerator):
 
     def _to_numpy(self, tensor) -> np.ndarray:
         return tensor.detach().to("cpu").numpy()
+
+    def warmup_3d_lut(self, side: int = 128, lut_size: int = 17) -> None:
+        """Pay the GPU kernel setup cost before an interactive edit needs it."""
+        try:
+            axis = np.linspace(0, 1, lut_size, dtype=np.float32)
+            r, g, b = np.meshgrid(axis, axis, axis, indexing="ij")
+            table = np.stack([r, g, b], axis=-1).astype(np.float32)
+            src = np.linspace(0, 1, side * side * 3, dtype=np.float32).reshape(side, side, 3)
+            self.apply_3d_lut(src, table, 0.5)
+        except Exception:
+            # Warmup is an optimization only; normal per-operation fallback still applies.
+            pass
 
     def rgb_to_lab_float(self, rgb: np.ndarray) -> np.ndarray:
         try:
@@ -499,6 +512,38 @@ class HybridTorchOpenCLAccelerator(ImageAccelerator):
         )
 
 
+class HybridTorchCPUAccelerator(ImageAccelerator):
+    """Use optimized OpenCV CPU kernels and reserve MPS/CUDA for 3D LUTs."""
+
+    accelerated_ops = ("resize", "rgb-gray", "gaussian-blur", "sobel-profile", "rgb-lab", "lab-rgb", "curve-lut", "matrix", "histogram", "3d-lut")
+    cpu_fallback_ops: tuple[str, ...] = ()
+
+    def __init__(self, torch_accelerator: TorchAccelerator) -> None:
+        super().__init__()
+        self.torch_accelerator = torch_accelerator
+        self.name = f"hybrid-cpu-{torch_accelerator.device}"
+        self.torch_accelerator.warmup_3d_lut()
+
+    def apply_3d_lut(self, src_float: np.ndarray, table: np.ndarray, strength: float) -> np.ndarray:
+        return self.torch_accelerator.apply_3d_lut(src_float, table, strength)
+
+    def info(self, requested_backend: str) -> AcceleratorInfo:
+        base = super().info(requested_backend)
+        return AcceleratorInfo(
+            requested_backend=base.requested_backend,
+            active_backend=self.name,
+            opencv_optimized=base.opencv_optimized,
+            opencv_threads=base.opencv_threads,
+            opencl_available=base.opencl_available,
+            opencl_enabled=False,
+            accelerated_ops=self.accelerated_ops,
+            cpu_fallback_ops=self.cpu_fallback_ops,
+            gpu_ops=("3d-lut",),
+            gpu_note="Measured macOS hybrid backend: optimized OpenCV CPU handles image/color kernels; Torch MPS handles the faster 3D LUT path.",
+            fallback_reason="",
+        )
+
+
 def create_accelerator(requested_backend: str = "auto") -> ImageAccelerator:
     backend = (requested_backend or "auto").lower()
     if backend in {"cpu", "cpu-opencv"}:
@@ -515,6 +560,9 @@ def create_accelerator(requested_backend: str = "auto") -> ImageAccelerator:
                 device = "mps"
             torch_acc = TorchAccelerator(device=device)
             if backend == "auto":
+                if sys.platform == "darwin":
+                    cv2.ocl.setUseOpenCL(False)
+                    return HybridTorchCPUAccelerator(torch_acc)
                 cv2.ocl.setUseOpenCL(True)
                 if cv2.ocl.haveOpenCL() and cv2.ocl.useOpenCL():
                     return HybridTorchOpenCLAccelerator(torch_acc)
@@ -526,8 +574,9 @@ def create_accelerator(requested_backend: str = "auto") -> ImageAccelerator:
                 cv2.ocl.setUseOpenCL(False)
                 return ImageAccelerator(fallback_reason=f"Requested {backend}, but Torch GPU backend is unavailable: {torch_error}")
 
-    cv2.ocl.setUseOpenCL(backend in {"auto", "opencl", "opencl-umat"})
-    if backend in {"auto", "opencl", "opencl-umat"} and cv2.ocl.haveOpenCL() and cv2.ocl.useOpenCL():
+    allow_auto_opencl = backend == "auto" and sys.platform != "darwin"
+    cv2.ocl.setUseOpenCL(allow_auto_opencl or backend in {"opencl", "opencl-umat"})
+    if (allow_auto_opencl or backend in {"opencl", "opencl-umat"}) and cv2.ocl.haveOpenCL() and cv2.ocl.useOpenCL():
         return OpenCLUMatAccelerator()
     cv2.ocl.setUseOpenCL(False)
     if backend in {"opencl", "opencl-umat"}:
@@ -539,17 +588,25 @@ def create_accelerator(requested_backend: str = "auto") -> ImageAccelerator:
         reason += f" Torch GPU unavailable: {torch_error}."
     if not cv2.ocl.haveOpenCL():
         reason += " OpenCL unavailable."
+    elif backend == "auto" and sys.platform == "darwin":
+        reason += " OpenCL skipped on macOS because the measured UMat path is slower than optimized CPU."
     return ImageAccelerator(fallback_reason=reason)
 
 
 class AcceleratorRuntime:
     def __init__(self, requested_backend: str = "auto") -> None:
         self.requested_backend = requested_backend
-        self.current = create_accelerator(requested_backend)
+        self.deferred_auto = requested_backend == "auto" and sys.platform == "darwin"
+        self.current = (
+            ImageAccelerator(fallback_reason="macOS MPS initialization is deferred until the backend is listening.")
+            if self.deferred_auto
+            else create_accelerator(requested_backend)
+        )
 
     def configure(self, requested_backend: str) -> ImageAccelerator:
         self.requested_backend = requested_backend or "auto"
         self.current = create_accelerator(self.requested_backend)
+        self.deferred_auto = False
         return self.current
 
     def __getattr__(self, name: str):
@@ -608,6 +665,10 @@ def benchmark_accelerator(image_side: int = 256, lut_size: int = 17, iterations:
 
     def run(name: str, fn) -> dict:
         output = None
+        try:
+            output = fn()
+        except Exception:
+            output = None
         start = time.perf_counter()
         for _ in range(iterations):
             output = fn()

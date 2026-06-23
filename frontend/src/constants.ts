@@ -1,4 +1,5 @@
 export const MODE_OPTIONS = [
+  ["auto-best", "自动选择最佳"],
   ["global", "全局校准"],
   ["midtones-only", "中间调"],
   ["skin-priority", "肤色优先"],
@@ -9,7 +10,6 @@ export const MODE_OPTIONS = [
   ["lut3d", "3D LUT"],
   ["selective", "选择性色彩"],
   ["film", "胶片校准"],
-  ["negative-film", "负片校准"],
 ] as const;
 
 export const ACCELERATOR_OPTIONS = [
@@ -22,6 +22,7 @@ export const ACCELERATOR_OPTIONS = [
 ] as const;
 
 export const MODE_DESCRIPTIONS: Record<string, string> = {
+  "auto-best": "自动试算多个候选校准模式，根据残余偏色、通道平衡和改善幅度选择当前图像最合适的一种。",
   global: "基于 Lab a*/b* 全局偏移的通用校准，适合大多数场景。",
   "midtones-only": "仅对中间亮度区域（约 30%–70%）施加补偿，保留阴影和高光原本的色调。",
   "skin-priority": "优先检测并保护肤色区域，避免肤色因全局校准而失真。",
@@ -33,5 +34,5 @@ export const MODE_DESCRIPTIONS: Record<string, string> = {
   lut3d: "通过 3D LUT 对 RGB 空间进行非线性映射，可实现复杂的色彩变换。",
   selective: "针对特定色彩区域的 a*/b* 偏移，保留图像其余部分不变。",
   film: "面向胶片扫描特征的专用校准，适合胶片翻拍场景的颜色还原。",
-  "negative-film": "针对彩色负片的反相、橙罩抑制和正片化校准，适合 Capture One 翻拍负片。",
+  "negative-film": "旧版兼容模式：负片正片化并做轻量整理。新流程建议使用“负片基础处理”开关后叠加其他模式。",
 };

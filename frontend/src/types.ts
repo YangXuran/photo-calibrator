@@ -135,6 +135,22 @@ export type CalibrationPayload = {
     original_height?: number;
     crop_rect?: CropRect | null;
     crop_applied?: boolean;
+    analysis_basis?: string;
+    negative_base_enabled?: boolean;
+    requested_mode?: string;
+    auto_best_selected_mode?: string;
+    auto_best_score?: number;
+    auto_best?: {
+      selected_mode: string;
+      score: number;
+      candidates: Array<{
+        mode: string;
+        score: number;
+        input_strength: number;
+        output_strength: number;
+        reduction_pct: number;
+      }>;
+    };
   };
   document?: Record<string, unknown>;
 };
@@ -457,6 +473,7 @@ export type HistoryEntry = {
 export type PersistedEditState = {
   mode: string;
   strength: number;
+  negativeBaseEnabled?: boolean;
   accelerator: string;
   curves: ManualCurves;
   crop?: CropPayload;

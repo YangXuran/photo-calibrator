@@ -254,10 +254,41 @@ class WorkspaceDB:
     def _run_migrations(self) -> None:
         existing = self._get_metadata("db_version")
         current = int(existing) if existing else 1
-        for version in range(current + 1, DB_VERSION + 1):
-            if version in _MIGRATIONS:
-                assert self._conn is not None
-                self._conn.executescript(_MIGRATIONS[version])
+        assert self._conn is not None
+        if current < 2:
+            self._conn.executescript(_MIGRATIONS[2])
+
+        self._ensure_column("sessions", "history_cursor", "INTEGER NOT NULL DEFAULT -1")
+        self._ensure_column("sessions", "calibrated_preview_blob", "BLOB")
+        self._ensure_column("sessions", "calibrated_preview_mime", "TEXT")
+        self._ensure_column("action_history", "sequence_no", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("action_history", "before_state_json", "TEXT")
+        self._ensure_column("action_history", "after_state_json", "TEXT")
+        self._ensure_column("action_history", "preview_blob", "BLOB")
+        self._ensure_column("action_history", "preview_mime", "TEXT")
+
+        if current < 3:
+            self._conn.execute(
+                """UPDATE action_history
+                   SET sequence_no = (
+                       SELECT COUNT(*) - 1 FROM action_history AS previous
+                       WHERE previous.session_id = action_history.session_id
+                         AND previous.id <= action_history.id
+                   )"""
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_history_sequence "
+            "ON action_history(session_id, sequence_no)"
+        )
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        assert self._conn is not None
+        columns = {
+            str(row[1])
+            for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _get_metadata(self, key: str) -> str | None:
         with self._lock:

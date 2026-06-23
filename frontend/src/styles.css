@@ -2129,6 +2129,17 @@ button {
   gap: var(--sp-2);
 }
 
+.pc-field-checkbox {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: var(--sp-2);
+}
+
+.pc-field-checkbox .pc-field-hint {
+  grid-column: 2;
+}
+
 
 .pc-field-hint {
   color: var(--muted);

@@ -108,7 +108,7 @@ async function startBackend() {
     backendProcess = null;
   });
 
-  const ready = await waitForBackend(healthUrl);
+  const ready = await waitForBackend(healthUrl, app.isPackaged ? 45000 : 15000);
   if (!ready) {
     console.error("Backend failed to start within timeout");
     stopBackend();
