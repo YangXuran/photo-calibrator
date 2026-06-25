@@ -438,11 +438,14 @@ cv2.imwrite(path, img)
 
       await window.getByTestId("compare-mode-split").click();
       await expect(window.getByTestId("split-position-input")).toBeVisible();
+      await expect(window.getByTestId("split-stage-divider")).toBeVisible();
       const readSplitGeometry = () => window.evaluate(() => {
         const original = document.querySelector('.pc-stage-image[alt="Original"]');
         const calibrated = document.querySelector('.pc-stage-image[alt="Calibrated"]');
         const clip = document.querySelector(".pc-stage-clip");
-        if (!original || !calibrated || !clip) return null;
+        const divider = document.querySelector('[data-testid="split-stage-divider"]');
+        const frame = document.querySelector(".pc-stage-image-frame");
+        if (!original || !calibrated || !clip || !divider || !frame) return null;
         const toGeometry = (element) => {
           const rect = element.getBoundingClientRect();
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -452,6 +455,8 @@ cv2.imwrite(path, img)
           calibrated: toGeometry(calibrated),
           clip: toGeometry(clip),
           clipPath: getComputedStyle(clip).clipPath,
+          divider: toGeometry(divider),
+          frame: toGeometry(frame),
         };
       });
       await window.getByTestId("split-position-input").fill("20");
@@ -466,6 +471,23 @@ cv2.imwrite(path, img)
       expect(atEighty.original).toEqual(atTwenty.original);
       expect(atEighty.clip).toEqual(atTwenty.clip);
       expect(atEighty.clipPath).not.toBe(atTwenty.clipPath);
+      expect(Math.abs((atTwenty.divider.x + atTwenty.divider.width / 2) - (atTwenty.frame.x + atTwenty.frame.width * 0.2))).toBeLessThan(2);
+      expect(Math.abs((atEighty.divider.x + atEighty.divider.width / 2) - (atEighty.frame.x + atEighty.frame.width * 0.8))).toBeLessThan(2);
+      expect(atEighty.divider.height).toBeGreaterThan(40);
+
+      await window.getByTestId("split-stage-divider").focus();
+      await window.getByTestId("split-stage-divider").press("ArrowLeft");
+      await expect(window.getByTestId("split-position-input")).toHaveValue("79");
+
+      const dividerBox = await window.getByTestId("split-stage-divider").boundingBox();
+      const frameBox = await window.locator(".pc-stage-image-frame").boundingBox();
+      expect(dividerBox).not.toBeNull();
+      expect(frameBox).not.toBeNull();
+      await window.mouse.move(dividerBox.x + dividerBox.width / 2, dividerBox.y + dividerBox.height / 2);
+      await window.mouse.down();
+      await window.mouse.move(frameBox.x + frameBox.width * 0.55, dividerBox.y + dividerBox.height / 2, { steps: 5 });
+      await window.mouse.up();
+      await expect(window.getByTestId("split-position-input")).toHaveValue("55");
     } finally {
       await electronApp.close().catch(() => {});
       stopServer(backend);

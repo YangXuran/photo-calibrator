@@ -9,6 +9,7 @@ import { ViewerHudOverlay } from "./ViewerHudOverlay";
 import { ViewerStageImageScene } from "./ViewerStageImageScene";
 import { ViewerStageSplitScene } from "./ViewerStageSplitScene";
 import { ViewerStageSurface } from "./ViewerStageSurface";
+import { ViewerSplitControl } from "./ViewerSplitControl";
 
 type ContainerSize = {
   width: number;
@@ -83,6 +84,7 @@ export function ViewerStage({
     zoomScale,
   });
   const calibratedStageRef = useRef<HTMLDivElement | null>(null);
+  const splitFrameRef = useRef<HTMLDivElement | null>(null);
 
   if (!originalSrc && !calibratedSrc) {
     return <ViewerStageEmptyState />;
@@ -116,24 +118,6 @@ export function ViewerStage({
   );
 
   if (compareMode === "split") {
-    const handleDividerDown = (event: React.PointerEvent) => {
-      if (!onSplitChange) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const surface = event.currentTarget.parentElement;
-      if (!surface) return;
-      const bounds = surface.getBoundingClientRect();
-      const move = (e: PointerEvent) => {
-        const pct = Math.max(10, Math.min(90, ((e.clientX - bounds.left) / bounds.width) * 100));
-        onSplitChange(Math.round(pct));
-      };
-      const stop = () => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", stop);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", stop, { once: true });
-    };
     return (
       <ViewerStageSurface className="pc-stage-split" isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
         {hud}
@@ -143,6 +127,7 @@ export function ViewerStage({
           cropEditable={cropEditable}
           cropDiagnostics={cropDiagnostics}
           cropRect={cropRect}
+          frameRef={splitFrameRef}
           onContainerResize={onContainerResize}
           onCropChange={onCropChange}
           originalSrc={original}
@@ -150,9 +135,15 @@ export function ViewerStage({
           splitPosition={splitPosition}
           zoomMode={zoomMode}
           zoomScale={zoomScale}
-        >
-          <div className="pc-stage-divider" onPointerDown={handleDividerDown} role="separator" style={{ left: `${splitPosition}%` }} />
-        </ViewerStageSplitScene>
+        />
+        {onSplitChange ? (
+          <ViewerSplitControl
+            frameRef={splitFrameRef}
+            onChange={onSplitChange}
+            position={splitPosition}
+            updateKey={`${imageKey ?? ""}:${zoomMode}:${zoomScale}:${panOffset.x}:${panOffset.y}`}
+          />
+        ) : null}
         {renderCurvePreviewOverlay()}
       </ViewerStageSurface>
     );

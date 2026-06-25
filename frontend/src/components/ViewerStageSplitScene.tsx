@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CropDiagnostics, CropRect, ViewerPan, ViewerZoomMode } from "../types";
 import { ViewerCropOverlay } from "./ViewerCropOverlay";
 import { ViewerStageBitmapCanvas } from "./ViewerStageBitmapCanvas";
@@ -24,10 +24,10 @@ function loadImage(src: string): Promise<ContainerSize> {
 type ViewerStageSplitSceneProps = {
   calibratedSrc: string;
   calibratedPreviewBitmap?: ImageBitmap | null;
-  children?: ReactNode;
   cropEditable?: boolean;
   cropDiagnostics?: CropDiagnostics;
   cropRect?: CropRect;
+  frameRef?: MutableRefObject<HTMLDivElement | null>;
   imageKey?: string;
   onContainerResize?: (size: ContainerSize) => void;
   onCropChange?: (cropRect: CropRect, options?: { interaction?: "drag" | "commit" }) => void;
@@ -40,7 +40,7 @@ type ViewerStageSplitSceneProps = {
 };
 
 export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
-  calibratedPreviewBitmap, calibratedSrc, children, cropDiagnostics, cropEditable, cropRect, imageKey,
+  calibratedPreviewBitmap, calibratedSrc, cropDiagnostics, cropEditable, cropRect, frameRef, imageKey,
   onContainerResize, onCropChange, onSettledCalibratedImage, originalSrc, panOffset, splitPosition, zoomMode, zoomScale,
 }: ViewerStageSplitSceneProps) {
   const [displayPair, setDisplayPair] = useState<LoadedImagePair | null>(null);
@@ -87,7 +87,7 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
 
   return (
     <ViewerStageMedia onContainerResize={handleResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale}>
-      <div className="pc-stage-image-frame" style={frameStyle}>
+      <div className="pc-stage-image-frame" ref={frameRef} style={frameStyle}>
         {displayPair ? (
           <img alt="Calibrated" className="pc-stage-image" src={displayPair.calibratedSrc} onError={() => setImageError(true)} />
         ) : null}
@@ -100,7 +100,6 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
           </div>
         ) : null}
         {cropRect ? <ViewerCropOverlay cropDiagnostics={cropDiagnostics} cropRect={cropRect} editable={cropEditable} onCropChange={onCropChange} zoomMode={zoomMode} zoomScale={zoomScale} /> : null}
-        {children}
       </div>
     </ViewerStageMedia>
   );
