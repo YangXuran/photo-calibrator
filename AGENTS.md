@@ -4,7 +4,7 @@
 
 ## 0. 当前状态
 
-仓库已经进入可运行的 Electron 桌面产品阶段（React + Python backend）。`npm run dev` 会启动 Vite、Electron 和本地后端，HTTP API 默认端口为 8766。2026-06-22 的主流程已经覆盖文件夹导入、自适应高清预览、偏色分析、负片校准、曲线、自动裁切、显式应用裁切、旋转/翻转、持久化历史、批量导出和 macOS arm64 DMG 构建。后续开发必须区分“当前产品主流程”和仍保留的 `web/` 旧轻量界面；产品 UI 以 `frontend/` 为准。历史核心文件仍可作为算法来源参考：
+仓库已经进入可运行的 Electron 桌面产品阶段（React + Python backend）。`npm run dev` 会启动 Vite、Electron 和本地后端，HTTP API 默认端口为 8766。2026-06-27 的主流程已经覆盖文件夹导入、自适应高清预览、偏色分析、负片校准、曲线、自动裁切、显式应用裁切、旋转/翻转、持久化历史、批量导出、macOS arm64 DMG 构建，以及 viewer overlay/滑动对比的关键稳定性修复。根目录 `README.md` 是项目对外简洁介绍；详细状态仍以 `STATUS.md` 为准。后续开发必须区分“当前产品主流程”和仍保留的 `web/` 旧轻量界面；产品 UI 以 `frontend/` 为准。历史核心文件仍可作为算法来源参考：
 
 - `color_cast_detector.py`: 偏色检测、肤色/亮度分区、CCC、PCI、诱导效应、Matplotlib 报告图。
 - `color_cast_calibrator.py`: 基于 Lab a*/b* 偏移的全局/中间调/肤色/高光/保留分离色调校准。
@@ -44,7 +44,8 @@ Phase 4 新增能力：
 当前已经确认的集成现实：
 
 - **已接入产品主流程**: 基础/负片校准、session 与自适应预览、缓存、结构化分析图表、TIFF/RAW/HDR/EXR I/O、原图全分辨率导出回放、film scan API、插件 service、AI evaluation API/UI、Electron bridge、文件夹数据库和持久化撤销/重做。
-- **裁切契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。预览和导出统一执行“校准 -> 原图坐标裁切 -> 翻转/旋转”。Original/Calibrated 使用同一裁切几何，滑动对比只改变 `clip-path`，不得改变图片尺寸。
+- **裁切与对比契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。预览和导出统一执行“校准 -> 原图坐标裁切 -> 翻转/旋转”。Original/Calibrated 使用同一裁切几何，滑动对比只改变 `clip-path`，不得改变图片尺寸。
+- **Viewer overlay 契约**: `ViewerStageMedia` 是唯一图片 zoom/pan transform 层。Loading/busy HUD、分割线控件等屏幕级 overlay 必须放在 `ViewerStageSurface` 或独立 stage overlay，不得作为 `ViewerStageMedia` 子元素跟随图片缩放。滑动对比中的曲线/色轮 live preview 只能渲染在 calibrated 图层内，不能整屏覆盖 original/calibrated 两侧。图片 transform 层不得恢复 `transition: transform`，否则 split divider 会和图片缩放不同步。
 - **历史契约**: 滑杆/曲线拖动期间只预览，pointer/key release 后提交一次；每个文件独立历史，数据库最多保留 50 条并持久化 redo 游标。
 - **仍需外部环境确认**: 真实云 AI provider、不同相机 RAW profile、签名/公证后的 DMG 和 Linux 分发。Apple Silicon MPS 已完成本机实测。
 
@@ -59,7 +60,7 @@ Phase 4 新增能力：
 
 ### 当前后端剩余重点
 
-以下是按 2026-06-22 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O 或基础 session 功能。
+以下是按 2026-06-27 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O 或基础 session 功能。
 
 #### P1: 发布质量与专业色彩管理
 
@@ -522,6 +523,7 @@ AI 模块应设计为 provider-agnostic：
 
 - 每个 agent 只改自己负责的文件集合。需要跨边界改动时，先在最终汇报中列为 "需要协调"，不要直接改别人的区域。
 - 后端 API schema、核心数据模型、前端请求字段属于共享契约。改动前必须先写兼容层或新增字段，不能删除/重命名现有字段。
+- 多 agent 分区是临时降低冲突的协作方式，不是长期架构分叉；某个方向已经基本完成、验证通过且不再需要并行隔离时，应尽快合并回主线文档和代码路径，避免重复维护。
 - 所有新增功能都必须有对应测试；无法在当前环境验证 GPU/RAW/EXR 实机时，要提供 fake/mock 测试和明确 fallback 证明。
 - 不要大规模格式化全仓库。只格式化自己改动的文件。
 - 不要改 `node_modules/`、`.cache/`、`outputs/`、`test-results/`。
@@ -535,6 +537,7 @@ AI 模块应设计为 provider-agnostic：
 - 必跑编译验证：`.venv/bin/python -m compileall -q src tests`
 - 必跑前端验证：`npm --prefix frontend run typecheck && npm --prefix frontend run build`
 - UI 相关改动必跑：`npm run test:ui`
+- Electron E2E 使用 `frontend/dist`，不是 Vite dev server 的源码；凡是改 `frontend/src` 后做 Electron E2E，必须先跑 `npm --prefix frontend run build`。
 - Accelerator 验证：`PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmark --backend auto --image-side 64 --lut-size 7 --iterations 1`
 - 当前 benchmark/capability 操作至少包含：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`histogram`、`3d-lut`、`rgb-gray`、`gaussian-blur`、`sobel-profile`。测试应检查必要子集或同步完整集合，不能保留旧的精确集合断言。
 - 当前状态文档以 `STATUS.md` 为准；如果代码和本文档冲突，以实际测试结果和代码路径为准，不以旧阶段宣称为准。
@@ -687,6 +690,7 @@ AI 模块应设计为 provider-agnostic：
 - 增加 `data-testid` 并扩展 Playwright 覆盖。
 - 维护真实 film scan、裁切应用、旋转/翻转、持久化历史和导出交互。
 - 维护 Analysis | Viewer | Inspector 信息架构，禁止重新引入重复面板。
+- 维护 viewer stage layering：屏幕级 HUD/控件不得放进 `ViewerStageMedia`；split 模式 live preview 必须只覆盖 calibrated 图层；`pc-stage-media` 不得恢复 transform 过渡动画。
 
 不要做：
 
@@ -699,6 +703,7 @@ AI 模块应设计为 provider-agnostic：
 - `npm run test:ui`
 - 如改 API 调用，同时跑 `python3 -m pytest tests/test_simple_server_api.py`
 - 视觉改动必须检查移动/桌面基本布局，不允许文字重叠。
+- Viewer/overlay/split/crop 改动必须有 Electron E2E 覆盖，优先断言真实 DOM 几何、层级或语义控件，不只断言临时文案。
 
 ### 15.8 Agent F: Plugin / AI / Export
 

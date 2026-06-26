@@ -1,6 +1,6 @@
 # Photo Calibrator - Development Status
 
-> Last updated: 2026-06-22
+> Last updated: 2026-06-27
 > Branch: `dev`
 > Product runtime: Electron + React/Vite/TypeScript + Python HTTP backend
 > Local API: `http://127.0.0.1:8766`
@@ -31,6 +31,8 @@ The main local workflow is integrated end to end:
 - Range and curve drags update previews continuously but commit one history action on release.
 - Adaptive previews upgrade 320 px preparation images to the Retina/display resolution required by the viewer.
 - Split comparison uses two fixed-size image layers in one frame; the divider changes only `clip-path`, so cropped images do not resize while sliding.
+- Viewer-stage HUDs and split controls are independent of the image zoom/pan transform layer. Loading badges stay screen-sized, split dividers stay aligned during zoom, and live drag previews in split mode are constrained to the calibrated layer only.
+- A concise project `README.md` now documents the project intent, local-first calibration goal, current architecture and basic run/test commands.
 
 ### Workspace Database And History
 
@@ -135,6 +137,7 @@ Workbench
 - Move long-running work to a genuinely cancellable process/job model.
 - Promote `pipeline.Document` operations to the canonical backend edit graph rather than maintaining parallel session fields.
 - Add plugin permission boundaries beyond trusted local Python plugins.
+- Retire or merge completed multi-agent workstreams once their functionality is stable, tested and no longer needs file-ownership isolation.
 
 ## Verification
 
@@ -165,13 +168,16 @@ PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmar
 npm --prefix frontend run package:dmg:arm64
 ```
 
-Recent targeted verification on 2026-06-22 includes:
+Recent targeted verification through 2026-06-27 includes:
 
 - Crop suggestion -> explicit apply -> Original/Calibrated geometry alignment.
 - Crop application combined with rotation/flip and negative-film export.
 - Adaptive-resolution preview after switching real TIFF files.
 - Split comparison at 20% and 80% with invariant image geometry.
+- Split comparison divider remains visible and aligned during manual zoom; the image transform layer intentionally has no `transform` transition.
+- Curve and look-wheel drag previews in split comparison render only inside the calibrated image layer and do not cover the original side.
 - Manual Computer Use inspection of a cropped negative in Electron.
+- Full Electron UI suite on 2026-06-27: `npm run test:ui` -> `14 passed`.
 
 Full Python suite result on 2026-06-23: `315 passed`. The stale accelerator capability assertion has been replaced with a required-subset assertion. On `Capture00183.NEF`, a cached 1600px fast calibration measured about 101ms versus about 4.8s for the previous 3200px full-analysis path. Frozen MPS 3D LUT measured about 48ms after warm-up versus about 301ms on CPU.
 
