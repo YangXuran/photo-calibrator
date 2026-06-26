@@ -123,6 +123,7 @@ export function ViewerStage({
         {hud}
         <ViewerStageSplitScene
           imageKey={imageKey}
+          calibratedPreviewBitmap={calibratedPreviewBitmap}
           calibratedSrc={calibrated}
           cropEditable={cropEditable}
           cropDiagnostics={cropDiagnostics}
@@ -144,7 +145,6 @@ export function ViewerStage({
             updateKey={`${imageKey ?? ""}:${zoomMode}:${zoomScale}:${panOffset.x}:${panOffset.y}`}
           />
         ) : null}
-        {renderCurvePreviewOverlay()}
       </ViewerStageSurface>
     );
   }

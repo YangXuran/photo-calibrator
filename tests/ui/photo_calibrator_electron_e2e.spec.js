@@ -239,6 +239,8 @@ test.describe("electron desktop e2e", () => {
         return img instanceof HTMLImageElement && img.src ? img.src : null;
       }, null, { timeout: 60000 });
       const beforeSrc = await initialSrc.jsonValue();
+      await window.getByTestId("compare-mode-split").click();
+      await expect(window.getByTestId("split-stage-divider")).toBeVisible();
 
       await window.getByTestId("inspector-tab-look").click();
       await expect(window.getByTestId("look-lab-section")).toBeVisible();
@@ -249,7 +251,21 @@ test.describe("electron desktop e2e", () => {
       await window.mouse.down();
       await window.mouse.move(labBox.x + labBox.width - 12, labBox.y + 12, { steps: 4 });
       await expect(window.locator(".pc-stage-busy")).toHaveCount(0);
-      await expect(window.getByLabel("Live preview")).toBeVisible({ timeout: 5000 });
+      await expect(window.locator(".pc-stage-split .pc-stage-image-frame .pc-stage-preview-overlay")).toBeVisible({ timeout: 5000 });
+      await expect(window.locator(".pc-stage-split > .pc-stage-preview-overlay")).toHaveCount(0);
+      await expect.poll(async () => window.evaluate(() => {
+        const frame = document.querySelector(".pc-stage-split .pc-stage-image-frame");
+        const overlay = document.querySelector(".pc-stage-split .pc-stage-image-frame .pc-stage-preview-overlay");
+        const clip = document.querySelector(".pc-stage-split .pc-stage-clip");
+        if (!(frame instanceof HTMLElement) || !(overlay instanceof HTMLElement) || !(clip instanceof HTMLElement)) return false;
+        const frameRect = frame.getBoundingClientRect();
+        const overlayRect = overlay.getBoundingClientRect();
+        return Math.abs(frameRect.x - overlayRect.x) < 1
+          && Math.abs(frameRect.y - overlayRect.y) < 1
+          && Math.abs(frameRect.width - overlayRect.width) < 1
+          && Math.abs(frameRect.height - overlayRect.height) < 1
+          && Number(getComputedStyle(overlay).zIndex) < Number(getComputedStyle(clip).zIndex);
+      }), { timeout: 5000 }).toBeTruthy();
       await window.mouse.up();
 
       await expect(window.getByTestId("look-wheels-section")).toBeVisible();
