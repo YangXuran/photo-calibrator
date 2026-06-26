@@ -445,7 +445,8 @@ cv2.imwrite(path, img)
         const clip = document.querySelector(".pc-stage-clip");
         const divider = document.querySelector('[data-testid="split-stage-divider"]');
         const frame = document.querySelector(".pc-stage-image-frame");
-        if (!original || !calibrated || !clip || !divider || !frame) return null;
+        const media = document.querySelector(".pc-stage-media");
+        if (!original || !calibrated || !clip || !divider || !frame || !media) return null;
         const toGeometry = (element) => {
           const rect = element.getBoundingClientRect();
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -457,6 +458,7 @@ cv2.imwrite(path, img)
           clipPath: getComputedStyle(clip).clipPath,
           divider: toGeometry(divider),
           frame: toGeometry(frame),
+          mediaTransitionProperty: getComputedStyle(media).transitionProperty,
         };
       });
       await window.getByTestId("split-position-input").fill("20");
@@ -474,6 +476,7 @@ cv2.imwrite(path, img)
       expect(Math.abs((atTwenty.divider.x + atTwenty.divider.width / 2) - (atTwenty.frame.x + atTwenty.frame.width * 0.2))).toBeLessThan(2);
       expect(Math.abs((atEighty.divider.x + atEighty.divider.width / 2) - (atEighty.frame.x + atEighty.frame.width * 0.8))).toBeLessThan(2);
       expect(atEighty.divider.height).toBeGreaterThan(40);
+      expect(atEighty.mediaTransitionProperty.split(",").map((value) => value.trim())).not.toContain("transform");
 
       await window.getByTestId("split-stage-divider").focus();
       await window.getByTestId("split-stage-divider").press("ArrowLeft");
