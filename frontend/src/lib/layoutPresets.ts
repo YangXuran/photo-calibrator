@@ -19,7 +19,7 @@ export type FilmstripPresentation = {
   density: "default" | "compact";
   emphasis: "default" | "primary" | "muted";
   title: string;
-  meta: string;
+  meta?: string;
   showStateChip: boolean;
   showMeta: boolean;
   showDetail: boolean;
@@ -33,7 +33,7 @@ export type ViewerPanePresentation = {
   compareTone: "default" | "primary" | "muted";
   zoomTone: "default" | "primary" | "muted";
   title: string;
-  meta: string;
+  meta?: string;
   showStageHint: boolean;
   visibleCompareModes: CompareMode[];
   visibleZoomPresets: Array<"fit" | "fill">;
@@ -54,7 +54,6 @@ export function getInspectorPanePresentation(_tab: string): InspectorPanePresent
   return {
     density: "default",
     emphasis: "default",
-    meta: "校准与裁切",
   };
 }
 
@@ -67,7 +66,6 @@ export function getFilmstripPresentation(): FilmstripPresentation {
     density: "default",
     emphasis: "default",
     title: "Filmstrip",
-    meta: "缩略图浏览",
     showStateChip: true,
     showMeta: true,
     showDetail: true,
@@ -83,8 +81,7 @@ export function getViewerPanePresentation(): ViewerPanePresentation {
     compareTone: "default",
     zoomTone: "default",
     title: "Viewer",
-    meta: "图像预览与对比控制",
-    showStageHint: true,
+    showStageHint: false,
     visibleCompareModes: ["side-by-side", "split", "calibrated-only"],
     visibleZoomPresets: ["fit", "fill"],
     showZoomStepper: true,

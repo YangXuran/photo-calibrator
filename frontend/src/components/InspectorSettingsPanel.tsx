@@ -26,7 +26,7 @@ export function InspectorSettingsPanel({ workbench, aiSettings, onAISettingsChan
     <>
       <AIProviderCard settings={aiSettings} onChange={onAISettingsChange} />
 
-      <PaneSection density="compact" emphasis="primary" meta="" title="Runtime Status">
+      <PaneSection density="compact" emphasis="primary" title="Runtime Status">
         <RuntimeStatusChips backendOk={workbench.backendOk} runtime={runtime} />
         <InfoGrid
           items={[
@@ -43,7 +43,7 @@ export function InspectorSettingsPanel({ workbench, aiSettings, onAISettingsChan
         />
       </PaneSection>
       {workbench.capabilities?.accelerator ? (
-        <PaneSection density="compact" meta="" title="Accelerator">
+        <PaneSection density="compact" title="Accelerator">
           <InfoGrid
             items={[
               { label: "Backend", value: workbench.capabilities.accelerator.backend ?? "auto" },
@@ -57,7 +57,7 @@ export function InspectorSettingsPanel({ workbench, aiSettings, onAISettingsChan
         </PaneSection>
       ) : null}
 
-      <PaneSection density="compact" meta="" title="Plugins & Evaluators">
+      <PaneSection density="compact" title="Plugins & Evaluators">
         <PluginList evaluators={workbench.evaluators} plugins={workbench.plugins} />
       </PaneSection>
     </>

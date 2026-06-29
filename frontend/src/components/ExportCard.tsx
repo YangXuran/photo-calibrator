@@ -111,7 +111,7 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
       {actionState.status !== "idle" || result ? (
         <div className="pc-stack">
           <ResultSummary
-            detail={result?.path ?? actionState.detail ?? "等待导出结果。"}
+            detail={result?.path ?? actionState.detail ?? ""}
             meta={result ? `${result.format.toUpperCase()} / ${(result.size / 1024).toFixed(1)} KB / ${result.elapsed_ms.toFixed(1)} ms` : null}
             status={summaryStatus}
             testIds={{ root: "export-result-summary", status: "export-status-chip", detail: "export-result-path" }}

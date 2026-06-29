@@ -18,7 +18,6 @@ export function SessionLibraryCard({ sessions, onRefresh, onLoad, onDelete }: Se
           刷新
         </button>
       }
-      meta="受管 session 存储"
       testId="saved-sessions-section"
       title="已保存 Session"
     >
@@ -26,7 +25,7 @@ export function SessionLibraryCard({ sessions, onRefresh, onLoad, onDelete }: Se
         {sessions.map((item) => (
           <SessionListItemCard item={item} key={item.path} onDelete={onDelete} onLoad={onLoad} />
         ))}
-        {!sessions.length ? <div className="pc-empty-panel">暂无已保存 session。</div> : null}
+        {!sessions.length ? <div className="pc-empty-panel">无</div> : null}
       </div>
     </PaneSection>
   );

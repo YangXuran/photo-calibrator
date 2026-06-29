@@ -4,7 +4,7 @@ type DialogShellProps = {
   open: boolean;
   onClose: () => void;
   title: string;
-  description: string;
+  description?: string;
   ariaLabel: string;
   className?: string;
   testId?: string;
@@ -40,7 +40,7 @@ export function DialogShell({
         <div className="pc-card-header">
           <div className="pc-card-heading">
             <h3>{title}</h3>
-            <p>{description}</p>
+            {description ? <p>{description}</p> : null}
           </div>
           <div className="pc-card-actions">
             {headerActions}

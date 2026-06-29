@@ -43,7 +43,6 @@ export function CropCard({ collapseScope, crop, cropApplied, cropEdited, onApply
     >
       <div className="pc-note pc-note-compact">
         <strong>{cropApplied ? "裁切已应用" : cropEdited ? "待应用：已手动调整" : crop ? "待应用：建议框" : "未检测"}</strong>
-        <span>{cropApplied ? "原图与校准图已使用相同裁切" : crop ? "建议框已向内保留安全边距，调整后点击应用" : "先运行自动建议"}</span>
       </div>
       <InfoGrid
         items={[

@@ -27,7 +27,7 @@ export function InspectorSessionPanel({ order, workbench }: InspectorSessionPane
               collapsible
               testId="history-section"
               title="操作历史"
-              meta={selectedFile?.historyPersistent === false ? "历史未持久化" : "当前文件的撤销 / 重做记录"}
+              meta={selectedFile?.historyPersistent === false ? "未持久化" : undefined}
             >
               <HistoryPanel
                 entries={workbench.history}

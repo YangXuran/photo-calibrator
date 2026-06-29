@@ -20,7 +20,6 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
         emphasis="primary"
         testId="compose-rotate-section"
         title="旋转与翻转"
-        meta=""
       >
         <div className="pc-compose-grid">
           <button className="pc-compose-btn" data-testid="compose-rotate-left" disabled={!selectedFile} onClick={() => workbench.rotateSelectedImage(-90)} title="向左旋转 90°" type="button">
@@ -98,13 +97,9 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
         defaultCollapsed
         testId="compose-keystone-section"
         title="透视校正"
-        meta="梯形失真与 Keystone"
       >
         <div className="pc-placeholder-panel">
-          <p>透视校正工具（待实现）</p>
-          <p className="pc-field-hint">
-            胶片扫描检测到的透视变换可在裁切中自动应用
-          </p>
+          <p>待实现</p>
         </div>
       </PaneSection>
     </div>

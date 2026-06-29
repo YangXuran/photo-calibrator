@@ -1,7 +1,6 @@
 import { resolveFileAccessPlan } from "../runtime/fileAccess";
 import { useRuntimeConfig } from "../runtime/RuntimeProvider";
 import { getShellBridge } from "../runtime/shellBridge";
-import { DetailNote } from "./DetailNote";
 import { DialogSectionCard } from "./DialogSectionCard";
 import { DialogShell } from "./DialogShell";
 import { InfoGrid } from "./InfoGrid";
@@ -14,13 +13,12 @@ type ShortcutHelpDialogProps = {
 type ShortcutItem = {
   action: string;
   keys: string[];
-  note?: string;
 };
 
 const VIEWER_SHORTCUTS: ShortcutItem[] = [
   { action: "切换上一张 / 下一张", keys: ["Left", "Right"] },
   { action: "放大 / 缩小", keys: ["+", "-"] },
-  { action: "重置到适配", keys: ["F"], note: "也支持 Ctrl/Cmd + 0" },
+  { action: "重置到适配", keys: ["F"] },
   { action: "切换 100% / 适配", keys: ["Double Click"] },
   { action: "滚轮缩放", keys: ["Wheel"] },
   { action: "手型平移", keys: ["Drag"] },
@@ -29,7 +27,7 @@ const VIEWER_SHORTCUTS: ShortcutItem[] = [
 const FILMSTRIP_SHORTCUTS: ShortcutItem[] = [
   { action: "选择上一张 / 下一张", keys: ["Left", "Right"] },
   { action: "跳到首张 / 末张", keys: ["Home", "End"] },
-  { action: "聚焦当前缩略图", keys: ["Tab"], note: "焦点进入 filmstrip 后可连续导航" },
+  { action: "聚焦当前缩略图", keys: ["Tab"] },
 ];
 
 const WORKSPACE_SHORTCUTS: ShortcutItem[] = [
@@ -48,7 +46,6 @@ function ShortcutList({ items }: { items: ShortcutItem[] }) {
         <div className="pc-shortcut-row" key={`${item.action}-${item.keys.join("-")}`}>
           <div className="pc-shortcut-copy">
             <strong>{item.action}</strong>
-            {item.note ? <span>{item.note}</span> : null}
           </div>
           <div className="pc-shortcut-keys">
             {item.keys.map((key) => (
@@ -72,25 +69,24 @@ export function ShortcutHelpDialog({ open, onClose }: ShortcutHelpDialogProps) {
     <DialogShell
       ariaLabel="Shortcut help"
       className="pc-help-dialog"
-      description="把 viewer、filmstrip 和 desktop runtime 的实际交互集中到一个入口里。"
       onClose={onClose}
       open={open}
       testId="shortcut-help-dialog"
-      title="快捷键与工作区帮助"
+      title="快捷键"
     >
-      <DialogSectionCard description="图像查看、缩放和平移" title="Viewer">
+      <DialogSectionCard title="Viewer">
         <ShortcutList items={VIEWER_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard description="缩略图选择和浏览" title="Filmstrip">
+      <DialogSectionCard title="Filmstrip">
         <ShortcutList items={FILMSTRIP_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard description="整栏显示和 viewer focus" title="Workspace Layout">
+      <DialogSectionCard title="Workspace Layout">
         <ShortcutList items={WORKSPACE_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard description="当前壳层能力和文件访问分叉" title="Desktop Runtime">
+      <DialogSectionCard title="Desktop Runtime">
         <InfoGrid
           items={[
             { label: "Runtime mode", value: runtime.mode },
@@ -98,10 +94,6 @@ export function ShortcutHelpDialog({ open, onClose }: ShortcutHelpDialogProps) {
             { label: "File open strategy", value: fileAccessPlan.files },
             { label: "Directory strategy", value: fileAccessPlan.directory },
           ]}
-        />
-        <DetailNote
-          body={`${fileAccessPlan.files === "shell-bridge" ? "打开照片优先走桌面壳 bridge。" : "打开照片仍回退到浏览器 input。"} ${fileAccessPlan.directory === "shell-bridge" ? "打开文件夹优先走桌面壳 bridge。" : "打开文件夹仍回退到浏览器 input。"}`}
-          title="当前行为"
         />
       </DialogSectionCard>
     </DialogShell>

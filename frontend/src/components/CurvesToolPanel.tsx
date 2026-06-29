@@ -19,7 +19,6 @@ export function CurvesToolPanel({ workbench }: CurvesToolPanelProps) {
         emphasis="primary"
         testId="curves-editor-section"
         title="曲线编辑器"
-        meta=""
       >
         <CurveEditor
           curves={{ l: workbench.lCurve, r: workbench.rCurve, g: workbench.gCurve, b: workbench.bCurve }}

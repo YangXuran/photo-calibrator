@@ -19,7 +19,6 @@ type ViewerStageToolbarProps = {
 export function ViewerStageToolbar({
   workbench,
   compact = false,
-  showHint = true,
   focusMode = false,
   tone = "default",
   visiblePresets = ["fit", "fill"],
@@ -64,9 +63,6 @@ export function ViewerStageToolbar({
           {focusMode ? "Reset" : "重置"}
         </button>
       ) : null}
-      <div className="pc-stage-shortcuts" hidden={compact || !showHint}>
-        <span className="pc-stage-hint">双击、滚轮、方向键</span>
-      </div>
     </div>
   );
 }

@@ -42,7 +42,6 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageScope={collapseScope}
         collapseStorageKey="inspector-session-document-context"
         collapsible
-        meta=""
         testId="document-context-section"
         title="文档上下文"
       >
@@ -60,7 +59,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         </div>
         {sessionActionState.status !== "idle" || saveResult ? (
           <ResultSummary
-            detail={saveResult?.path ?? sessionActionState.detail ?? "等待保存结果。"}
+            detail={saveResult?.path ?? sessionActionState.detail ?? ""}
             meta={saveResult ? `${(saveResult.size / 1024).toFixed(1)} KB` : null}
             status={sessionSummaryStatus}
             testIds={{ root: "session-save-summary", status: "session-save-status-chip", detail: "session-save-path" }}
@@ -69,7 +68,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         ) : null}
         {documentActionState.status !== "idle" || documentRender ? (
           <ResultSummary
-            detail={documentRender?.session_id ?? documentActionState.detail ?? "等待文档重放结果。"}
+            detail={documentRender?.session_id ?? documentActionState.detail ?? ""}
             meta={documentRender ? `${documentRender.processing?.document_replayable_ops ?? 0} replayable ops` : null}
             status={documentSummaryStatus}
             testIds={{ root: "document-render-summary", status: "document-render-status-chip", detail: "document-render-detail" }}
@@ -83,7 +82,6 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageKey="inspector-session-document-preview"
         collapsible
         defaultCollapsed
-        meta=""
         testId="document-preview-section"
         title="文档预览"
       >
@@ -97,12 +95,11 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageKey="inspector-session-document-operations"
         collapsible
         defaultCollapsed
-        meta=""
         testId="document-operations-section"
         title="文档操作"
       >
         <DetailList
-          empty="当前 session 还没有 document operation。"
+          empty="无"
           items={(documentRender?.document?.operations ?? []).map((operation) => ({
             title: operation.name,
             meta: operation.replayable ? "replayable" : "non-replayable",

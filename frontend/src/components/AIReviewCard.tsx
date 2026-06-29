@@ -24,7 +24,7 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
     result?.evaluation?.summary ??
     result?.error ??
     actionState.detail ??
-    "等待 AI 评估结果。";
+    "";
   const evaluation = result?.evaluation;
 
   return (
@@ -37,7 +37,6 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
       collapseStorageScope={collapseScope}
       collapseStorageKey="inspector-analysis-ai-review"
       collapsible
-      meta=""
       testId="ai-review-section"
       title="AI Review"
     >
