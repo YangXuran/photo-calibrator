@@ -11,6 +11,7 @@ outputs/
 build/
 release/
 .git-local/
+.hermes/
 photo_test/
 *.tif
 *.tiff
