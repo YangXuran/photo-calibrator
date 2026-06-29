@@ -453,9 +453,9 @@ def analyze_tone_recovery(img_rgb: np.ndarray) -> dict[str, float | str]:
     highlight_gap = max(0.0, 1.0 - p95)
     compression = max(0.0, 0.82 - dynamic_range) / 0.82
     endpoint_gap = min(1.0, (shadow_gap + highlight_gap) / 0.35)
-    recommended_strength = float(np.clip(0.18 + compression * 0.55 + endpoint_gap * 0.22, 0.0, 0.85))
+    recommended_strength = float(np.clip(0.12 + compression * 0.34 + endpoint_gap * 0.12, 0.0, 0.58))
     if dynamic_range > 0.88 and shadow_gap < 0.02 and highlight_gap < 0.02:
-        recommended_strength = min(recommended_strength, 0.18)
+        recommended_strength = min(recommended_strength, 0.12)
     return {
         "source": "auto",
         "black_point": float(np.clip(p01 if p01 < 0.08 else p05, 0.0, 0.18)),
@@ -463,7 +463,7 @@ def analyze_tone_recovery(img_rgb: np.ndarray) -> dict[str, float | str]:
         "midtone": float(np.clip(p50, 0.18, 0.82)),
         "dynamic_range": float(np.clip(dynamic_range, 0.0, 1.0)),
         "recommended_strength": recommended_strength,
-        "local_contrast": float(np.clip(0.08 + compression * 0.22, 0.0, 0.28)),
+        "local_contrast": float(np.clip(0.04 + compression * 0.12, 0.0, 0.16)),
     }
 
 
@@ -510,9 +510,14 @@ def apply_tone_recovery(
         base = cv2.GaussianBlur(mapped_luma, (0, 0), blur_sigma)
         mapped_luma = np.clip(mapped_luma + (mapped_luma - base) * clarity, 0.0, 1.0)
 
-    target_luma = luminance * (1.0 - amount) + mapped_luma * amount
-    ratio = np.clip(target_luma / np.maximum(luminance, 1e-4), 0.25, 4.0)
-    out = np.clip(src * ratio[:, :, None], 0.0, 1.0)
+    lab = ACCELERATOR.rgb_to_lab_float(np.clip(np.rint(src * 255.0), 0, 255).astype(np.uint8))
+    chroma = np.sqrt(lab[:, :, 1] * lab[:, :, 1] + lab[:, :, 2] * lab[:, :, 2])
+    chroma_protect = 1.0 - 0.42 * np.clip((chroma - 12.0) / 58.0, 0.0, 1.0)
+    target_luma = luminance + (mapped_luma - luminance) * amount * chroma_protect
+    max_delta = 0.05 + 0.16 * amount
+    target_luma = np.clip(target_luma, luminance - max_delta, luminance + max_delta)
+    lab[:, :, 0] = np.clip(lab[:, :, 0] + (target_luma - luminance) * 100.0, 0.0, 100.0)
+    out = np.clip(ACCELERATOR.lab_to_rgb_float(lab), 0.0, 1.0)
     return _restore_dtype(out, dtype, scale), {
         **analysis,
         "black_point": bp,

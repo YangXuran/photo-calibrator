@@ -389,3 +389,28 @@ def test_tone_recovery_expands_flat_luminance_range() -> None:
     assert after_span > before_span
     assert out.shape == img.shape
     assert out.dtype == img.dtype
+
+
+def test_tone_recovery_preserves_chroma_on_colored_image() -> None:
+    axis = np.linspace(90, 170, 96, dtype=np.float32)
+    xx = np.tile(axis, (96, 1))
+    img = np.stack(
+        [
+            np.clip(xx * 1.05 + 14, 0, 255),
+            np.clip(xx * 0.82 + 20, 0, 255),
+            np.clip(xx * 1.18 + 8, 0, 255),
+        ],
+        axis=2,
+    ).astype(np.uint8)
+
+    out, _ = apply_tone_recovery(img, strength=0.8)
+    before_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    after_hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV)
+    before_sat = float(before_hsv[:, :, 1].mean())
+    after_sat = float(after_hsv[:, :, 1].mean())
+    before_luma = img.astype(np.float32).mean(axis=2)
+    after_luma = out.astype(np.float32).mean(axis=2)
+
+    assert after_sat >= before_sat * 0.88
+    assert float(np.percentile(after_luma, 1)) >= float(np.percentile(before_luma, 1)) - 45.0
+    assert float(np.percentile(after_luma, 99) - np.percentile(after_luma, 1)) > float(np.percentile(before_luma, 99) - np.percentile(before_luma, 1))
