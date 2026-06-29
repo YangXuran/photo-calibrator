@@ -12,6 +12,8 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
   const collapseScope = "workbench";
   const autoBest = workbench.selectedFile?.result?.processing?.auto_best;
   const selectedAutoMode = workbench.selectedFile?.result?.processing?.auto_best_selected_mode;
+  const tone = workbench.toneRecovery;
+  const toneAnalysis = workbench.selectedFile?.result?.processing?.tone_recovery;
 
   return (
     <InspectorPanelSections
@@ -76,6 +78,56 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                     value={workbench.strength}
                   />
                 </label>
+              </div>
+            </PaneSection>
+          ),
+        },
+        {
+          key: "tone-recovery",
+          content: (
+            <PaneSection
+              collapseStorageScope={collapseScope}
+              collapseStorageKey="inspector-adjust-tone-recovery"
+              collapsible
+              testId="tone-recovery-section"
+              title="影调层次"
+              meta="自动分析黑白点与中间调，恢复照片层次"
+            >
+              <div className="pc-form-stack">
+                <label className="pc-field pc-field-checkbox">
+                  <input
+                    checked={tone.enabled}
+                    data-testid="tone-recovery-toggle"
+                    onChange={(event) => workbench.setToneRecoveryCommitted({ ...tone, enabled: event.currentTarget.checked })}
+                    type="checkbox"
+                  />
+                  <span>自动恢复层次</span>
+                </label>
+                <label className="pc-field">
+                  <span>层次强度 {tone.strength.toFixed(2)}</span>
+                  <input
+                    data-testid="tone-recovery-strength"
+                    disabled={!tone.enabled}
+                    max={1}
+                    min={0}
+                    onBlur={(event) => workbench.commitToneRecovery({ ...tone, strength: Number(event.currentTarget.value) })}
+                    onChange={(event) => workbench.previewToneRecovery({ ...tone, strength: Number(event.target.value) })}
+                    onKeyDown={() => workbench.beginEdit()}
+                    onKeyUp={(event) => workbench.commitToneRecovery({ ...tone, strength: Number(event.currentTarget.value) })}
+                    onPointerDown={() => workbench.beginEdit()}
+                    onPointerUp={(event) => workbench.commitToneRecovery({ ...tone, strength: Number(event.currentTarget.value) })}
+                    step={0.05}
+                    type="range"
+                    value={tone.strength}
+                  />
+                </label>
+                {toneAnalysis?.enabled ? (
+                  <span className="pc-field-hint" data-testid="tone-recovery-analysis">
+                    动态范围 {Math.round((toneAnalysis.dynamic_range ?? 0) * 100)}% · 黑/白点 {Math.round((toneAnalysis.black_point ?? 0) * 100)}% / {Math.round((toneAnalysis.white_point ?? 1) * 100)}% · 建议 {Number(toneAnalysis.recommended_strength ?? 0).toFixed(2)}
+                  </span>
+                ) : (
+                  <span className="pc-field-hint">适合校准后画面发灰、层次偏平的照片。</span>
+                )}
               </div>
             </PaneSection>
           ),

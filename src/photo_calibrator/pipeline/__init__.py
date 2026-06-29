@@ -14,6 +14,7 @@ from .operations import (
     NegativeFilmRefineOp,
     Operation,
     RgbCurvesOp,
+    ToneRecoveryOp,
 )
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "NegativeFilmBaseOp",
     "NegativeFilmRefineOp",
     "RgbCurvesOp",
+    "ToneRecoveryOp",
     "PipelineDocument",
 ]

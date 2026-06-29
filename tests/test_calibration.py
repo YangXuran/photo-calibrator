@@ -16,6 +16,8 @@ from photo_calibrator.core.calibration import (
     calibrate_rgb_curves,
     calibrate_selective,
     calibrate_tone_zone,
+    analyze_tone_recovery,
+    apply_tone_recovery,
     curve_interpolate,
     estimate_color_matrix,
     make_comparison,
@@ -372,3 +374,18 @@ def test_calibrate_rgb_curves_auto_fallback() -> None:
     )
     assert result_auto.shape == img.shape
     assert result_manual.shape == img.shape
+
+
+def test_tone_recovery_expands_flat_luminance_range() -> None:
+    axis = np.linspace(96, 160, 96, dtype=np.uint8)
+    xx = np.tile(axis, (96, 1))
+    img = np.stack([xx, xx, xx], axis=2)
+    before = analyze_tone_recovery(img)
+    out, analysis = apply_tone_recovery(img, strength=0.7)
+    before_span = float(np.percentile(img, 99) - np.percentile(img, 1))
+    after_span = float(np.percentile(out, 99) - np.percentile(out, 1))
+    assert before["dynamic_range"] < 0.35
+    assert analysis["recommended_strength"] > 0.4
+    assert after_span > before_span
+    assert out.shape == img.shape
+    assert out.dtype == img.dtype

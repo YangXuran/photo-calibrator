@@ -155,6 +155,27 @@ def test_calibrate_payload_returns_metrics_and_preview_image() -> None:
     assert payload["processing"]["accelerator_backend"] in BACKEND_NAMES
 
 
+def test_calibrate_payload_applies_tone_recovery_pipeline_node() -> None:
+    axis = np.linspace(96, 160, 64, dtype=np.uint8)
+    xx = np.tile(axis, (64, 1))
+    img = np.stack([xx, xx, xx], axis=2)
+
+    payload = _calibrate_payload(
+        {
+            "image_data": data_url_from_rgb(img),
+            "mode": "global",
+            "strength": 0.0,
+            "tone_recovery": {"enabled": True, "auto": True, "strength": 0.7},
+        }
+    )
+
+    tone = payload["processing"]["tone_recovery"]
+    assert tone["enabled"] is True
+    assert tone["dynamic_range"] < 0.35
+    assert tone["applied_strength"] == pytest.approx(0.7)
+    assert payload["document"]["operations"][-1]["name"] == "tone-recovery"
+
+
 def test_negative_film_payload_reports_positive_base_charts() -> None:
     from photo_calibrator.core.calibration import prepare_negative_film_base
     from photo_calibrator.core.cast_detection import analyze_image_array

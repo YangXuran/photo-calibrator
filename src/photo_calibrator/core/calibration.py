@@ -428,6 +428,101 @@ def calibrate_tone_zone(
     return _restore_dtype(ACCELERATOR.lab_to_rgb_float(lab), dtype, scale)
 
 
+def analyze_tone_recovery(img_rgb: np.ndarray) -> dict[str, float | str]:
+    """Estimate a safe luminance range for restoring post-calibration depth."""
+
+    src, _, _ = _working_rgb(img_rgb)
+    luminance = (
+        src[:, :, 0] * 0.2126
+        + src[:, :, 1] * 0.7152
+        + src[:, :, 2] * 0.0722
+    ).astype(np.float32, copy=False)
+    if luminance.size == 0:
+        return {
+            "source": "auto",
+            "black_point": 0.0,
+            "white_point": 1.0,
+            "midtone": 0.5,
+            "dynamic_range": 1.0,
+            "recommended_strength": 0.0,
+            "local_contrast": 0.0,
+        }
+    p01, p05, p50, p95, p99 = [float(v) for v in np.percentile(luminance, [0.1, 0.5, 50, 99.5, 99.9])]
+    dynamic_range = max(1e-4, p95 - p05)
+    shadow_gap = max(0.0, p05)
+    highlight_gap = max(0.0, 1.0 - p95)
+    compression = max(0.0, 0.82 - dynamic_range) / 0.82
+    endpoint_gap = min(1.0, (shadow_gap + highlight_gap) / 0.35)
+    recommended_strength = float(np.clip(0.18 + compression * 0.55 + endpoint_gap * 0.22, 0.0, 0.85))
+    if dynamic_range > 0.88 and shadow_gap < 0.02 and highlight_gap < 0.02:
+        recommended_strength = min(recommended_strength, 0.18)
+    return {
+        "source": "auto",
+        "black_point": float(np.clip(p01 if p01 < 0.08 else p05, 0.0, 0.18)),
+        "white_point": float(np.clip(p99 if p99 > 0.92 else p95, 0.72, 1.0)),
+        "midtone": float(np.clip(p50, 0.18, 0.82)),
+        "dynamic_range": float(np.clip(dynamic_range, 0.0, 1.0)),
+        "recommended_strength": recommended_strength,
+        "local_contrast": float(np.clip(0.08 + compression * 0.22, 0.0, 0.28)),
+    }
+
+
+def apply_tone_recovery(
+    img_rgb: np.ndarray,
+    *,
+    strength: float | None = None,
+    black_point: float | None = None,
+    white_point: float | None = None,
+    midtone: float | None = None,
+    local_contrast: float | None = None,
+) -> tuple[np.ndarray, dict[str, float | str]]:
+    """Restore luminance depth while preserving calibrated chroma."""
+
+    src, dtype, scale = _working_rgb(img_rgb)
+    analysis = analyze_tone_recovery(src)
+    bp = float(analysis["black_point"] if black_point is None else black_point)
+    wp = float(analysis["white_point"] if white_point is None else white_point)
+    mid = float(analysis["midtone"] if midtone is None else midtone)
+    amount = float(analysis["recommended_strength"] if strength is None else strength)
+    clarity = float(analysis["local_contrast"] if local_contrast is None else local_contrast)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    clarity = float(np.clip(clarity, 0.0, 0.5))
+    if amount <= 1e-5:
+        return img_rgb.copy(), {**analysis, "applied_strength": 0.0, "applied_local_contrast": 0.0}
+
+    span = max(wp - bp, 1e-3)
+    luminance = (
+        src[:, :, 0] * 0.2126
+        + src[:, :, 1] * 0.7152
+        + src[:, :, 2] * 0.0722
+    ).astype(np.float32, copy=False)
+    normalized = np.clip((luminance - bp) / span, 0.0, 1.0)
+    if 0.05 < mid < 0.95:
+        mid_norm = float(np.clip((mid - bp) / span, 0.05, 0.95))
+        gamma = float(np.clip(np.log(0.46) / np.log(mid_norm), 0.65, 1.45))
+    else:
+        gamma = 1.0
+    gamma_mapped = np.power(normalized, gamma).astype(np.float32)
+    s_curve = gamma_mapped * gamma_mapped * (3.0 - 2.0 * gamma_mapped)
+    mapped_luma = np.clip(gamma_mapped * 0.45 + s_curve * 0.55, 0.0, 1.0)
+    if clarity > 1e-5 and min(luminance.shape[:2]) >= 16:
+        blur_sigma = max(3.0, min(luminance.shape[:2]) / 80.0)
+        base = cv2.GaussianBlur(mapped_luma, (0, 0), blur_sigma)
+        mapped_luma = np.clip(mapped_luma + (mapped_luma - base) * clarity, 0.0, 1.0)
+
+    target_luma = luminance * (1.0 - amount) + mapped_luma * amount
+    ratio = np.clip(target_luma / np.maximum(luminance, 1e-4), 0.25, 4.0)
+    out = np.clip(src * ratio[:, :, None], 0.0, 1.0)
+    return _restore_dtype(out, dtype, scale), {
+        **analysis,
+        "black_point": bp,
+        "white_point": wp,
+        "midtone": mid,
+        "applied_strength": amount,
+        "applied_local_contrast": clarity,
+    }
+
+
 def estimate_color_matrix(img_rgb: np.ndarray) -> np.ndarray:
     """Estimate a conservative 3x3 channel matrix from low-saturation pixels."""
 

@@ -93,6 +93,24 @@ export type LookAdjustments = {
   };
 };
 
+export type ToneRecoverySettings = {
+  enabled: boolean;
+  auto: boolean;
+  strength: number;
+};
+
+export type ToneRecoveryAnalysis = ToneRecoverySettings & {
+  black_point?: number;
+  white_point?: number;
+  midtone?: number;
+  dynamic_range?: number;
+  recommended_strength?: number;
+  local_contrast?: number;
+  applied_strength?: number;
+  applied_local_contrast?: number;
+  source?: string;
+};
+
 export type CalibrationPayload = {
   session_id?: string;
   original_preview?: string;
@@ -183,6 +201,8 @@ export type CalibrationPayload = {
     };
     look_enabled?: boolean;
     look_adjustments?: Record<string, unknown>;
+    tone_recovery_enabled?: boolean;
+    tone_recovery?: ToneRecoveryAnalysis;
   };
   document?: Record<string, unknown>;
 };
@@ -513,5 +533,6 @@ export type PersistedEditState = {
   cropApplied?: boolean;
   imageTransform?: ImageTransform;
   lookAdjustments?: LookAdjustments;
+  toneRecovery?: ToneRecoverySettings;
   runtimeSessionId?: string;
 };

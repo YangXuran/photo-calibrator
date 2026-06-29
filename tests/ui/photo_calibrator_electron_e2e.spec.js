@@ -177,6 +177,15 @@ test.describe("electron desktop e2e", () => {
       await expect(window.getByTestId("mode-select")).toBeVisible({ timeout: 10000 });
       await window.getByTestId("mode-select").selectOption("global");
       await window.getByTestId("strength-input").fill("0.8");
+      const toneResponse = window.waitForResponse(async (response) => {
+        if (!/\/api\/calibrate(-session)?$/.test(new URL(response.url()).pathname) || !response.ok()) return false;
+        const payload = await response.json().catch(() => null);
+        return payload?.processing?.tone_recovery?.enabled === true;
+      }, { timeout: 30000 });
+      await expect(window.getByTestId("tone-recovery-section")).toBeVisible();
+      await window.getByTestId("tone-recovery-toggle").check();
+      await toneResponse;
+      await expect(window.getByTestId("tone-recovery-analysis")).toBeVisible({ timeout: 10000 });
       
       await window.waitForTimeout(5000);
       

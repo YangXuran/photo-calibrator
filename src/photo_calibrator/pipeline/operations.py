@@ -131,6 +131,26 @@ class LookAdjustmentOp(Operation):
 
 
 @dataclass(frozen=True)
+class ToneRecoveryOp(Operation):
+    """Luminance depth restoration after color calibration."""
+
+    name: str = "tone-recovery"
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        from photo_calibrator.core.calibration import apply_tone_recovery
+
+        out, _ = apply_tone_recovery(
+            image,
+            strength=self.params.get("strength"),
+            black_point=self.params.get("black_point"),
+            white_point=self.params.get("white_point"),
+            midtone=self.params.get("midtone"),
+            local_contrast=self.params.get("local_contrast"),
+        )
+        return out
+
+
+@dataclass(frozen=True)
 class NegativeFilmBaseOp(Operation):
     """Remove color mask and invert a color negative into a positive baseline."""
 

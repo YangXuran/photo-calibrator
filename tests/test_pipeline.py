@@ -6,7 +6,7 @@ import numpy as np
 
 from photo_calibrator.pipeline.document import PipelineDocument
 from photo_calibrator.core.calibration import calibrate_negative_film
-from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp
+from photo_calibrator.pipeline.operations import CalibrationOp, IdentityOp, LabShiftOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp, ToneRecoveryOp
 
 
 def test_identity_op_returns_same_image() -> None:
@@ -97,6 +97,17 @@ def test_look_adjustment_op_changes_color_without_shape_change() -> None:
     assert result.shape == img.shape
     assert result.dtype == np.uint8
     assert not np.array_equal(result, img)
+
+
+def test_tone_recovery_op_restores_luminance_depth() -> None:
+    axis = np.linspace(96, 160, 32, dtype=np.uint8)
+    xx = np.tile(axis, (32, 1))
+    img = np.stack([xx, xx, xx], axis=2)
+    op = ToneRecoveryOp(params={"enabled": True, "strength": 0.7})
+    result = op.apply(img)
+    assert result.shape == img.shape
+    assert result.dtype == np.uint8
+    assert float(np.percentile(result, 99) - np.percentile(result, 1)) > float(np.percentile(img, 99) - np.percentile(img, 1))
 
 
 def test_negative_film_pipeline_nodes_match_composite_mode() -> None:

@@ -30,6 +30,7 @@ from photo_calibrator.core.calibration import (
     _from_calibration_working_space,
     _to_calibration_working_space,
     apply_3d_lut,
+    apply_tone_recovery,
     calibrate_global,
     calibrate_image,
     calibrate_image_from_analysis,
@@ -46,7 +47,7 @@ from photo_calibrator.core.image_model import ImageBuffer
 from photo_calibrator.io import read_image
 from photo_calibrator.io.icc_profiles import ExportProfile
 from photo_calibrator.io.raw import decode_raw_image, is_raw_extension
-from photo_calibrator.pipeline import CalibrationOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp, PipelineDocument
+from photo_calibrator.pipeline import CalibrationOp, LookAdjustmentOp, NegativeFilmBaseOp, NegativeFilmRefineOp, PipelineDocument, ToneRecoveryOp
 from photo_calibrator.services import AIEvaluationService, PluginService
 from photo_calibrator.services.contracts import HookNotSupportedError, ServiceError
 from photo_calibrator.backend.workspace_db import get_workspace_db
@@ -476,6 +477,13 @@ def _document_operations_from_payload(payload: dict) -> list[dict[str, object]]:
             "params": _json_safe(normalize_look_adjustments(look_adjustments)),
             "replayable": True,
         })
+    tone_recovery = payload.get("tone_recovery") or processing.get("tone_recovery")
+    if isinstance(tone_recovery, dict) and tone_recovery.get("enabled"):
+        operations.append({
+            "name": ToneRecoveryOp().name,
+            "params": _json_safe(tone_recovery),
+            "replayable": True,
+        })
     return operations
 
 
@@ -502,6 +510,9 @@ def _render_document_from_metadata(entry: AnalysisEntry) -> tuple[dict[str, obje
             replayable_ops.append(op)
         elif op.get("name") == "look-adjustment":
             doc.add_op(LookAdjustmentOp(params=dict(op.get("params", {}))))
+            replayable_ops.append(op)
+        elif op.get("name") == "tone-recovery":
+            doc.add_op(ToneRecoveryOp(params=dict(op.get("params", {}))))
             replayable_ops.append(op)
     rendered = doc.render() if replayable_ops else source
     return {
@@ -1583,6 +1594,23 @@ def _look_adjustments_from_body(body: dict) -> dict:
     return normalize_look_adjustments(body.get("look") or body.get("look_adjustments") or {})
 
 
+def _tone_recovery_from_body(body: dict) -> dict:
+    raw = body.get("tone_recovery") or body.get("toneRecovery") or {}
+    if raw is True:
+        raw = {"enabled": True}
+    if not isinstance(raw, dict):
+        return {"enabled": False}
+    enabled = bool(raw.get("enabled", False))
+    payload: dict[str, object] = {
+        "enabled": enabled,
+        "auto": bool(raw.get("auto", True)),
+    }
+    for key in ("strength", "black_point", "white_point", "midtone", "local_contrast"):
+        if raw.get(key) is not None:
+            payload[key] = float(raw[key])
+    return payload
+
+
 def _plugin_calibrator_id(body: dict) -> str | None:
     plugin_id = body.get("calibrator_plugin")
     if plugin_id in {"", None}:
@@ -1808,6 +1836,7 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
     requested_mode = str(body.get("mode", params.mode.value))
     negative_base = _negative_base_enabled(body)
     look_adjustments = _look_adjustments_from_body(body)
+    tone_recovery = _tone_recovery_from_body(body)
     fast = bool(body.get("fast", False)) and requested_mode != AUTO_BEST_MODE
     if calibrator_id:
         payload = _apply_plugin_calibration(entry, image, params, calibrator_id, fast=fast)
@@ -1831,9 +1860,37 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
             after = post_report.lab.cast_strength
             payload["post_report"] = post_report
             payload["reduction_pct"] = (1.0 - after / max(before, 0.01)) * 100.0
+    if tone_recovery.get("enabled"):
+        explicit_strength = tone_recovery.get("strength")
+        tone_image, tone_analysis = apply_tone_recovery(
+            payload["image"],
+            strength=float(explicit_strength) if explicit_strength is not None else None,
+            black_point=tone_recovery.get("black_point"),
+            white_point=tone_recovery.get("white_point"),
+            midtone=tone_recovery.get("midtone"),
+            local_contrast=tone_recovery.get("local_contrast"),
+        )
+        resolved_tone = {
+            **tone_recovery,
+            **tone_analysis,
+            "enabled": True,
+            "auto": bool(tone_recovery.get("auto", True)),
+        }
+        payload["image"] = ensure_uint8_rgb(tone_image)
+        payload.setdefault("metadata", {})["tone_recovery"] = resolved_tone
+        payload.setdefault("metadata", {})["tone_recovery_enabled"] = "true"
+        payload["tone_recovery"] = resolved_tone
+        if not fast:
+            post_report = analyze_image_array(payload["image"])
+            input_report = payload.get("input_report") or entry.input_report
+            before = input_report.lab.cast_strength
+            after = post_report.lab.cast_strength
+            payload["post_report"] = post_report
+            payload["reduction_pct"] = (1.0 - after / max(before, 0.01)) * 100.0
     payload["params"] = payload.pop("params_override", params)
     payload["calibrator_plugin"] = calibrator_id
     payload["look_adjustments"] = look_adjustments
+    payload.setdefault("tone_recovery", tone_recovery)
     return payload
 
 
@@ -2156,6 +2213,8 @@ def _calibration_response(
             "auto_best": calibration.get("auto_best"),
             "look_enabled": metadata.get("look_enabled") == "true",
             "look_adjustments": calibration.get("look_adjustments"),
+            "tone_recovery_enabled": metadata.get("tone_recovery_enabled") == "true",
+            "tone_recovery": calibration.get("tone_recovery"),
             "crop_rect": crop_rect,
             "crop_applied": bool(crop_rect),
             "image_transform": image_transform,
