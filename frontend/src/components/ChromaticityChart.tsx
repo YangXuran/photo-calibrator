@@ -1,4 +1,5 @@
 import type { LutVectorPoint } from "../types";
+import { t } from "../i18n";
 import { EmptyPanel } from "./EmptyPanel";
 
 type ChromaticityChartProps = {
@@ -31,7 +32,7 @@ export function ChromaticityChart({ vectors, loading }: ChromaticityChartProps) 
         viewBox={`0 0 ${SIZE} ${SIZE}`}
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label="LUT vectorscope loading"
+        aria-label={t("labels.lutVectorscopeLoading")}
         data-testid="chromaticity-chart"
       >
         {RINGS.map((radius) => (
@@ -56,7 +57,7 @@ export function ChromaticityChart({ vectors, loading }: ChromaticityChartProps) 
   if (!vectors?.length) {
     return (
       <div data-testid="chromaticity-chart">
-        <EmptyPanel>No LUT analysis available</EmptyPanel>
+        <EmptyPanel>{t("labels.noLutAnalysis")}</EmptyPanel>
       </div>
     );
   }
@@ -67,7 +68,7 @@ export function ChromaticityChart({ vectors, loading }: ChromaticityChartProps) 
       viewBox={`0 0 ${SIZE} ${SIZE}`}
       preserveAspectRatio="xMidYMid meet"
       role="img"
-      aria-label="LUT hue vectorscope"
+      aria-label={t("labels.lutHueVectorscope")}
       data-testid="chromaticity-chart"
     >
       {RINGS.map((radius) => (

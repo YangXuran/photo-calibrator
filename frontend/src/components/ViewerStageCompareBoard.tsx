@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { t } from "../i18n";
 
 type ViewerStageCompareBoardProps = {
   calibratedStage: ReactNode;
@@ -12,11 +13,11 @@ export function ViewerStageCompareBoard({ calibratedStage, hud, originalStage }:
       {hud}
       <div className="pc-compare-grid">
         <figure className="pc-stage-frame">
-          <figcaption>原图</figcaption>
+          <figcaption>{t("viewer.original")}</figcaption>
           {originalStage}
         </figure>
         <figure className="pc-stage-frame">
-          <figcaption>校准预览</figcaption>
+          <figcaption>{t("viewer.calibratedPreview")}</figcaption>
           {calibratedStage}
         </figure>
       </div>

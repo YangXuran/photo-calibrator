@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postHistoryCommit, postHistoryMove, postPreview, postSessionDelete, postSessionSave, postWorkspaceOpen, putConfig } from "../lib/api";
 import { fileToDataUrl, isBrowserDisplayable, workspaceFileId } from "../lib/files";
 import { DEFAULT_WORKBENCH_PREFERENCES } from "../lib/layoutPresets";
+import { t } from "../i18n";
 import { directoryFromPath, suggestExportPath, suggestExportPathInDirectory, suggestSessionPath } from "../lib/paths";
 import { loadAISettings, saveAISettings, type AIProviderSettings } from "../components/AIProviderCard";
 import type {
@@ -410,6 +411,69 @@ function effectiveExportMode(stateMode: string, item?: WorkspaceFile): string {
   return item?.result?.processing?.auto_best_selected_mode ?? stateMode;
 }
 
+type CalibrationRequestFieldInput = {
+  mode: string;
+  strength: number;
+  negativeBaseEnabled: boolean;
+  accelerator: string;
+  curves: ManualCurves;
+  lookAdjustments: LookAdjustments;
+  toneRecovery: ToneRecoverySettings;
+  cropRect?: CropRect;
+  imageTransform?: ImageTransform;
+  item?: WorkspaceFile;
+  resolveAutoBest?: boolean;
+};
+
+function calibrationRequestFields({
+  mode,
+  strength,
+  negativeBaseEnabled,
+  accelerator,
+  curves,
+  lookAdjustments,
+  toneRecovery,
+  cropRect,
+  imageTransform,
+  item,
+  resolveAutoBest = false,
+}: CalibrationRequestFieldInput): Record<string, unknown> {
+  const effectiveCurves = composeManualCurves(curves);
+  return {
+    mode: resolveAutoBest ? effectiveExportMode(mode, item) : mode,
+    strength,
+    negative_base: Boolean(negativeBaseEnabled),
+    look: lookPayloadForRequest(cloneLookAdjustments(lookAdjustments)),
+    tone_recovery: toneRecoveryPayloadForRequest(cloneToneRecovery(toneRecovery)),
+    accelerator,
+    crop_rect: cropRect,
+    image_transform: imageTransformForRequest(imageTransform),
+    r_curve: effectiveCurves.r,
+    g_curve: effectiveCurves.g,
+    b_curve: effectiveCurves.b,
+  };
+}
+
+function calibrationRequestFieldsFromState(
+  state: PersistedEditState,
+  item?: WorkspaceFile,
+  options?: { resolveAutoBest?: boolean },
+): Record<string, unknown> {
+  return calibrationRequestFields({
+    mode: state.mode,
+    strength: state.strength,
+    negativeBaseEnabled: Boolean(state.negativeBaseEnabled),
+    accelerator: state.accelerator,
+    curves: cloneManualCurves(state.curves),
+    lookAdjustments: cloneLookAdjustments(state.lookAdjustments),
+    toneRecovery: cloneToneRecovery(state.toneRecovery),
+    cropRect: state.cropApplied ? cropRectForRequest(state.crop) : undefined,
+    imageTransform: normalizeImageTransform(state.imageTransform),
+    item,
+    resolveAutoBest: options?.resolveAutoBest,
+  });
+}
+
 function resolvePreviewMaxSide(preview?: WorkspaceFile["highResPreview"] | WorkspaceFile["preview"]): number | null {
   const width = preview?.processing?.analysis_width ?? 0;
   const height = preview?.processing?.analysis_height ?? 0;
@@ -453,7 +517,7 @@ export function useWorkbench() {
   const [sessionSaveResult, setSessionSaveResult] = useState<SessionSavePayload | null>(null);
   const [savedSessions, setSavedSessions] = useState<SessionListItem[]>([]);
   const [selectedEvaluator, setSelectedEvaluator] = useState("__default__");
-  const [aiContext, setAiContext] = useState("还原真实白平衡，同时保留胶片感。");
+  const [aiContext, setAiContext] = useState(t("ai.defaultContext"));
   const [aiSettings, setAISettings] = useState<AIProviderSettings>(loadAISettings);
   const [aiResult, setAiResult] = useState<AIEvaluationPayload | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -617,7 +681,7 @@ export function useWorkbench() {
       setFiles((items) => items.map((item) => item.id === target.id ? { ...item, historyPersistent: false } : item));
       if (!persistenceWarningShownRef.current.has(target.id)) {
         persistenceWarningShownRef.current.add(target.id);
-        notify("warning", "历史未持久化", String(error));
+        notify("warning", t("history.notPersistentTitle"), String(error));
       }
     }
   }
@@ -642,24 +706,24 @@ export function useWorkbench() {
   function setModeCommitted(value: string) {
     beginEdit();
     setMode(value);
-    commitEdit(`模式 ${value}`, "mode", currentEditState({ mode: value }));
+    commitEdit(t("history.mode", { mode: value }), "mode", currentEditState({ mode: value }));
   }
 
   function setNegativeBaseCommitted(value: boolean) {
     beginEdit();
     setNegativeBaseEnabled(value);
-    commitEdit(value ? "启用负片基础" : "关闭负片基础", "negative-base", currentEditState({ negativeBaseEnabled: value }));
+    commitEdit(value ? t("history.negativeBaseOn") : t("history.negativeBaseOff"), "negative-base", currentEditState({ negativeBaseEnabled: value }));
   }
 
   function commitStrength(value: number) {
-    commitEdit("强度调整", "strength", currentEditState({ strength: value }));
+    commitEdit(t("history.strength"), "strength", currentEditState({ strength: value }));
   }
 
   function setToneRecoveryCommitted(next: ToneRecoverySettings) {
     const normalized = cloneToneRecovery(next);
     beginEdit();
     setToneRecovery(normalized);
-    commitEdit(normalized.enabled ? "启用影调层次" : "关闭影调层次", "tone-recovery", currentEditState({ toneRecovery: normalized }));
+    commitEdit(normalized.enabled ? t("history.toneOn") : t("history.toneOff"), "tone-recovery", currentEditState({ toneRecovery: normalized }));
   }
 
   function previewToneRecovery(next: ToneRecoverySettings) {
@@ -669,7 +733,7 @@ export function useWorkbench() {
   function commitToneRecovery(next: ToneRecoverySettings) {
     const normalized = cloneToneRecovery(next);
     setToneRecovery(normalized);
-    commitEdit("影调层次调整", "tone-recovery", currentEditState({ toneRecovery: normalized }));
+    commitEdit(t("history.toneAdjust"), "tone-recovery", currentEditState({ toneRecovery: normalized }));
   }
 
   function previewLookAdjustments(next: LookAdjustments) {
@@ -683,7 +747,7 @@ export function useWorkbench() {
     }
   }
 
-  function commitLookAdjustments(next: LookAdjustments, description = "片色调整") {
+  function commitLookAdjustments(next: LookAdjustments, description = t("history.lookAdjust")) {
     const normalized = cloneLookAdjustments(next);
     previewLookAdjustments(normalized);
     lookPreviewBaseRef.current = null;
@@ -695,7 +759,7 @@ export function useWorkbench() {
 
   function resetLookAdjustments() {
     beginEdit();
-    commitLookAdjustments(cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS), "重置片色");
+    commitLookAdjustments(cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS), t("history.lookReset"));
   }
   const displayedSelectedFile = selectedFile;
   const selectionDisplayReady = true;
@@ -1260,14 +1324,21 @@ export function useWorkbench() {
       return;
     }
     const manualCurves = committedCurves;
-    const effectiveCurves = composeManualCurves(manualCurves);
-    const lookPayload = lookPayloadForRequest(lookAdjustments);
     const lookSignature = serializeLookAdjustments(lookAdjustments);
-    const tonePayload = toneRecoveryPayloadForRequest(toneRecovery);
     const toneSignature = serializeToneRecovery(toneRecovery);
     const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
     const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
-    const requestImageTransform = imageTransformForRequest(imageTransform);
+    const requestFields = calibrationRequestFields({
+      mode,
+      strength,
+      negativeBaseEnabled,
+      accelerator,
+      curves: manualCurves,
+      lookAdjustments,
+      toneRecovery,
+      cropRect,
+      imageTransform,
+    });
     const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, lookAdjustments, toneRecovery, cropRect, imageTransform);
     if (
       selectedFile.result?.calibrated_image
@@ -1309,38 +1380,21 @@ export function useWorkbench() {
       setActionState("calibration", "running", selectedFile.name);
       try {
         let payload: CalibrationPayload;
-        const curvePayload = { r_curve: effectiveCurves.r, g_curve: effectiveCurves.g, b_curve: effectiveCurves.b };
         perfMark("api.start");
         if (selectedFile.sessionId) {
           payload = await postCalibrationSession({
             session_id: selectedFile.sessionId,
-            mode,
-            strength,
-            negative_base: negativeBaseEnabled,
-            look: lookPayload,
-            tone_recovery: tonePayload,
-            accelerator,
+            ...requestFields,
             include_original: Boolean(cropRect),
             fast: fastMode,
-            crop_rect: cropRect,
-            image_transform: requestImageTransform,
-            ...curvePayload,
           });
         } else {
           if (!selectedFile.file) return;
           const filePath = (selectedFile.file as any)?.path as string | undefined;
           const body: Record<string, unknown> = {
             file_name: selectedFile.name,
-            mode,
-            strength,
-            negative_base: negativeBaseEnabled,
-            look: lookPayload,
-            tone_recovery: tonePayload,
-            accelerator,
+            ...requestFields,
             fast: fastMode,
-            crop_rect: cropRect,
-            image_transform: requestImageTransform,
-            ...curvePayload,
           };
           if (filePath) {
             body.path = filePath;
@@ -1348,8 +1402,8 @@ export function useWorkbench() {
             body.image_data = await fileToDataUrl(selectedFile.file as File);
           }
           payload = await postCalibration(body);
-          }
-         perfMark("api.done");
+        }
+        perfMark("api.done");
         if (currentRequest !== requestRef.current) return;
         const backendTiming = (payload as any)?._timing;
         if (backendTiming) perfMark(`backend(calib=${backendTiming.calibration_ms}ms resp=${backendTiming.response_ms}ms)`);
@@ -1382,11 +1436,9 @@ export function useWorkbench() {
             if (!sid) return;
             try {
               const cal = await postCalibrationSession({
-                session_id: sid, mode, strength, negative_base: negativeBaseEnabled, look: lookPayload, tone_recovery: tonePayload, accelerator,
+                session_id: sid,
+                ...requestFields,
                 include_original: Boolean(cropRect),
-                crop_rect: cropRect,
-                image_transform: requestImageTransform,
-                r_curve: effectiveCurves.r, g_curve: effectiveCurves.g, b_curve: effectiveCurves.b,
               });
               setFiles((items) => items.map((item) =>
                 item.id === selectedFile.id ? { ...item, calibrationSignature: signature, result: cal } : item
@@ -1631,8 +1683,17 @@ export function useWorkbench() {
       perfMark("adaptive.start");
       setHighResLoading(true);
       try {
-        const effectiveCurves = composeManualCurves(committedCurves);
-        const lookPayload = lookPayloadForRequest(lookAdjustments);
+        const requestFields = calibrationRequestFields({
+          mode,
+          strength,
+          negativeBaseEnabled,
+          accelerator,
+          curves: committedCurves,
+          lookAdjustments,
+          toneRecovery,
+          cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
+          imageTransform: normalizeImageTransform(selectedFile.imageTransform),
+        });
         const preview = await postPreview({
           session_id: selectedFile.sessionId,
           analysis_max_side: requiredMaxSide,
@@ -1652,18 +1713,9 @@ export function useWorkbench() {
         highResSessionRef.current = highResSessionId;
         const calibration = await postCalibrationSession({
           session_id: highResSessionId,
-          mode,
-          strength,
-          negative_base: negativeBaseEnabled,
-          look: lookPayload,
-          accelerator,
+          ...requestFields,
           include_original: true,
           fast: true,
-          crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
-          image_transform: imageTransformForRequest(selectedFile.imageTransform),
-          r_curve: effectiveCurves.r,
-          g_curve: effectiveCurves.g,
-          b_curve: effectiveCurves.b,
         });
         if (requestId !== highResRequestRef.current) return;
         setFiles((items) =>
@@ -1711,8 +1763,10 @@ export function useWorkbench() {
     selectedFile?.imageTransform?.flipV,
     curveStateFileId,
     mode,
+    negativeBaseEnabled,
     strength,
     lookAdjustments,
+    toneRecovery,
     accelerator,
     committedCurves,
   ]);
@@ -1804,7 +1858,7 @@ export function useWorkbench() {
         const workspace = await postWorkspaceOpen({ workspace_root: workspaceRoot, paths: supportedPathItems.map((item) => item.path) });
         restoredByPath = new Map(workspace.files.map((item) => [workspacePathKey(item.path), item]));
       } catch (error) {
-        notify("warning", "历史未持久化", String(error));
+        notify("warning", t("history.notPersistentTitle"), String(error));
       }
     }
     const nextFiles = effectivePickedFiles.map((item) => {
@@ -1956,7 +2010,7 @@ export function useWorkbench() {
       );
       setActionState("filmScan", "success", payload.film_scan?.film_format ?? payload.processing?.film_scan_source ?? "done");
       beginEdit();
-      commitEdit("胶片扫描", "film-scan", currentEditState({ crop: payload, cropEdited: false, cropApplied: false, runtimeSessionId: payload.session_id ?? selectedFile.sessionId }));
+      commitEdit(t("history.filmScan"), "film-scan", currentEditState({ crop: payload, cropEdited: false, cropApplied: false, runtimeSessionId: payload.session_id ?? selectedFile.sessionId }));
     } catch (error) {
       console.error(error);
       setActionState("filmScan", "error", String(error));
@@ -1969,26 +2023,27 @@ export function useWorkbench() {
     try {
       setActionState("export", "running", exportOptions.outputPath);
       const filePathVal = (selectedFile.file as any)?.path as string | undefined;
-      const effectiveCurves = composeManualCurves(committedCurves);
       const body: Record<string, unknown> = {
         file_name: selectedFile.name,
-        mode: effectiveExportMode(mode, selectedFile),
-        strength,
-        negative_base: negativeBaseEnabled,
-        look: lookPayloadForRequest(lookAdjustments),
-        tone_recovery: toneRecoveryPayloadForRequest(toneRecovery),
-        accelerator,
+        ...calibrationRequestFields({
+          mode,
+          strength,
+          negativeBaseEnabled,
+          accelerator,
+          curves: committedCurves,
+          lookAdjustments,
+          toneRecovery,
+          cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
+          imageTransform: normalizeImageTransform(selectedFile.imageTransform),
+          item: selectedFile,
+          resolveAutoBest: true,
+        }),
         output_path: exportOptions.outputPath,
         format: exportOptions.format,
         quality: exportOptions.quality,
         embed_icc: exportOptions.embedIcc,
         preserve_metadata: exportOptions.preserveMetadata,
         export_transform: exportOptions.exportTransform,
-        crop_rect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
-        image_transform: imageTransformForRequest(selectedFile.imageTransform),
-        r_curve: effectiveCurves.r,
-        g_curve: effectiveCurves.g,
-        b_curve: effectiveCurves.b,
       };
       if (filePathVal) {
         body.path = filePathVal;
@@ -2020,26 +2075,15 @@ export function useWorkbench() {
       for (let index = 0; index < exportableFiles.length; index += 1) {
         const item = exportableFiles[index]!;
         const state = stateForFileExport(item);
-        const effectiveCurves = composeManualCurves(state.curves);
         const body: Record<string, unknown> = {
           file_name: item.name,
-          mode: effectiveExportMode(state.mode, item),
-          strength: state.strength,
-          negative_base: Boolean(state.negativeBaseEnabled),
-          look: lookPayloadForRequest(cloneLookAdjustments(state.lookAdjustments)),
-          tone_recovery: toneRecoveryPayloadForRequest(cloneToneRecovery(state.toneRecovery)),
-          accelerator: state.accelerator,
+          ...calibrationRequestFieldsFromState(state, item, { resolveAutoBest: true }),
           output_path: suggestExportPathInDirectory(item.name, exportOptions.format, outputDir),
           format: exportOptions.format,
           quality: exportOptions.quality,
           embed_icc: exportOptions.embedIcc,
           preserve_metadata: exportOptions.preserveMetadata,
           export_transform: exportOptions.exportTransform,
-          crop_rect: state.cropApplied ? cropRectForRequest(state.crop) : undefined,
-          image_transform: imageTransformForRequest(state.imageTransform),
-          r_curve: effectiveCurves.r,
-          g_curve: effectiveCurves.g,
-          b_curve: effectiveCurves.b,
         };
         setActionState("batchExport", "running", `${index + 1}/${exportableFiles.length} ${item.name}`);
         try {
@@ -2068,11 +2112,11 @@ export function useWorkbench() {
         setBatchExportResults([...nextResults]);
       }
       setActionState("batchExport", successCount === exportableFiles.length ? "success" : "error", `${successCount}/${exportableFiles.length}`);
-      notify(successCount === exportableFiles.length ? "success" : "warning", "批量导出完成", `${successCount}/${exportableFiles.length} 成功`);
+      notify(successCount === exportableFiles.length ? "success" : "warning", t("export.batchDoneTitle"), t("export.batchDoneDetail", { success: successCount, total: exportableFiles.length }));
     } catch (error) {
       console.error(error);
       setActionState("batchExport", "error", String(error));
-      notify("error", "批量导出失败", String(error));
+      notify("error", t("export.batchFailedTitle"), String(error));
     }
   }
 
@@ -2126,10 +2170,15 @@ export function useWorkbench() {
       const loaded = await fetchSessionLoad(item.path);
       const payload = await postCalibrationSession({
         session_id: loaded.session_id,
-        mode,
-        strength,
-        negative_base: negativeBaseEnabled,
-        accelerator,
+        ...calibrationRequestFields({
+          mode,
+          strength,
+          negativeBaseEnabled,
+          accelerator,
+          curves: committedCurves,
+          lookAdjustments,
+          toneRecovery,
+        }),
       });
       const nextItem: WorkspaceFile = {
         id: `session:${loaded.session_id}`,
@@ -2237,7 +2286,7 @@ export function useWorkbench() {
       ),
     );
     if (options?.interaction === "commit") {
-      commitEdit("裁切调整", "crop", currentEditState({ crop: nextCrop, cropEdited: true, cropApplied: false }));
+      commitEdit(t("history.cropAdjust"), "crop", currentEditState({ crop: nextCrop, cropEdited: true, cropApplied: false }));
     }
   }
 
@@ -2269,8 +2318,8 @@ export function useWorkbench() {
           : item,
       ),
     );
-    notify("info", "Crop reset", "恢复到自动建议框");
-    commitEdit("裁切复位", "crop-reset", currentEditState({ crop: nextCrop, cropEdited: false, cropApplied: false }));
+    notify("info", "Crop reset", t("history.cropResetDetail"));
+    commitEdit(t("history.cropReset"), "crop-reset", currentEditState({ crop: nextCrop, cropEdited: false, cropApplied: false }));
   }
 
   function applySelectedCrop() {
@@ -2280,7 +2329,7 @@ export function useWorkbench() {
     setFiles((items) => items.map((item) =>
       item.id === selectedFile.id ? { ...item, cropApplied: true, calibrationSignature: undefined } : item,
     ));
-    commitEdit("应用裁切", "crop-apply", currentEditState({ cropApplied: true }));
+    commitEdit(t("history.cropApply"), "crop-apply", currentEditState({ cropApplied: true }));
   }
 
   function updateSelectedImageTransform(
@@ -2302,7 +2351,7 @@ export function useWorkbench() {
       ),
     );
     if (options?.interaction === "commit") {
-      commitEdit(options.description ?? "旋转与翻转", "image-transform", currentEditState({ imageTransform: nextTransform }));
+      commitEdit(options.description ?? t("history.imageTransform"), "image-transform", currentEditState({ imageTransform: nextTransform }));
     }
   }
 
@@ -2310,7 +2359,7 @@ export function useWorkbench() {
     beginEdit();
     updateSelectedImageTransform(
       (current) => ({ ...current, rotation: normalizeRotation(current.rotation + delta) }),
-      { interaction: "commit", description: delta < 0 ? "向左旋转" : "向右旋转" },
+      { interaction: "commit", description: delta < 0 ? t("history.rotateLeft") : t("history.rotateRight") },
     );
   }
 
@@ -2320,13 +2369,13 @@ export function useWorkbench() {
       (current) => axis === "horizontal"
         ? { ...current, flipH: !current.flipH }
         : { ...current, flipV: !current.flipV },
-      { interaction: "commit", description: axis === "horizontal" ? "水平翻转" : "垂直翻转" },
+      { interaction: "commit", description: axis === "horizontal" ? t("history.flipHorizontal") : t("history.flipVertical") },
     );
   }
 
   function resetSelectedImageTransform() {
     beginEdit();
-    updateSelectedImageTransform(DEFAULT_IMAGE_TRANSFORM, { interaction: "commit", description: "重置旋转翻转" });
+    updateSelectedImageTransform(DEFAULT_IMAGE_TRANSFORM, { interaction: "commit", description: t("history.resetTransform") });
   }
 
   function setCurves(next: ManualCurves, options?: { interaction?: "drag" | "commit" | "edit" }) {
@@ -2361,7 +2410,7 @@ export function useWorkbench() {
     }
     if (interaction !== "drag") {
       beginEdit();
-      commitEdit("曲线调整", "curves", currentEditState({ curves: manualCurves }));
+      commitEdit(t("history.curves"), "curves", currentEditState({ curves: manualCurves }));
     }
   }
 
@@ -2407,7 +2456,7 @@ export function useWorkbench() {
     setAiResult(null);
     setExportResult(null);
     setSessionSaveResult(null);
-    notify("info", "Workspace cleared", "已清空当前工作区。");
+    notify("info", t("workbench.clearedTitle"), t("workbench.clearedDetail"));
   }
 
   function selectRelativeItem(direction: -1 | 1) {

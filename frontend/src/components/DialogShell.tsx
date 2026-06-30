@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { t } from "../i18n";
 
 type DialogShellProps = {
   open: boolean;
@@ -45,7 +46,7 @@ export function DialogShell({
           <div className="pc-card-actions">
             {headerActions}
             <button className="pc-button pc-button-secondary pc-button-small" onClick={onClose} type="button">
-              关闭
+              {t("common.close")}
             </button>
           </div>
         </div>

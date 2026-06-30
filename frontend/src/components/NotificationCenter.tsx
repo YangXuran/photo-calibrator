@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { NotificationItem } from "../types";
+import { t } from "../i18n";
 
 type NotificationCenterProps = {
   items: NotificationItem[];
@@ -20,7 +21,7 @@ function NotificationToast({ item, onDismiss, duration = 5000 }: { item: Notific
         <strong>{item.title}</strong>
         <span>{item.message}</span>
       </div>
-      <button className="pc-toast-close" onClick={() => onDismiss(item.id)} type="button" aria-label="Dismiss notification">
+      <button className="pc-toast-close" onClick={() => onDismiss(item.id)} type="button" aria-label={t("labels.dismissNotification")}>
         ×
       </button>
     </article>

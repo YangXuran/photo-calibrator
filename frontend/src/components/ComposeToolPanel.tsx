@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { CropCard } from "./CropCard";
 import { PaneSection } from "./PaneSection";
 
@@ -19,24 +20,24 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
         collapsible
         emphasis="primary"
         testId="compose-rotate-section"
-        title="旋转与翻转"
+        title={t("compose.rotateFlipTitle")}
       >
         <div className="pc-compose-grid">
-          <button className="pc-compose-btn" data-testid="compose-rotate-left" disabled={!selectedFile} onClick={() => workbench.rotateSelectedImage(-90)} title="向左旋转 90°" type="button">
+          <button className="pc-compose-btn" data-testid="compose-rotate-left" disabled={!selectedFile} onClick={() => workbench.rotateSelectedImage(-90)} title={t("compose.rotateLeftTitle")} type="button">
             ↺ 90°
           </button>
-          <button className="pc-compose-btn" data-testid="compose-rotate-right" disabled={!selectedFile} onClick={() => workbench.rotateSelectedImage(90)} title="向右旋转 90°" type="button">
+          <button className="pc-compose-btn" data-testid="compose-rotate-right" disabled={!selectedFile} onClick={() => workbench.rotateSelectedImage(90)} title={t("compose.rotateRightTitle")} type="button">
             ↻ 90°
           </button>
-          <button className={`pc-compose-btn ${imageTransform.flipH ? "is-active" : ""}`} data-testid="compose-flip-horizontal" disabled={!selectedFile} onClick={() => workbench.flipSelectedImage("horizontal")} title="水平翻转" type="button">
-            ↔ 翻转
+          <button className={`pc-compose-btn ${imageTransform.flipH ? "is-active" : ""}`} data-testid="compose-flip-horizontal" disabled={!selectedFile} onClick={() => workbench.flipSelectedImage("horizontal")} title={t("compose.flipHorizontalTitle")} type="button">
+            ↔ {t("compose.flip")}
           </button>
-          <button className={`pc-compose-btn ${imageTransform.flipV ? "is-active" : ""}`} data-testid="compose-flip-vertical" disabled={!selectedFile} onClick={() => workbench.flipSelectedImage("vertical")} title="垂直翻转" type="button">
-            ↕ 翻转
+          <button className={`pc-compose-btn ${imageTransform.flipV ? "is-active" : ""}`} data-testid="compose-flip-vertical" disabled={!selectedFile} onClick={() => workbench.flipSelectedImage("vertical")} title={t("compose.flipVerticalTitle")} type="button">
+            ↕ {t("compose.flip")}
           </button>
         </div>
         <label className="pc-field">
-          <span>旋转角度</span>
+          <span>{t("compose.rotationAngle")}</span>
           <div className="pc-compose-angle">
             <input
               data-testid="compose-rotation-input"
@@ -45,7 +46,7 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
               onBlur={(event) =>
                 workbench.updateSelectedImageTransform(
                   { ...imageTransform, rotation: Number(event.currentTarget.value) },
-                  { interaction: "commit", description: "旋转角度" },
+                  { interaction: "commit", description: t("compose.rotationAngle") },
                 )
               }
               onChange={(event) =>
@@ -58,14 +59,14 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
               onKeyUp={(event) =>
                 workbench.updateSelectedImageTransform(
                   { ...imageTransform, rotation: Number(event.currentTarget.value) },
-                  { interaction: "commit", description: "旋转角度" },
+                  { interaction: "commit", description: t("compose.rotationAngle") },
                 )
               }
               onPointerDown={() => workbench.beginEdit()}
               onPointerUp={(event) =>
                 workbench.updateSelectedImageTransform(
                   { ...imageTransform, rotation: Number(event.currentTarget.value) },
-                  { interaction: "commit", description: "旋转角度" },
+                  { interaction: "commit", description: t("compose.rotationAngle") },
                 )
               }
               step={0.1}
@@ -76,7 +77,7 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
           </div>
         </label>
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="compose-transform-reset" disabled={!selectedFile} onClick={workbench.resetSelectedImageTransform} type="button">
-          重置旋转翻转
+          {t("compose.resetTransform")}
         </button>
       </PaneSection>
 
@@ -96,10 +97,10 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
         collapsible
         defaultCollapsed
         testId="compose-keystone-section"
-        title="透视校正"
+        title={t("compose.keystoneTitle")}
       >
         <div className="pc-placeholder-panel">
-          <p>待实现</p>
+          <p>{t("compose.pending")}</p>
         </div>
       </PaneSection>
     </div>

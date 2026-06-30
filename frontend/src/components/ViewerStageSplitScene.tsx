@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { t } from "../i18n";
 import type { CropDiagnostics, CropRect, ViewerPan, ViewerZoomMode } from "../types";
 import { ViewerCropOverlay } from "./ViewerCropOverlay";
 import { ViewerStageBitmapCanvas } from "./ViewerStageBitmapCanvas";
@@ -89,14 +90,14 @@ export const ViewerStageSplitScene = memo(function ViewerStageSplitScene({
     <ViewerStageMedia onContainerResize={handleResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale}>
       <div className="pc-stage-image-frame" ref={frameRef} style={frameStyle}>
         {displayPair ? (
-          <img alt="Calibrated" className="pc-stage-image" src={displayPair.calibratedSrc} onError={() => setImageError(true)} />
+          <img alt={t("labels.calibrated")} className="pc-stage-image" src={displayPair.calibratedSrc} onError={() => setImageError(true)} />
         ) : null}
         {calibratedPreviewBitmap ? (
-          <ViewerStageBitmapCanvas alt="Calibrated" bitmap={calibratedPreviewBitmap} className="pc-stage-image pc-stage-canvas pc-stage-preview-overlay" />
+          <ViewerStageBitmapCanvas alt={t("labels.calibrated")} bitmap={calibratedPreviewBitmap} className="pc-stage-image pc-stage-canvas pc-stage-preview-overlay" />
         ) : null}
         {displayPair ? (
           <div className="pc-stage-clip" style={{ clipPath: `inset(0 ${100 - splitPosition}% 0 0)` }}>
-            <img alt="Original" className="pc-stage-image" src={displayPair.originalSrc} onError={() => setImageError(true)} />
+            <img alt={t("labels.original")} className="pc-stage-image" src={displayPair.originalSrc} onError={() => setImageError(true)} />
           </div>
         ) : null}
         {cropRect ? <ViewerCropOverlay cropDiagnostics={cropDiagnostics} cropRect={cropRect} editable={cropEditable} onCropChange={onCropChange} zoomMode={zoomMode} zoomScale={zoomScale} /> : null}

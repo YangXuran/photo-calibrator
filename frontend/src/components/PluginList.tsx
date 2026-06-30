@@ -1,4 +1,5 @@
 import type { EvaluatorInfo, PluginInfo } from "../types";
+import { t } from "../i18n";
 
 type PluginListProps = {
   plugins: PluginInfo[];
@@ -24,7 +25,7 @@ export function PluginList({ plugins, evaluators }: PluginListProps) {
             </div>
           </article>
         ))}
-        {!plugins.length ? <div className="pc-empty-panel">未发现插件</div> : null}
+        {!plugins.length ? <div className="pc-empty-panel">{t("settings.noPlugins")}</div> : null}
       </div>
       <div className="pc-list pc-list-compact">
         {evaluators.map((evaluator) => (
@@ -39,7 +40,7 @@ export function PluginList({ plugins, evaluators }: PluginListProps) {
             </div>
           </article>
         ))}
-        {!evaluators.length ? <div className="pc-empty-panel">未发现评估器</div> : null}
+        {!evaluators.length ? <div className="pc-empty-panel">{t("settings.noEvaluators")}</div> : null}
       </div>
     </div>
   );

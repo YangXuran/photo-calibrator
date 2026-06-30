@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "../i18n";
 import type { CalibrationPayload } from "../types";
 import { BarChart } from "./BarChart";
 import { ChartPanel } from "./ChartPanel";
@@ -16,7 +17,7 @@ type AnalysisChartsSectionProps = {
 function CccCard({ ccc }: { ccc?: Record<string, number> }) {
   if (!ccc) return null;
   return (
-    <ChartPanel title="CCC 圆">
+    <ChartPanel title={t("analysis.cccCircle")}>
       <div className="pc-metrics-row">
         <div className="pc-metric"><span className="pc-metric-label">μ</span><span className="pc-metric-value">{ccc.mu?.toFixed(1)}</span></div>
         <div className="pc-metric"><span className="pc-metric-label">σ</span><span className="pc-metric-value">{ccc.sigma?.toFixed(1)}</span></div>
@@ -30,11 +31,11 @@ function CccCard({ ccc }: { ccc?: Record<string, number> }) {
 function PciCard({ pci }: { pci?: Record<string, number> }) {
   if (!pci) return null;
   return (
-    <ChartPanel title="PCI 指数">
+    <ChartPanel title={t("analysis.pciIndex")}>
       <div className="pc-metrics-row">
         <div className="pc-metric"><span className="pc-metric-label">PCI</span><span className="pc-metric-value">{pci.value?.toFixed(1)}</span></div>
-        <div className="pc-metric"><span className="pc-metric-label">加权Δ</span><span className="pc-metric-value">{pci.weighted_delta?.toFixed(1)}</span></div>
-        <div className="pc-metric"><span className="pc-metric-label">亮度因子</span><span className="pc-metric-value">{pci.luminance_factor?.toFixed(2)}</span></div>
+        <div className="pc-metric"><span className="pc-metric-label">{t("analysis.weightedDelta")}</span><span className="pc-metric-value">{pci.weighted_delta?.toFixed(1)}</span></div>
+        <div className="pc-metric"><span className="pc-metric-label">{t("analysis.luminanceFactor")}</span><span className="pc-metric-value">{pci.luminance_factor?.toFixed(2)}</span></div>
       </div>
     </ChartPanel>
   );
@@ -45,11 +46,11 @@ function RgbMeansCard({ rgb_means }: { rgb_means?: Record<string, Record<string,
   const inp = rgb_means.input;
   const out = rgb_means.output;
   return (
-    <ChartPanel title="RGB 均值">
+    <ChartPanel title={t("analysis.rgbMeans")}>
       <div className="pc-metrics-row">
-        <div className="pc-metric"><span className="pc-metric-label">R 输入/输出</span><span className="pc-metric-value">{inp?.r?.toFixed(0)} → {out?.r?.toFixed(0)}</span></div>
-        <div className="pc-metric"><span className="pc-metric-label">G 输入/输出</span><span className="pc-metric-value">{inp?.g?.toFixed(0)} → {out?.g?.toFixed(0)}</span></div>
-        <div className="pc-metric"><span className="pc-metric-label">B 输入/输出</span><span className="pc-metric-value">{inp?.b?.toFixed(0)} → {out?.b?.toFixed(0)}</span></div>
+        <div className="pc-metric"><span className="pc-metric-label">{t("analysis.inputOutputR")}</span><span className="pc-metric-value">{inp?.r?.toFixed(0)} → {out?.r?.toFixed(0)}</span></div>
+        <div className="pc-metric"><span className="pc-metric-label">{t("analysis.inputOutputG")}</span><span className="pc-metric-value">{inp?.g?.toFixed(0)} → {out?.g?.toFixed(0)}</span></div>
+        <div className="pc-metric"><span className="pc-metric-label">{t("analysis.inputOutputB")}</span><span className="pc-metric-value">{inp?.b?.toFixed(0)} → {out?.b?.toFixed(0)}</span></div>
       </div>
     </ChartPanel>
   );
@@ -65,15 +66,15 @@ export function AnalysisChartsSection({ collapseScope, result }: AnalysisChartsS
       collapseStorageKey="inspector-analysis-charts"
       collapsible
       testId="analysis-charts-section"
-      title="分析图表"
+      title={t("analysis.title")}
     >
       <div className="pc-analysis-grid">
         <ChartPanel
-          title="RGB 直方图"
+          title={t("analysis.rgbHistogram")}
           actions={
             hasCalibrated ? (
               <button className="pc-histogram-toggle" onClick={() => setShowCalibrated(!showCalibrated)} type="button">
-                {showCalibrated ? "校准后" : "校准前"}
+                {showCalibrated ? t("analysis.calibrated") : t("analysis.original")}
               </button>
             ) : undefined
           }
@@ -87,17 +88,17 @@ export function AnalysisChartsSection({ collapseScope, result }: AnalysisChartsS
         <CccCard ccc={result?.charts?.ccc} />
         <PciCard pci={result?.charts?.pci} />
         <RgbMeansCard rgb_means={result?.charts?.rgb_means} />
-        <ChartPanel title="分区偏色">
+        <ChartPanel title={t("analysis.zoneCast")}>
           <ZoneChart zones={result?.charts?.zones} />
         </ChartPanel>
-        <ChartPanel title="Lab 向量">
+        <ChartPanel title={t("analysis.labVector")}>
           <LabVectorChart vectors={result?.charts?.lab_vectors} />
         </ChartPanel>
-        <ChartPanel title="偏色强度">
+        <ChartPanel title={t("analysis.castStrength")}>
           <BarChart items={result?.charts?.strengths} />
         </ChartPanel>
         {result?.charts?.lut_analysis ? (
-          <ChartPanel title="LUT 雷达图">
+          <ChartPanel title={t("analysis.lutRadar")}>
             <LutRadarChart vectors={result.charts.lut_analysis.vectors} />
           </ChartPanel>
         ) : null}

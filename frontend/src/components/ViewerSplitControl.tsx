@@ -1,4 +1,5 @@
-import { memo, useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { t } from "../i18n";
 
 type SplitGeometry = {
   height: number;
@@ -27,6 +28,7 @@ export const ViewerSplitControl = memo(function ViewerSplitControl({
   const [geometry, setGeometry] = useState<SplitGeometry | null>(null);
   const controlRef = useRef<HTMLDivElement | null>(null);
   const geometryRef = useRef<SplitGeometry | null>(null);
+  const draggingRef = useRef(false);
 
   const measure = useCallback(() => {
     const stage = controlRef.current?.parentElement;
@@ -81,6 +83,37 @@ export const ViewerSplitControl = memo(function ViewerSplitControl({
     onChange(clampPosition(((clientX - stageLeft - current.left) / current.width) * 100));
   };
 
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      if (!draggingRef.current) return;
+      event.preventDefault();
+      updateFromPointer(event.clientX);
+    };
+    const onPointerUp = () => {
+      draggingRef.current = false;
+    };
+    const onMouseMove = (event: MouseEvent) => {
+      if (!draggingRef.current) return;
+      event.preventDefault();
+      updateFromPointer(event.clientX);
+    };
+    const onMouseUp = () => {
+      draggingRef.current = false;
+    };
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    window.addEventListener("mousemove", onMouseMove, { passive: false });
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  });
+
   const controlStyle: CSSProperties = geometry && geometry.width > 0 && geometry.height > 0
     ? { height: geometry.height, left: geometry.left, top: geometry.top, width: geometry.width }
     : { inset: 0 };
@@ -93,7 +126,7 @@ export const ViewerSplitControl = memo(function ViewerSplitControl({
       style={controlStyle}
     >
       <div
-        aria-label="图像对比分割"
+        aria-label={t("viewer.splitAria")}
         aria-orientation="vertical"
         aria-valuemax={90}
         aria-valuemin={10}
@@ -119,23 +152,32 @@ export const ViewerSplitControl = memo(function ViewerSplitControl({
         onPointerDown={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          draggingRef.current = true;
           event.currentTarget.setPointerCapture(event.pointerId);
           updateFromPointer(event.clientX);
         }}
         onPointerMove={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          if (!draggingRef.current && !event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.preventDefault();
           updateFromPointer(event.clientX);
         }}
         onPointerUp={(event) => {
+          draggingRef.current = false;
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
         }}
         onPointerCancel={(event) => {
+          draggingRef.current = false;
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
+        }}
+        onMouseDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          draggingRef.current = true;
+          updateFromPointer(event.clientX);
         }}
         role="slider"
         style={{ left: `${position}%` }}

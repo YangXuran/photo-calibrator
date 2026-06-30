@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { ViewerCompareControls } from "./ViewerCompareControls";
 import { ViewerFocusToolbarBlock } from "./ViewerFocusToolbarBlock";
 import { getViewerCompareLabel, getViewerZoomLabel } from "./viewerLabels";
@@ -45,9 +46,9 @@ export function ViewerFocusToolbar({
       <ViewerFocusToolbarBlock label="Zoom" testId="focus-zoom-block" tone={zoomTone === "muted" ? "tertiary" : zoomTone === "default" ? "secondary" : "primary"} value={zoomLabel} valueTestId="focus-zoom-value">
         <ViewerStageToolbar compact focusMode showReset={showZoomReset} showStepper={showZoomStepper} tone={zoomTone} visiblePresets={visibleZoomPresets} workbench={workbench} />
       </ViewerFocusToolbarBlock>
-      <ViewerFocusToolbarBlock label="Workspace" testId="focus-exit-block" tone="tertiary" value="Focus">
+      <ViewerFocusToolbarBlock label={t("labels.workspace")} testId="focus-exit-block" tone="tertiary" value={t("labels.focus")}>
         <button className="pc-stage-action-button is-focus-exit" onClick={workbench.toggleViewerFocusMode} type="button">
-          Exit Focus
+          {t("labels.exitFocus")}
         </button>
       </ViewerFocusToolbarBlock>
     </div>

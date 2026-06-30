@@ -1,4 +1,5 @@
 import type { SessionListItem } from "../types";
+import { t } from "../i18n";
 
 type SessionListItemCardProps = {
   item: SessionListItem;
@@ -33,10 +34,10 @@ export function SessionListItemCard({ item, onLoad, onDelete }: SessionListItemC
       </div>
       <div className="pc-inline-actions">
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="saved-session-load" onClick={() => onLoad(item)} type="button">
-          加载
+          {t("session.load")}
         </button>
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="saved-session-delete" onClick={() => onDelete(item)} type="button">
-          删除
+          {t("session.delete")}
         </button>
       </div>
     </article>

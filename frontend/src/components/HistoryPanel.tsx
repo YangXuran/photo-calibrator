@@ -1,4 +1,5 @@
 import type { HistoryEntry } from "../types";
+import { t } from "../i18n";
 import { EmptyPanel } from "./EmptyPanel";
 
 type HistoryPanelProps = {
@@ -43,7 +44,7 @@ export function HistoryPanel({ entries, currentIndex, onUndo, onRedo }: HistoryP
             →
           </button>
         </div>
-        <EmptyPanel>No modifications yet</EmptyPanel>
+        <EmptyPanel>{t("labels.noModifications")}</EmptyPanel>
       </div>
     );
   }

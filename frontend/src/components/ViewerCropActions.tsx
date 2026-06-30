@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 type ViewerCropActionsProps = {
   canReset?: boolean;
   onSuggest: () => void;
@@ -8,10 +10,10 @@ export function ViewerCropActions({ canReset, onSuggest, onReset }: ViewerCropAc
   return (
     <>
       <button className="pc-stage-action-button" data-testid="focus-crop-detect" onClick={onSuggest} type="button">
-        Detect
+        {t("crop.detect")}
       </button>
       <button className="pc-stage-action-button" data-testid="focus-crop-reset" disabled={!canReset} onClick={onReset} type="button">
-        Reset crop
+        {t("crop.reset")}
       </button>
     </>
   );

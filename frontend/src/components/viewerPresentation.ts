@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import type { WorkspaceFile } from "../types";
 import { getWorkspaceStateSummary } from "../lib/workspaceStatus";
 import { getViewerZoomLabel } from "./viewerLabels";
@@ -37,19 +38,19 @@ export function getViewerPresentation(workbench: ViewerPresentationInput): Viewe
     : undefined;
   const filmScanStatus =
     workbench.actionStates.filmScan.status === "running"
-      ? "Detecting"
-      : summary.cropLabel === "Crop applied"
-        ? "Applied"
-        : summary.cropLabel === "Crop adjusted"
-        ? "Adjusted"
-        : summary.cropLabel === "Crop suggested"
-          ? "Suggested"
-          : "None";
+      ? t("workspaceStatus.detecting")
+      : summary.cropLabel === t("workspaceStatus.cropApplied")
+        ? t("workspaceStatus.applied")
+        : summary.cropLabel === t("workspaceStatus.cropAdjusted")
+        ? t("workspaceStatus.adjusted")
+        : summary.cropLabel === t("workspaceStatus.cropSuggested")
+          ? t("workspaceStatus.suggested")
+          : t("workspaceStatus.none");
 
   /* Single unified HUD composition — minimal, non-intrusive */
   const zoomEntry = `Zoom: ${getViewerZoomLabel(workbench.viewerZoomMode, workbench.viewerZoomScale, "hud", zoomSize, imgSize)}`;
   const sizeEntry = summary.sizeLabel !== "-" ? `Size: ${summary.sizeLabel}` : null;
-  const cropEntry = summary.cropLabel !== "No crop" ? `Crop: ${summary.cropLabel}` : null;
+  const cropEntry = summary.cropLabel !== t("workspaceStatus.noCrop") ? `Crop: ${summary.cropLabel}` : null;
 
   const hudPrimary = [zoomEntry].filter(Boolean) as string[];
   const hudSecondary = [sizeEntry, cropEntry].filter(Boolean) as string[];

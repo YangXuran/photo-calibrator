@@ -1,5 +1,6 @@
 import type { HistogramPayload } from "../types";
 import { EmptyPanel } from "./EmptyPanel";
+import { t } from "../i18n";
 
 type HistogramChartProps = {
   histogram?: HistogramPayload;
@@ -74,7 +75,7 @@ function fillPath(values: number[], scale: number): string {
 
 export function HistogramChart({ histogram, calibratedHistogram, showCalibrated }: HistogramChartProps) {
   const active = showCalibrated !== false && calibratedHistogram ? calibratedHistogram : histogram;
-  if (!active) return <EmptyPanel>暂无直方图</EmptyPanel>;
+  if (!active) return <EmptyPanel>{t("analysis.noHistogram")}</EmptyPanel>;
 
   const { channels, bins } = active;
 
@@ -97,7 +98,7 @@ export function HistogramChart({ histogram, calibratedHistogram, showCalibrated 
       className="pc-chart"
       viewBox={`0 0 ${SVG_W} ${SVG_H}`}
       role="img"
-      aria-label="RGB histogram"
+      aria-label={t("labels.rgbHistogram")}
     >
       {/* ── Semi-transparent fills under each channel ── */}
       <path

@@ -1,4 +1,5 @@
 import type { CompareMode, WorkbenchPreferences } from "../types";
+import { t } from "../i18n";
 
 export type LayoutPresetDefinition = {
   id: string;
@@ -65,7 +66,7 @@ export function getFilmstripPresentation(): FilmstripPresentation {
   return {
     density: "default",
     emphasis: "default",
-    title: "Filmstrip",
+    title: t("labels.filmstrip"),
     showStateChip: true,
     showMeta: true,
     showDetail: true,
@@ -80,7 +81,7 @@ export function getViewerPanePresentation(): ViewerPanePresentation {
     statusEmphasis: "default",
     compareTone: "default",
     zoomTone: "default",
-    title: "Viewer",
+    title: t("labels.viewer"),
     showStageHint: false,
     visibleCompareModes: ["side-by-side", "split", "calibrated-only"],
     visibleZoomPresets: ["fit", "fill"],

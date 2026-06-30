@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 
 export type ViewerStageToolbarWorkbench = Pick<
   WorkbenchController,
@@ -37,12 +38,12 @@ export function ViewerStageToolbar({
         <div className={`pc-segmented ${compact ? "is-compact" : ""}`} data-testid={focusMode ? "focus-zoom-preset-group" : "viewer-zoom-preset-group"}>
           {showFit ? (
             <button className={workbench.viewerZoomMode === "fit" ? "is-active" : ""} data-testid={focusMode ? "focus-zoom-fit" : "viewer-zoom-fit"} onClick={() => workbench.setViewerZoomPreset("fit")} type="button">
-              {focusMode ? "Fit" : "适配"}
+              {focusMode ? "Fit" : t("common.fit")}
             </button>
           ) : null}
           {showFill ? (
             <button className={workbench.viewerZoomMode === "fill" ? "is-active" : ""} data-testid={focusMode ? "focus-zoom-fill" : "viewer-zoom-fill"} onClick={() => workbench.setViewerZoomPreset("fill")} type="button">
-              {focusMode ? "Fill" : "铺满"}
+              {focusMode ? "Fill" : t("common.fill")}
             </button>
           ) : null}
         </div>
@@ -60,7 +61,7 @@ export function ViewerStageToolbar({
       ) : null}
       {showReset ? (
         <button className="pc-button pc-button-secondary pc-button-small" data-testid={focusMode ? "focus-zoom-reset" : "viewer-zoom-reset"} onClick={workbench.resetViewerZoom} type="button">
-          {focusMode ? "Reset" : "重置"}
+          {focusMode ? "Reset" : t("common.reset")}
         </button>
       ) : null}
     </div>

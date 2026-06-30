@@ -1,9 +1,10 @@
 import type { CompareMode, ViewerZoomMode } from "../types";
+import { t } from "../i18n";
 
 export function getViewerCompareLabel(compareMode: CompareMode, splitPosition: number) {
-  if (compareMode === "side-by-side") return "Dual";
-  if (compareMode === "split") return `Split ${splitPosition}%`;
-  return "Calibrated";
+  if (compareMode === "side-by-side") return t("labels.dual");
+  if (compareMode === "split") return t("labels.splitLabel", { value: splitPosition });
+  return t("labels.calibrated");
 }
 
 export function getViewerZoomLabel(

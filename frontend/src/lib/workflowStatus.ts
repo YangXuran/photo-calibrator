@@ -1,4 +1,5 @@
 import type { AIEvaluationPayload, ActionState, DocumentRenderPayload, ExportPayload, SessionSavePayload } from "../types";
+import { t } from "../i18n";
 
 export type WorkflowActionKey = "calibration" | "filmScan" | "export" | "ai" | "session" | "document";
 
@@ -11,19 +12,19 @@ export type WorkflowFeedItem = {
 };
 
 const WORKFLOW_LABELS: Record<WorkflowActionKey, string> = {
-  calibration: "Calibration",
-  filmScan: "Film Scan",
-  export: "Export",
-  ai: "AI Review",
-  session: "Session",
-  document: "Document",
+  calibration: t("labels.calibration"),
+  filmScan: t("labels.filmScan"),
+  export: t("labels.export"),
+  ai: t("labels.aiReview"),
+  session: t("labels.session"),
+  document: t("labels.document"),
 };
 
 const ACTION_STATUS_LABELS: Record<ActionState["status"], string> = {
-  idle: "Idle",
-  running: "Running",
-  success: "Complete",
-  error: "Failed",
+  idle: t("labels.idle"),
+  running: t("labels.running"),
+  success: t("labels.complete"),
+  error: t("labels.failed"),
 };
 
 export function getWorkflowActionLabel(key: WorkflowActionKey) {

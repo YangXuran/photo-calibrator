@@ -1,4 +1,5 @@
 import type { SessionListItem } from "../types";
+import { t } from "../i18n";
 import { PaneSection } from "./PaneSection";
 import { SessionListItemCard } from "./SessionListItemCard";
 
@@ -15,17 +16,17 @@ export function SessionLibraryCard({ sessions, onRefresh, onLoad, onDelete }: Se
       density="compact"
       actions={
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="saved-sessions-refresh" onClick={onRefresh} type="button">
-          刷新
+          {t("session.refresh")}
         </button>
       }
       testId="saved-sessions-section"
-      title="已保存 Session"
+      title={t("session.savedTitle")}
     >
       <div className="pc-list">
         {sessions.map((item) => (
           <SessionListItemCard item={item} key={item.path} onDelete={onDelete} onLoad={onLoad} />
         ))}
-        {!sessions.length ? <div className="pc-empty-panel">无</div> : null}
+        {!sessions.length ? <div className="pc-empty-panel">{t("common.none")}</div> : null}
       </div>
     </PaneSection>
   );

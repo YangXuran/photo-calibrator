@@ -8,10 +8,122 @@ const {
   removeTempDir,
   startServers,
   stopServer,
+  stubWorkbenchBaseRoutes,
   stubCompactWorkflowRoutes,
 } = require("./react_workbench_helpers");
 
 test.describe("react workbench workflow", () => {
+  test("keeps tone recovery settings when zoom triggers adaptive preview", async ({ page }) => {
+    const sampleDir = createTempImageDir("photo-calibrator-tone-zoom-ui-");
+    const photo = `${sampleDir}/tone-zoom.tif`;
+    makeImage(photo, [148, 116, 92]);
+
+    const previewBodies = [];
+    const { backend, frontend, frontendUrl } = await startServers();
+    try {
+      await page.setViewportSize({ width: 1280, height: 840 });
+      await stubWorkbenchBaseRoutes(page);
+      await page.route("**/api/preview", async (route) => {
+        const body = route.request().postDataJSON();
+        previewBodies.push(body);
+        const side = Number(body.analysis_max_side ?? 320);
+        await fulfillJsonAfterDelay(route, {
+          session_id: `sess:preview-${side}-${previewBodies.length}`,
+          original_preview: TINY_PNG_DATA_URL,
+          processing: {
+            original_width: 2200,
+            original_height: 1500,
+            analysis_width: side,
+            analysis_height: Math.max(1, Math.round(side * 0.68)),
+            preview_source: "stub-preview",
+          },
+        }, 30);
+      });
+      await page.route("**/api/calibrate-session", async (route) => {
+        const body = route.request().postDataJSON();
+        const tone = body.tone_recovery?.enabled
+          ? {
+              ...body.tone_recovery,
+              enabled: true,
+              dynamic_range: 0.3,
+              black_point: 0.08,
+              white_point: 0.92,
+              recommended_strength: 0.45,
+              applied_strength: body.tone_recovery.strength ?? 0.45,
+              applied_local_contrast: 0.08,
+            }
+          : undefined;
+        const side = Number(String(body.session_id ?? "").match(/sess:preview-(\d+)/)?.[1] ?? 320);
+        await fulfillJsonAfterDelay(route, {
+          session_id: body.session_id,
+          original_preview: TINY_PNG_DATA_URL,
+          calibrated_image: TINY_PNG_DATA_URL,
+          reduction_pct: 12,
+          input: { direction: "warm", lab: { strength: 82, a_mean: 0.4, b_star_mean: -0.3 } },
+          output: { lab: { strength: 61, a_mean: 0.1, b_star_mean: -0.1 } },
+          charts: {
+            rgb_histogram: { bins: 256, channels: { r: { counts: [], normalized: [], peak_bin: 0 }, g: { counts: [], normalized: [], peak_bin: 0 }, b: { counts: [], normalized: [], peak_bin: 0 } } },
+            lab_vectors: [{ name: "Original", a: 0.4, b: -0.3 }],
+            strengths: [{ name: "Original", value: 82 }],
+          },
+          processing: {
+            analysis_width: side,
+            analysis_height: Math.max(1, Math.round(side * 0.68)),
+            original_width: 2200,
+            original_height: 1500,
+            preview_source: "stub-session",
+            tone_recovery_enabled: Boolean(tone),
+            tone_recovery: tone,
+          },
+        }, 30);
+      });
+
+      await page.goto(frontendUrl);
+      await page.getByTestId("topbar-file-input").setInputFiles([photo]);
+      await expect(page.getByTestId("filmstrip-item")).toHaveCount(1);
+      await expect(page.getByTestId("viewer-stage-shell")).toBeVisible();
+      await expect.poll(() => previewBodies.some((body) => Number(body.analysis_max_side ?? 0) > 320), { timeout: 10000 }).toBeTruthy();
+
+      await page.getByTestId("inspector-tab-adjust").click();
+      const toneResponse = page.waitForResponse(async (response) => {
+        if (!/\/api\/calibrate-session$/.test(new URL(response.url()).pathname) || !response.ok()) return false;
+        const payload = await response.json().catch(() => null);
+        return payload?.processing?.tone_recovery?.enabled === true;
+      }, { timeout: 10000 });
+      await page.getByTestId("tone-recovery-toggle").check();
+      await toneResponse;
+
+      const adaptiveToneRequest = page.waitForRequest((request) => {
+        if (!/\/api\/calibrate-session$/.test(new URL(request.url()).pathname)) return false;
+        const body = request.postDataJSON();
+        const side = Number(String(body.session_id ?? "").match(/sess:preview-(\d+)/)?.[1] ?? 0);
+        return side > 320 && body.tone_recovery?.enabled === true;
+      }, { timeout: 12000 });
+      await page.getByTestId("viewer-zoom-in").click();
+      await page.getByTestId("viewer-zoom-in").click();
+      await page.getByTestId("viewer-zoom-in").click();
+      await page.getByTestId("viewer-zoom-in").click();
+
+      const request = await adaptiveToneRequest;
+      const body = request.postDataJSON();
+      expect(body).toMatchObject({
+        mode: "global",
+        strength: 0.8,
+        negative_base: false,
+        accelerator: "auto",
+        tone_recovery: { enabled: true, auto: true, strength: 0.45 },
+      });
+      expect(body.look).toBeTruthy();
+      expect(Array.isArray(body.r_curve)).toBeTruthy();
+      expect(Array.isArray(body.g_curve)).toBeTruthy();
+      expect(Array.isArray(body.b_curve)).toBeTruthy();
+    } finally {
+      stopServer(frontend);
+      stopServer(backend);
+      removeTempDir(sampleDir);
+    }
+  });
+
   test("keeps main calibration visible after import on compact viewport", async ({ page }) => {
     const sampleDir = createTempImageDir("photo-calibrator-frontend-ui-");
     const one = `${sampleDir}/a-warm-01.png`;

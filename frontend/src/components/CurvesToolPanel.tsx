@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { CurveEditor } from "./CurveEditor";
 import { PaneSection } from "./PaneSection";
 
@@ -18,7 +19,7 @@ export function CurvesToolPanel({ workbench }: CurvesToolPanelProps) {
         collapsible
         emphasis="primary"
         testId="curves-editor-section"
-        title="曲线编辑器"
+        title={t("curves.title")}
       >
         <CurveEditor
           curves={{ l: workbench.lCurve, r: workbench.rCurve, g: workbench.gCurve, b: workbench.bCurve }}

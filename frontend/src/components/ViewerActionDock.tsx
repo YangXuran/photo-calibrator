@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { t } from "../i18n";
 
 type ViewerActionDockProps = {
   cropPriority?: "primary" | "secondary" | "hidden";
@@ -13,7 +14,7 @@ export function ViewerActionDock({ status, actions, cropPriority = "secondary" }
     <div className="pc-action-dock" data-testid="focus-action-dock">
       {status ? (
         <div className="pc-action-dock-block">
-          <span className="pc-action-dock-label">Crop</span>
+          <span className="pc-action-dock-label">{t("labels.crop")}</span>
           <strong className="pc-action-dock-value" data-testid="focus-crop-value">
             {status}
           </strong>
@@ -21,7 +22,7 @@ export function ViewerActionDock({ status, actions, cropPriority = "secondary" }
       ) : null}
       {actions ? (
         <div className="pc-action-dock-block">
-          <span className="pc-action-dock-label">Actions</span>
+          <span className="pc-action-dock-label">{t("labels.actions")}</span>
           <div className="pc-action-dock-buttons">{actions}</div>
         </div>
       ) : null}

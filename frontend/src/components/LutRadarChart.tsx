@@ -1,4 +1,5 @@
 import type { LutVectorPoint } from "../types";
+import { t } from "../i18n";
 import { EmptyPanel } from "./EmptyPanel";
 
 type LutRadarChartProps = {
@@ -19,7 +20,7 @@ function polarY(angleDeg: number, r: number): number {
 }
 
 export function LutRadarChart({ vectors }: LutRadarChartProps) {
-  if (!vectors?.length) return <EmptyPanel>暂无 LUT 映射数据</EmptyPanel>;
+  if (!vectors?.length) return <EmptyPanel>{t("analysis.noLutMap")}</EmptyPanel>;
 
   const byHue = new Map<number, { a_before: number; b_before: number; a_after: number; b_after: number; saturation: number }>();
   for (const v of vectors) {
@@ -31,7 +32,7 @@ export function LutRadarChart({ vectors }: LutRadarChartProps) {
   }
 
   const entries = [...byHue.entries()].sort((a, b) => a[0] - b[0]);
-  if (entries.length < 3) return <EmptyPanel>LUT 数据不足，无法绘制雷达图</EmptyPanel>;
+  if (entries.length < 3) return <EmptyPanel>{t("analysis.insufficientLut")}</EmptyPanel>;
 
   const maxDelta = Math.max(...entries.map(([, v]) => {
     const before = Math.sqrt(v.a_before ** 2 + v.b_before ** 2);
@@ -60,7 +61,7 @@ export function LutRadarChart({ vectors }: LutRadarChartProps) {
   });
 
   return (
-    <svg className="pc-chart" data-testid="lut-radar-chart" viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label="LUT radar chart">
+    <svg className="pc-chart" data-testid="lut-radar-chart" viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label={t("labels.lutRadarChart")}>
       {gridRings.map((pct, i) => (
         <circle key={i} cx={CENTER} cy={CENTER} r={RADIUS * pct} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
       ))}

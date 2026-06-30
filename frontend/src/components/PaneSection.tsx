@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { t } from "../i18n";
 
 const SECTION_COLLAPSE_STORAGE_PREFIX = "photo-calibrator:section-collapsed:";
 
@@ -77,7 +78,7 @@ export function PaneSection({
               onClick={() => setCollapsed((current) => !current)}
               type="button"
             >
-              {collapsed ? "展开" : "收起"}
+              {collapsed ? t("common.expand") : t("common.collapse")}
             </button>
           ) : null}
         </div>

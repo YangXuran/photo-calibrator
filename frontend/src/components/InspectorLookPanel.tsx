@@ -1,5 +1,6 @@
 import type { PointerEvent } from "react";
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import type { LookAdjustments, LookWheel } from "../types";
 import { PaneSection } from "./PaneSection";
 
@@ -8,10 +9,10 @@ type InspectorLookPanelProps = {
 };
 
 const WHEEL_ZONES: Array<{ key: keyof LookAdjustments["colorGrade"]; label: string }> = [
-  { key: "shadows", label: "阴影" },
-  { key: "midtones", label: "中间调" },
-  { key: "highlights", label: "高光" },
-  { key: "global", label: "全局" },
+  { key: "shadows", label: t("look.shadows") },
+  { key: "midtones", label: t("look.midtones") },
+  { key: "highlights", label: t("look.highlights") },
+  { key: "global", label: t("look.global") },
 ];
 
 const DEFAULT_WHEELS: Record<string, LookWheel> = {
@@ -127,7 +128,7 @@ function LookColorWheel({
 export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
   const look = workbench.lookAdjustments;
 
-  function updateLook(next: LookAdjustments, commit = false, description = "片色调整") {
+  function updateLook(next: LookAdjustments, commit = false, description = t("history.lookAdjust")) {
     if (commit) workbench.commitLookAdjustments(next, description);
     else workbench.previewLookAdjustments(next);
   }
@@ -144,7 +145,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         b: clamp(((size / 2 - y) / (size / 2 - 14)) * 30, -30, 30),
       },
     };
-    updateLook(next, commit, "色偏微调");
+    updateLook(next, commit, t("history.labBias"));
   }
 
   function updateWheel(zone: keyof LookAdjustments["colorGrade"], wheel: LookWheel, commit = false) {
@@ -154,7 +155,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         ...look.colorGrade,
         [zone]: wheel,
       },
-    }, commit, `${WHEEL_ZONES.find((item) => item.key === zone)?.label ?? "色轮"}片色`);
+    }, commit, t("history.wheel", { zone: WHEEL_ZONES.find((item) => item.key === zone)?.label ?? t("history.wheelFallback") }));
   }
 
   function updateGradeValue(key: "blending" | "balance", value: number, commit = false) {
@@ -164,7 +165,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         ...look.colorGrade,
         [key]: value,
       },
-    }, commit, "色轮过渡");
+    }, commit, t("history.wheelBlend"));
   }
 
   function updatePointColor(patch: Partial<LookAdjustments["pointColor"]>, commit = false) {
@@ -174,7 +175,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         ...look.pointColor,
         ...patch,
       },
-    }, commit, "点选颜色");
+    }, commit, t("history.picker"));
   }
 
   const labSize = 180;
@@ -189,7 +190,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         collapsible
         emphasis="primary"
         testId="look-lab-section"
-        title="色偏微调"
+        title={t("look.labTitle")}
       >
         <div className="pc-look-lab-grid">
           <svg
@@ -204,7 +205,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
               event.preventDefault();
               event.stopPropagation();
               workbench.beginLookEdit();
-              updateLook({ ...look, labBias: { a: 0, b: 0 } }, true, "重置色偏");
+              updateLook({ ...look, labBias: { a: 0, b: 0 } }, true, t("history.lookReset"));
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) return;
@@ -236,7 +237,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
             <span>a* {look.labBias.a.toFixed(1)}</span>
             <span>b* {look.labBias.b.toFixed(1)}</span>
             <button className="pc-button pc-button-secondary pc-button-small" onClick={workbench.resetLookAdjustments} type="button">
-              重置 Look
+              {t("look.resetLook")}
             </button>
           </div>
         </div>
@@ -247,7 +248,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         collapseStorageScope="workbench"
         collapsible
         testId="look-wheels-section"
-        title="三路色轮"
+        title={t("look.colorWheelsTitle")}
       >
         <div className="pc-look-wheel-grid">
           {WHEEL_ZONES.map(({ key, label }) => (
@@ -264,7 +265,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           ))}
         </div>
         <label className="pc-field">
-          <span>过渡 {look.colorGrade.blending.toFixed(2)}</span>
+          <span>{t("look.blending", { value: look.colorGrade.blending.toFixed(2) })}</span>
           <input
             max={1}
             min={0}
@@ -277,7 +278,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           />
         </label>
         <label className="pc-field">
-          <span>平衡 {look.colorGrade.balance.toFixed(2)}</span>
+          <span>{t("look.balance", { value: look.colorGrade.balance.toFixed(2) })}</span>
           <input
             max={1}
             min={-1}
@@ -296,7 +297,7 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
         collapseStorageScope="workbench"
         collapsible
         testId="look-point-color-section"
-        title="点选颜色"
+        title={t("look.colorPickerTitle")}
       >
         <label className="pc-field pc-field-checkbox">
           <input
@@ -308,10 +309,10 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
             }}
             type="checkbox"
           />
-          <span>启用点选颜色</span>
+          <span>{t("look.enablePicker")}</span>
         </label>
         <LookColorWheel
-          label="目标颜色"
+          label={t("look.targetColor")}
           onBegin={workbench.beginEdit}
           onCommit={(next) => updatePointColor({ hue: next.hue }, true)}
           onPreview={(next) => updatePointColor({ hue: next.hue })}
@@ -320,10 +321,10 @@ export function InspectorLookPanel({ workbench }: InspectorLookPanelProps) {
           wheel={{ hue: look.pointColor.hue, saturation: 1, luminance: 0 }}
         />
         {[
-          ["range", "范围", 2, 90, 1],
-          ["hueShift", "色相", -90, 90, 1],
-          ["saturation", "饱和", -1, 1, 0.01],
-          ["luminance", "亮度", -1, 1, 0.01],
+          ["range", t("look.range"), 2, 90, 1],
+          ["hueShift", t("look.hueShift"), -90, 90, 1],
+          ["saturation", t("look.saturation"), -1, 1, 0.01],
+          ["luminance", t("look.luminance"), -1, 1, 0.01],
         ].map(([key, label, min, max, step]) => (
           <label className="pc-field" key={String(key)}>
             <span>{label} {Number(look.pointColor[key as keyof LookAdjustments["pointColor"]]).toFixed(Number(step) < 1 ? 2 : 0)}</span>

@@ -1,4 +1,5 @@
 import { EmptyPanel } from "./EmptyPanel";
+import { t } from "../i18n";
 
 type Datum = {
   name: string;
@@ -11,7 +12,7 @@ type BarChartProps = {
 };
 
 export function BarChart({ items, format = (value) => value.toFixed(1) }: BarChartProps) {
-  if (!items?.length) return <EmptyPanel>暂无数据</EmptyPanel>;
+  if (!items?.length) return <EmptyPanel>{t("common.noData")}</EmptyPanel>;
   const max = Math.max(...items.map((item) => item.value), 1);
   return (
     <div className="pc-bars">

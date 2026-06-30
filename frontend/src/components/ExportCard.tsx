@@ -1,4 +1,5 @@
 import type { ExportPayload } from "../types";
+import { t } from "../i18n";
 import { replaceDirectoryInPath } from "../lib/paths";
 import { getShellBridge } from "../runtime/shellBridge";
 import { InfoGrid } from "./InfoGrid";
@@ -42,18 +43,18 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
     <PaneSection
       actions={
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="export-run-button" onClick={onExport} type="button">
-          导出文件
+          {t("export.run")}
         </button>
       }
       collapseStorageScope={collapseScope}
       collapseStorageKey="inspector-export-settings"
       collapsible
       testId="export-settings-section"
-      title="导出设置"
+      title={t("export.title")}
     >
       <div className="pc-form-stack">
         <label className="pc-field">
-          <span>格式</span>
+          <span>{t("export.format")}</span>
           <select onChange={(event) => setOptions((current) => ({ ...current, format: event.target.value }))} value={options.format}>
             <option value="jpeg">JPEG</option>
             <option value="png">PNG</option>
@@ -65,7 +66,7 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
           </select>
         </label>
         <label className="pc-field">
-          <span>输出路径</span>
+          <span>{t("export.outputPath")}</span>
           <div className="pc-field-row">
             <input
               className="pc-field-input-flex"
@@ -76,23 +77,23 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
             />
             {outputDirectoryPicker ? (
               <button
-                aria-label="选择导出文件夹"
+                aria-label={t("export.chooseOutputFolder")}
                 className="pc-button pc-button-secondary pc-button-small"
                 data-testid="export-output-directory-picker"
                 onClick={pickOutputDirectory}
                 type="button"
               >
-                选择…
+                {t("export.choose")}
               </button>
             ) : null}
           </div>
         </label>
         <label className="pc-field">
-          <span>质量 {options.quality}</span>
+          <span>{t("export.quality", { value: options.quality })}</span>
           <input max={100} min={40} onChange={(event) => setOptions((current) => ({ ...current, quality: Number(event.target.value) }))} step={1} type="range" value={options.quality} />
         </label>
         <label className="pc-field">
-          <span>导出变换</span>
+          <span>{t("export.exportTransform")}</span>
           <select onChange={(event) => setOptions((current) => ({ ...current, exportTransform: event.target.value }))} value={options.exportTransform}>
             <option value="auto">Auto</option>
             <option value="display">Display</option>
@@ -101,11 +102,11 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
         </label>
         <label className="pc-check">
           <input checked={options.embedIcc} onChange={(event) => setOptions((current) => ({ ...current, embedIcc: event.target.checked }))} type="checkbox" />
-          <span>嵌入 ICC</span>
+          <span>{t("export.embedIcc")}</span>
         </label>
         <label className="pc-check">
           <input checked={options.preserveMetadata} onChange={(event) => setOptions((current) => ({ ...current, preserveMetadata: event.target.checked }))} type="checkbox" />
-          <span>保留 Metadata</span>
+          <span>{t("export.preserveMetadata")}</span>
         </label>
       </div>
       {actionState.status !== "idle" || result ? (
@@ -115,21 +116,21 @@ export function ExportCard({ collapseScope, options, setOptions, result, actionS
             meta={result ? `${result.format.toUpperCase()} / ${(result.size / 1024).toFixed(1)} KB / ${result.elapsed_ms.toFixed(1)} ms` : null}
             status={summaryStatus}
             testIds={{ root: "export-result-summary", status: "export-status-chip", detail: "export-result-path" }}
-            title="Export"
+            title={t("labels.export")}
           />
           {result ? (
             <InfoGrid
               items={[
-                { label: "Color Space", value: result.export_settings?.color_space ?? "-" },
-                { label: "Bit Depth", value: result.export_settings?.bit_depth ?? "-" },
-                { label: "ICC Embedded", value: result.export_settings?.icc_embedded ? "Yes" : "No" },
-                { label: "Metadata Keys", value: result.export_settings?.metadata_keys?.length ?? 0 },
+                { label: t("labels.colorSpace"), value: result.export_settings?.color_space ?? "-" },
+                { label: t("labels.bitDepth"), value: result.export_settings?.bit_depth ?? "-" },
+                { label: t("labels.iccEmbedded"), value: result.export_settings?.icc_embedded ? t("common.yes") : t("common.no") },
+                { label: t("labels.metadataKeys"), value: result.export_settings?.metadata_keys?.length ?? 0 },
               ]}
             />
           ) : null}
           {result?.export_settings?.metadata_keys?.length ? (
             <div className="pc-note">
-              <strong>Metadata</strong>
+              <strong>{t("labels.metadata")}</strong>
               <span>{result.export_settings?.metadata_keys?.join(", ")}</span>
             </div>
           ) : null}

@@ -1,4 +1,5 @@
 import type { CompareMode } from "../types";
+import { t } from "../i18n";
 
 type ViewerCompareControlsProps = {
   compareMode: CompareMode;
@@ -35,23 +36,23 @@ export function ViewerCompareControls({
       <div className={`pc-segmented ${focusMode ? "is-focus-overlay" : ""} ${compact ? "is-compact" : ""}`.trim()} data-testid={focusMode ? "focus-compare-mode-group" : "compare-mode-group"}>
         {showDual ? (
           <button className={compareMode === "side-by-side" ? "is-active" : ""} data-testid="compare-mode-dual" onClick={() => onChangeCompareMode("side-by-side")} type="button">
-            双栏
+            {t("viewerModes.dual")}
           </button>
         ) : null}
         {showSplit ? (
           <button className={compareMode === "split" ? "is-active" : ""} data-testid="compare-mode-split" onClick={() => onChangeCompareMode("split")} type="button">
-            滑动对比
+            {t("viewerModes.split")}
           </button>
         ) : null}
         {showCalibrated ? (
           <button className={compareMode === "calibrated-only" ? "is-active" : ""} data-testid="compare-mode-calibrated" onClick={() => onChangeCompareMode("calibrated-only")} type="button">
-            仅校准
+            {t("viewerModes.calibratedOnly")}
           </button>
         ) : null}
       </div>
       {compareMode === "split" && showSplit ? (
         <label className={`pc-inline-field ${focusMode ? "is-focus-overlay" : ""}`.trim()} data-testid="split-position-field">
-          <span>分割</span>
+          <span>{t("viewer.split")}</span>
           <input data-testid="split-position-input" max={90} min={10} onChange={(event) => onChangeSplitPosition(Number(event.target.value))} type="range" value={splitPosition} />
         </label>
       ) : null}

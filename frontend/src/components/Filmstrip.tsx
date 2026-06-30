@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { WorkspaceFile } from "../types";
+import { t } from "../i18n";
 import { FilmstripItem } from "./FilmstripItem";
 
 type FilmstripProps = {
@@ -52,14 +53,14 @@ export function Filmstrip({
 
   return (
     <div
-      aria-label="Filmstrip"
+      aria-label={t("labels.filmstrip")}
       className={`pc-filmstrip pc-filmstrip-${density}`}
       data-testid="workbench-filmstrip"
       role="listbox"
     >
       {loadingCount > 0 ? (
         <div
-          aria-label={`正在准备缩略图：${totalCount - loadingCount}/${totalCount}`}
+          aria-label={t("filmstrip.preparing", { ready: totalCount - loadingCount, total: totalCount })}
           aria-live="polite"
           className="pc-filmstrip-progress"
           data-testid="filmstrip-progress"

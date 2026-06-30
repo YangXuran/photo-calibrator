@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { ActivityPanel } from "./ActivityPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { InspectorPanelSections } from "./InspectorPanelSections";
@@ -26,8 +27,8 @@ export function InspectorSessionPanel({ order, workbench }: InspectorSessionPane
               collapseStorageKey="inspector-session-history"
               collapsible
               testId="history-section"
-              title="操作历史"
-              meta={selectedFile?.historyPersistent === false ? "未持久化" : undefined}
+              title={t("session.historyTitle")}
+              meta={selectedFile?.historyPersistent === false ? t("session.notPersistent") : undefined}
             >
               <HistoryPanel
                 entries={workbench.history}

@@ -1,4 +1,5 @@
 import type { AIEvaluationPayload, ActionState, EvaluatorInfo } from "../types";
+import { t } from "../i18n";
 import { BarChart } from "./BarChart";
 import { ChartPanel } from "./ChartPanel";
 import { DetailList } from "./DetailList";
@@ -31,18 +32,18 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
     <PaneSection
       actions={
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="ai-evaluate-button" onClick={onEvaluate} type="button">
-          AI 评估
+          {t("ai.evaluate")}
         </button>
       }
       collapseStorageScope={collapseScope}
       collapseStorageKey="inspector-analysis-ai-review"
       collapsible
       testId="ai-review-section"
-      title="AI Review"
+      title={t("labels.aiReview")}
     >
       <div className="pc-form-stack">
         <label className="pc-field">
-          <span>Evaluator</span>
+          <span>{t("labels.evaluator")}</span>
           <select data-testid="ai-evaluator-select" onChange={(event) => setSelectedEvaluator(event.target.value)} value={selectedEvaluator}>
             {evaluators.map((evaluator) => (
               <option key={evaluator.id} value={evaluator.id}>
@@ -52,7 +53,7 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
           </select>
         </label>
         <label className="pc-field">
-          <span>目标上下文</span>
+          <span>{t("ai.targetContext")}</span>
           <textarea className="pc-textarea" onChange={(event) => setContext(event.target.value)} rows={4} value={context} />
         </label>
       </div>
@@ -63,16 +64,16 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
             meta={result ? `${result.evaluator_name} / ${result.elapsed_ms?.toFixed(1) ?? "-"} ms / ${result.request?.provider?.type ?? "plugin"}` : null}
             status={summaryStatus}
             testIds={{ root: "ai-result-summary", status: "ai-status-chip", detail: "ai-result-detail" }}
-            title="AI Review"
+            title={t("labels.aiReview")}
           />
           {evaluation?.summary ? (
-            <DetailNote body={evaluation.summary} title="Summary" />
+            <DetailNote body={evaluation.summary} title={t("labels.summary")} />
           ) : null}
           {evaluation?.rationale ? (
-            <DetailNote body={evaluation.rationale} title="Rationale" />
+            <DetailNote body={evaluation.rationale} title={t("labels.rationale")} />
           ) : null}
           {evaluation?.scores?.length ? (
-            <ChartPanel title="Scores">
+            <ChartPanel title={t("labels.scores")}>
               <BarChart format={(value) => value.toFixed(2)} items={evaluation.scores.map((score) => ({ name: score.name, value: score.value }))} />
             </ChartPanel>
           ) : null}
@@ -94,7 +95,7 @@ export function AIReviewCard({ collapseScope, evaluators, selectedEvaluator, set
               }))}
             />
           ) : null}
-          {result?.error ? <DetailNote body={result.error} title="Error" tone="danger" /> : null}
+          {result?.error ? <DetailNote body={result.error} title={t("labels.error")} tone="danger" /> : null}
         </div>
       ) : null}
     </PaneSection>

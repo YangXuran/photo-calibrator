@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { t } from "../i18n";
 import type { ChannelCurve, HistogramPayload, ManualCurves } from "../types";
 
 type CurvesEditorProps = {
@@ -293,7 +294,7 @@ export function CurveEditor({ curves, onChange, disabled, histogram }: CurvesEdi
         className="pc-curve-svg"
         viewBox={`0 0 ${SIZE} ${SIZE}`}
         role="img"
-        aria-label="Curve editor"
+        aria-label={t("labels.curveEditor")}
         onPointerDown={handleSvgPointerDown}
       >
         <rect x="0" y="0" width={SIZE} height={SIZE} fill="var(--bg)" />

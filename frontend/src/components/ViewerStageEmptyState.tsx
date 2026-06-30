@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 export function ViewerStageEmptyState() {
   return (
     <div className="pc-stage-empty">
@@ -6,7 +8,7 @@ export function ViewerStageEmptyState() {
         <circle cx="8.5" cy="8.5" r="1.5" />
         <polyline points="21 15 16 10 5 21" />
       </svg>
-      <strong>导入照片</strong>
+      <strong>{t("viewer.empty")}</strong>
     </div>
   );
 }

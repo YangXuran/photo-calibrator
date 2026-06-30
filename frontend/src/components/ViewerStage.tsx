@@ -1,4 +1,5 @@
 import { useRef, type CSSProperties } from "react";
+import { t } from "../i18n";
 import { useViewerHudLifecycle } from "../hooks/useViewerHudLifecycle";
 import { useViewerStageInteractions } from "../hooks/useViewerStageInteractions";
 import type { CompareMode, CropDiagnostics, CropRect, ViewerPan, ViewerZoomMode } from "../types";
@@ -97,8 +98,8 @@ export function ViewerStage({
     : undefined;
   const renderCurvePreviewOverlay = () => calibratedPreviewBitmap ? (
     <>
-      <ViewerStageBitmapCanvas alt="Live preview" bitmap={calibratedPreviewBitmap} className="pc-stage-preview-overlay" style={previewOverlayStyle} />
-      <span className="pc-stage-preview-badge">Live preview</span>
+      <ViewerStageBitmapCanvas alt={t("labels.livePreview")} bitmap={calibratedPreviewBitmap} className="pc-stage-preview-overlay" style={previewOverlayStyle} />
+      <span className="pc-stage-preview-badge">{t("labels.livePreview")}</span>
     </>
   ) : null;
 
@@ -153,7 +154,7 @@ export function ViewerStage({
     return (
       <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
         {hud}
-        <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+        <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt={t("labels.calibrated")} imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         {renderCurvePreviewOverlay()}
       </ViewerStageSurface>
     );
@@ -163,14 +164,14 @@ export function ViewerStage({
     <ViewerStageCompareBoard
       calibratedStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={calibratedStageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene imageAlt="Calibrated" imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene imageAlt={t("labels.calibrated")} imageKey={imageKey} imageSrc={calibrated} onContainerResize={onContainerResize} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
           {renderCurvePreviewOverlay()}
         </ViewerStageSurface>
       }
       hud={hud}
       originalStage={
         <ViewerStageSurface isPanning={isPanning} loading={loading} onDoubleClick={handleDoubleClick} onMouseMove={wakeHud} onPointerDown={startPan} onWheel={handleWheel} stageRef={stageRef} zoomMode={zoomMode}>
-          <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt="Original" imageKey={imageKey} imageSrc={original} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
+          <ViewerStageImageScene cropDiagnostics={cropDiagnostics} cropEditable={cropEditable} cropRect={cropRect} imageAlt={t("labels.original")} imageKey={imageKey} imageSrc={original} onContainerResize={onContainerResize} onCropChange={onCropChange} panOffset={panOffset} zoomMode={zoomMode} zoomScale={zoomScale} />
         </ViewerStageSurface>
       }
     />

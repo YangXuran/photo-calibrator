@@ -1,4 +1,5 @@
 import type { CropPayload } from "../types";
+import { t } from "../i18n";
 import { InfoGrid } from "./InfoGrid";
 import { PaneSection } from "./PaneSection";
 
@@ -22,13 +23,13 @@ export function CropCard({ collapseScope, crop, cropApplied, cropEdited, onApply
       actions={
         <div className="pc-inline-actions">
           <button className="pc-button pc-button-secondary pc-button-small" onClick={onSuggest} type="button">
-            自动建议
+            {t("crop.autoSuggest")}
           </button>
           <button className="pc-button pc-button-primary pc-button-small" data-testid="crop-apply-button" disabled={!crop || cropApplied} onClick={onApply} type="button">
-            {cropApplied ? "已应用" : "应用裁切"}
+            {cropApplied ? t("crop.appliedButton") : t("crop.apply")}
           </button>
           <button className="pc-button pc-button-secondary pc-button-small" disabled={!cropEdited} onClick={onReset} type="button">
-            恢复建议框
+            {t("crop.restoreSuggestion")}
           </button>
         </div>
       }
@@ -39,17 +40,17 @@ export function CropCard({ collapseScope, crop, cropApplied, cropEdited, onApply
       density="compact"
       emphasis="muted"
       testId="crop-section"
-      title="胶片裁切"
+      title={t("crop.title")}
     >
       <div className="pc-note pc-note-compact">
-        <strong>{cropApplied ? "裁切已应用" : cropEdited ? "待应用：已手动调整" : crop ? "待应用：建议框" : "未检测"}</strong>
+        <strong>{cropApplied ? t("crop.statusApplied") : cropEdited ? t("crop.statusEdited") : crop ? t("crop.statusSuggested") : t("crop.statusNone")}</strong>
       </div>
       <InfoGrid
         items={[
-          { label: "置信度", value: crop?.film_scan?.confidence != null ? crop.film_scan.confidence.toFixed(2) : "-" },
-          { label: "角度", value: crop?.film_scan?.angle_deg != null ? `${crop.film_scan.angle_deg.toFixed(2)}°` : "-" },
-          { label: "格式", value: crop?.film_scan?.film_format ?? "-" },
-          { label: "来源", value: crop?.processing?.film_scan_source ?? "-" },
+          { label: t("crop.confidence"), value: crop?.film_scan?.confidence != null ? crop.film_scan.confidence.toFixed(2) : "-" },
+          { label: t("crop.angle"), value: crop?.film_scan?.angle_deg != null ? `${crop.film_scan.angle_deg.toFixed(2)}°` : "-" },
+          { label: t("crop.format"), value: crop?.film_scan?.film_format ?? "-" },
+          { label: t("crop.source"), value: crop?.processing?.film_scan_source ?? "-" },
           { label: "Left / Top", value: `${percent(crop?.crop_rect.left)} / ${percent(crop?.crop_rect.top)}` },
           { label: "Width / Height", value: `${percent(crop?.crop_rect.width)} / ${percent(crop?.crop_rect.height)}` },
         ]}

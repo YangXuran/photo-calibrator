@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { PointerEventHandler, ReactNode, RefObject, WheelEventHandler } from "react";
+import { t } from "../i18n";
 import type { ViewerZoomMode } from "../types";
 
 type ViewerStageSurfaceProps = {
@@ -40,7 +41,7 @@ export const ViewerStageSurface = memo(function ViewerStageSurface({
         <div className="pc-stage-busy">
           <div className="pc-stage-busy-content">
             <span className="pc-spinner pc-spinner-sm" />
-            <span>Computing preview…</span>
+            <span>{t("labels.computingPreview")}</span>
           </div>
         </div>
       ) : null}

@@ -1,4 +1,5 @@
 import type { LabVector } from "../types";
+import { t } from "../i18n";
 import { EmptyPanel } from "./EmptyPanel";
 
 type LabVectorChartProps = {
@@ -13,7 +14,7 @@ export function LabVectorChart({ vectors }: LabVectorChartProps) {
   const size = 240;
   const center = size / 2;
   const scale = 4.5;
-  if (!vectors?.length) return <EmptyPanel>暂无 Lab 向量</EmptyPanel>;
+  if (!vectors?.length) return <EmptyPanel>{t("analysis.noLabVector")}</EmptyPanel>;
 
   return (
     <div className="pc-lab-wrap">
@@ -22,7 +23,7 @@ export function LabVectorChart({ vectors }: LabVectorChartProps) {
         viewBox={`0 0 ${size} ${size}`}
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label="Lab vector plot"
+        aria-label={t("labels.labVectorPlot")}
       >
         {/* Grid lines */}
         <line x1={0} y1={center} x2={size} y2={center} className="pc-grid-line" />

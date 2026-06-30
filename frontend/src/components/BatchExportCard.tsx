@@ -1,4 +1,5 @@
 import type { BatchExportItemResult, WorkspaceFile } from "../types";
+import { t } from "../i18n";
 import { directoryFromPath } from "../lib/paths";
 import { PaneSection } from "./PaneSection";
 
@@ -24,18 +25,18 @@ export function BatchExportCard({ files, outputPath, format, actionState, result
     <PaneSection
       actions={
         <button className="pc-button pc-button-secondary pc-button-small" data-testid="batch-export-run-button" disabled={exportableCount === 0 || actionState.status === "running"} onClick={onExport} type="button">
-          {actionState.status === "running" ? "批量导出中…" : "批量导出"}
+          {actionState.status === "running" ? t("export.batchRunning") : t("export.batchRun")}
         </button>
       }
       collapseStorageKey="inspector-batch-export"
       collapseStorageScope="workbench"
       collapsible
       testId="batch-export-section"
-      title="批量导出"
+      title={t("export.batchTitle")}
     >
       <div className="pc-form-stack">
         <span className="pc-overline" data-testid="batch-export-summary">
-          {exportableCount} 个文件，格式 {format.toUpperCase()}，输出目录 {outputDir}
+          {t("export.batchSummary", { count: exportableCount, format: format.toUpperCase(), directory: outputDir })}
         </span>
         {actionState.detail ? <span className="pc-overline">{actionState.detail}</span> : null}
         {results.length > 0 ? (

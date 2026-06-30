@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { PaneSection } from "./PaneSection";
 
 const AI_SETTINGS_KEY = "photo-calibrator-ai-settings";
@@ -43,13 +44,13 @@ export function AIProviderCard({ settings, onChange }: AIProviderCardProps) {
   }
 
   return (
-    <PaneSection density="compact" testId="ai-provider-section" title="AI Provider">
+    <PaneSection density="compact" testId="ai-provider-section" title={t("labels.aiProvider")}>
       <div className="pc-form-stack">
         <label className="pc-field">
-          <span>类型</span>
+          <span>{t("ai.providerType")}</span>
           <select value={settings.type} onChange={(e) => update("type", e.target.value as AIProviderSettings["type"])}>
-            <option value="openai_compatible">OpenAI 兼容</option>
-            <option value="mock">Mock (测试)</option>
+            <option value="openai_compatible">{t("ai.openaiCompatible")}</option>
+            <option value="mock">{t("ai.mock")}</option>
           </select>
         </label>
 
@@ -68,7 +69,7 @@ export function AIProviderCard({ settings, onChange }: AIProviderCardProps) {
               <div className="pc-field-row">
                 <input className="pc-field-input-flex" type={apiKeyVisible ? "text" : "password"} value={settings.api_key} onChange={(e) => update("api_key", e.target.value)} placeholder="sk-..." />
                 <button className="pc-api-key-toggle" onClick={() => setApiKeyVisible(!apiKeyVisible)} type="button">
-                  {apiKeyVisible ? "隐藏" : "显示"}
+                  {apiKeyVisible ? t("common.hidden") : t("common.visible")}
                 </button>
               </div>
             </label>

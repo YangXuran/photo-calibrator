@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "../i18n";
 import type { WorkspaceFile } from "../types";
 import { postBatchCalibrate } from "../lib/api";
 import { fileToDataUrl } from "../lib/files";
@@ -54,10 +55,10 @@ export function BatchUploadPanel({ files, onResult }: BatchUploadPanelProps) {
   const failCount = results.filter((r) => !r.ok).length;
 
   return (
-    <PaneSection density="default" testId="batch-upload-section" title="Batch Calibrate">
+    <PaneSection density="default" testId="batch-upload-section" title={t("batchUpload.title")}>
       <div className="pc-form-stack">
         <span className="pc-overline">
-          {readyFiles.length} 个文件待处理（共 {files.length} 个）
+          {t("batchUpload.summary", { ready: readyFiles.length, total: files.length })}
         </span>
         <button
           className="pc-button pc-button-start"
@@ -65,7 +66,7 @@ export function BatchUploadPanel({ files, onResult }: BatchUploadPanelProps) {
           onClick={runBatch}
           type="button"
         >
-          {running ? "处理中…" : "Run Batch"}
+          {running ? t("batchUpload.running") : t("batchUpload.run")}
         </button>
         {progress ? <span className="pc-overline">{progress}</span> : null}
         {results.length > 0 ? (

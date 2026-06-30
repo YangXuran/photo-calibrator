@@ -1,5 +1,6 @@
 import { MODE_OPTIONS } from "../constants";
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { InspectorPanelSections } from "./InspectorPanelSections";
 import { PaneSection } from "./PaneSection";
 
@@ -28,7 +29,7 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
               collapsible
               emphasis="primary"
               testId="main-calibration-section"
-              title="自动校准"
+              title={t("adjust.title")}
             >
               <div className="pc-form-stack">
                 <label className="pc-field pc-field-checkbox">
@@ -38,10 +39,10 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                     onChange={(event) => workbench.setNegativeBaseCommitted(event.currentTarget.checked)}
                     type="checkbox"
                   />
-                  <span>负片去色罩</span>
+                  <span>{t("adjust.negativeBase")}</span>
                 </label>
                 <label className="pc-field">
-                  <span>模式</span>
+                  <span>{t("adjust.mode")}</span>
                   <select data-testid="mode-select" onChange={(event) => workbench.setModeCommitted(event.target.value)} value={workbench.mode}>
                     {MODE_OPTIONS.map(([value, label]) => (
                       <option key={value} value={value}>
@@ -51,17 +52,17 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                   </select>
                   {workbench.mode === "auto-best" && selectedAutoMode ? (
                     <span className="pc-field-hint" data-testid="auto-best-result">
-                      已选择 {selectedAutoMode}，评分 {workbench.selectedFile?.result?.processing?.auto_best_score?.toFixed(2) ?? "-"}
+                      {t("adjust.selectedModeScore", { mode: selectedAutoMode, score: workbench.selectedFile?.result?.processing?.auto_best_score?.toFixed(2) ?? "-" })}
                     </span>
                   ) : null}
                   {workbench.mode === "auto-best" && autoBest?.candidates?.length ? (
                     <span className="pc-field-hint" data-testid="auto-best-candidates">
-                      候选: {autoBest.candidates.slice(0, 3).map((item) => `${item.mode} ${item.score.toFixed(1)}`).join(" / ")}
+                      {t("adjust.candidates", { candidates: autoBest.candidates.slice(0, 3).map((item) => `${item.mode} ${item.score.toFixed(1)}`).join(" / ") })}
                     </span>
                   ) : null}
                 </label>
                 <label className="pc-field">
-                  <span>强度 {workbench.strength.toFixed(2)}</span>
+                  <span>{t("adjust.strength", { value: workbench.strength.toFixed(2) })}</span>
                   <input
                     data-testid="strength-input"
                     max={1.2}
@@ -89,7 +90,7 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
               collapseStorageKey="inspector-adjust-tone-recovery"
               collapsible
               testId="tone-recovery-section"
-              title="影调层次"
+              title={t("adjust.toneTitle")}
             >
               <div className="pc-form-stack">
                 <label className="pc-field pc-field-checkbox">
@@ -99,10 +100,10 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                     onChange={(event) => workbench.setToneRecoveryCommitted({ ...tone, enabled: event.currentTarget.checked })}
                     type="checkbox"
                   />
-                  <span>自动恢复层次</span>
+                  <span>{t("adjust.toneEnable")}</span>
                 </label>
                 <label className="pc-field">
-                  <span>层次强度 {tone.strength.toFixed(2)}</span>
+                  <span>{t("adjust.toneStrength", { value: tone.strength.toFixed(2) })}</span>
                   <input
                     data-testid="tone-recovery-strength"
                     disabled={!tone.enabled}
@@ -121,7 +122,12 @@ export function InspectorAdjustPanel({ order, workbench }: InspectorAdjustPanelP
                 </label>
                 {toneAnalysis?.enabled ? (
                   <span className="pc-field-hint" data-testid="tone-recovery-analysis">
-                    范围 {Math.round((toneAnalysis.dynamic_range ?? 0) * 100)}% · 黑/白 {Math.round((toneAnalysis.black_point ?? 0) * 100)}% / {Math.round((toneAnalysis.white_point ?? 1) * 100)}% · {Number(toneAnalysis.recommended_strength ?? 0).toFixed(2)}
+                    {t("adjust.toneAnalysis", {
+                      range: Math.round((toneAnalysis.dynamic_range ?? 0) * 100),
+                      black: Math.round((toneAnalysis.black_point ?? 0) * 100),
+                      white: Math.round((toneAnalysis.white_point ?? 1) * 100),
+                      strength: Number(toneAnalysis.recommended_strength ?? 0).toFixed(2),
+                    })}
                   </span>
                 ) : null}
               </div>

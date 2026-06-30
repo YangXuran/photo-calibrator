@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { resolveFileAccessPlan } from "../runtime/fileAccess";
 import { useRuntimeConfig } from "../runtime/RuntimeProvider";
 import { getShellBridge } from "../runtime/shellBridge";
@@ -16,27 +17,27 @@ type ShortcutItem = {
 };
 
 const VIEWER_SHORTCUTS: ShortcutItem[] = [
-  { action: "切换上一张 / 下一张", keys: ["Left", "Right"] },
-  { action: "放大 / 缩小", keys: ["+", "-"] },
-  { action: "重置到适配", keys: ["F"] },
-  { action: "切换 100% / 适配", keys: ["Double Click"] },
-  { action: "滚轮缩放", keys: ["Wheel"] },
-  { action: "手型平移", keys: ["Drag"] },
+  { action: t("shortcuts.viewerPrevNext"), keys: ["Left", "Right"] },
+  { action: t("shortcuts.zoomInOut"), keys: ["+", "-"] },
+  { action: t("shortcuts.resetFit"), keys: ["F"] },
+  { action: t("shortcuts.toggleActualFit"), keys: ["Double Click"] },
+  { action: t("shortcuts.wheelZoom"), keys: ["Wheel"] },
+  { action: t("shortcuts.panDrag"), keys: ["Drag"] },
 ];
 
 const FILMSTRIP_SHORTCUTS: ShortcutItem[] = [
-  { action: "选择上一张 / 下一张", keys: ["Left", "Right"] },
-  { action: "跳到首张 / 末张", keys: ["Home", "End"] },
-  { action: "聚焦当前缩略图", keys: ["Tab"] },
+  { action: t("shortcuts.filmstripPrevNext"), keys: ["Left", "Right"] },
+  { action: t("shortcuts.filmstripHomeEnd"), keys: ["Home", "End"] },
+  { action: t("shortcuts.focusThumb"), keys: ["Tab"] },
 ];
 
 const WORKSPACE_SHORTCUTS: ShortcutItem[] = [
-  { action: "切换左侧 Analysis", keys: ["Alt", "1"] },
-  { action: "切换底部 Filmstrip", keys: ["Alt", "2"] },
-  { action: "切换右侧 Inspector", keys: ["Alt", "3"] },
-  { action: "进入 / 退出 Viewer Focus", keys: ["Shift", "F"] },
-  { action: "撤销校准参数", keys: ["Ctrl", "Z"] },
-  { action: "重做校准参数", keys: ["Ctrl", "Shift", "Z"] },
+  { action: t("shortcuts.toggleAnalysis"), keys: ["Alt", "1"] },
+  { action: t("shortcuts.toggleFilmstrip"), keys: ["Alt", "2"] },
+  { action: t("shortcuts.toggleInspector"), keys: ["Alt", "3"] },
+  { action: t("shortcuts.toggleViewerFocus"), keys: ["Shift", "F"] },
+  { action: t("shortcuts.undoCalibration"), keys: ["Ctrl", "Z"] },
+  { action: t("shortcuts.redoCalibration"), keys: ["Ctrl", "Shift", "Z"] },
 ];
 
 function ShortcutList({ items }: { items: ShortcutItem[] }) {
@@ -72,27 +73,27 @@ export function ShortcutHelpDialog({ open, onClose }: ShortcutHelpDialogProps) {
       onClose={onClose}
       open={open}
       testId="shortcut-help-dialog"
-      title="快捷键"
+      title={t("shortcuts.title")}
     >
-      <DialogSectionCard title="Viewer">
+      <DialogSectionCard title={t("labels.viewer")}>
         <ShortcutList items={VIEWER_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard title="Filmstrip">
+      <DialogSectionCard title={t("labels.filmstrip")}>
         <ShortcutList items={FILMSTRIP_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard title="Workspace Layout">
+      <DialogSectionCard title={t("labels.workspaceLayout")}>
         <ShortcutList items={WORKSPACE_SHORTCUTS} />
       </DialogSectionCard>
 
-      <DialogSectionCard title="Desktop Runtime">
+      <DialogSectionCard title={t("labels.desktopRuntime")}>
         <InfoGrid
           items={[
-            { label: "Runtime mode", value: runtime.mode },
-            { label: "Shell bridge", value: runtime.supportsShellBridge ? "Enabled" : "Disabled" },
-            { label: "File open strategy", value: fileAccessPlan.files },
-            { label: "Directory strategy", value: fileAccessPlan.directory },
+            { label: t("labels.runtimeMode"), value: runtime.mode },
+            { label: t("labels.shellBridge"), value: runtime.supportsShellBridge ? t("labels.enabled") : t("labels.disabled") },
+            { label: t("labels.fileOpenStrategy"), value: fileAccessPlan.files },
+            { label: t("labels.directoryStrategy"), value: fileAccessPlan.directory },
           ]}
         />
       </DialogSectionCard>

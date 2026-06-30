@@ -1,4 +1,5 @@
 import type { DocumentRenderPayload, SessionSavePayload } from "../types";
+import { t } from "../i18n";
 import { DetailList } from "./DetailList";
 import { InfoGrid } from "./InfoGrid";
 import { PaneSection } from "./PaneSection";
@@ -32,10 +33,10 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         actions={
           <div className="pc-inline-actions">
             <button className="pc-button pc-button-secondary pc-button-small" data-testid="document-render-button" onClick={onRenderDocument} type="button">
-              重放文档
+              {t("session.replay")}
             </button>
             <button className="pc-button pc-button-secondary pc-button-small" data-testid="session-save-button" onClick={onSave} type="button">
-              保存 Session
+              {t("session.save")}
             </button>
           </div>
         }
@@ -43,7 +44,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapseStorageKey="inspector-session-document-context"
         collapsible
         testId="document-context-section"
-        title="文档上下文"
+        title={t("session.documentContext")}
       >
         <div className="pc-form-stack">
           <InfoGrid
@@ -53,7 +54,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
             ]}
           />
           <label className="pc-field">
-            <span>Session 保存路径</span>
+            <span>{t("session.savePath")}</span>
             <input onChange={(event) => setSavePath(event.target.value)} type="text" value={savePath} />
           </label>
         </div>
@@ -63,7 +64,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
             meta={saveResult ? `${(saveResult.size / 1024).toFixed(1)} KB` : null}
             status={sessionSummaryStatus}
             testIds={{ root: "session-save-summary", status: "session-save-status-chip", detail: "session-save-path" }}
-            title="Session Save"
+            title={t("labels.sessionSave")}
           />
         ) : null}
         {documentActionState.status !== "idle" || documentRender ? (
@@ -72,7 +73,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
             meta={documentRender ? `${documentRender.processing?.document_replayable_ops ?? 0} replayable ops` : null}
             status={documentSummaryStatus}
             testIds={{ root: "document-render-summary", status: "document-render-status-chip", detail: "document-render-detail" }}
-            title="Document Render"
+            title={t("labels.documentRender")}
           />
         ) : null}
       </PaneSection>
@@ -83,7 +84,7 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapsible
         defaultCollapsed
         testId="document-preview-section"
-        title="文档预览"
+        title={t("session.documentPreview")}
       >
           <div className="pc-render-preview">
             <img alt="Document render preview" src={documentRender.calibrated_image} />
@@ -96,10 +97,10 @@ export function SessionCard({ collapseScope, sessionId, savePath, setSavePath, s
         collapsible
         defaultCollapsed
         testId="document-operations-section"
-        title="文档操作"
+        title={t("session.documentOperations")}
       >
         <DetailList
-          empty="无"
+          empty={t("common.none")}
           items={(documentRender?.document?.operations ?? []).map((operation) => ({
             title: operation.name,
             meta: operation.replayable ? "replayable" : "non-replayable",

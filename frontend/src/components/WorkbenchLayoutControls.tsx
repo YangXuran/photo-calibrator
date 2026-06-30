@@ -1,4 +1,5 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { TopbarGroup } from "./TopbarGroup";
 
 type LayoutToggleButtonProps = {
@@ -30,25 +31,25 @@ export function WorkbenchLayoutControls({ workbench }: WorkbenchLayoutControlsPr
   const toggles = [
     {
       active: workbench.layoutState.showAnalysisPane,
-      label: "Analysis",
+      label: t("labels.analysis"),
       onClick: () => workbench.toggleLayoutElement("analysis"),
       testId: "toggle-analysis-pane",
     },
     {
       active: workbench.layoutState.showFilmstrip,
-      label: "Filmstrip",
+      label: t("labels.filmstrip"),
       onClick: () => workbench.toggleLayoutElement("filmstrip"),
       testId: "toggle-filmstrip-pane",
     },
     {
       active: workbench.layoutState.showInspectorPane,
-      label: "Inspector",
+      label: t("labels.inspector"),
       onClick: () => workbench.toggleLayoutElement("inspector"),
       testId: "toggle-inspector-pane",
     },
     {
       active: workbench.layoutState.viewerFocusMode,
-      label: workbench.layoutState.viewerFocusMode ? "Exit Focus" : "Focus",
+      label: workbench.layoutState.viewerFocusMode ? t("labels.exitFocus") : t("labels.focus"),
       onClick: workbench.toggleViewerFocusMode,
       testId: "toggle-viewer-focus",
       tone: "focus" as const,

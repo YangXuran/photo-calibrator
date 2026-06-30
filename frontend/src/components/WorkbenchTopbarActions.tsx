@@ -2,6 +2,7 @@ import { useRef } from "react";
 import type { PickedFiles } from "../hooks/useWorkbench";
 import type { RuntimeConfig } from "../runtime/config";
 import type { WorkbenchController } from "../hooks/useWorkbench";
+import { t } from "../i18n";
 import { WorkbenchFileInputs } from "./WorkbenchFileInputs";
 import { WorkbenchLayoutControls } from "./WorkbenchLayoutControls";
 import { runOpenDirectoryAction, runOpenFilesAction } from "./WorkbenchOpenActions";
@@ -35,7 +36,7 @@ export function WorkbenchTopbarActions({
 
   const actionButtons = [
     {
-      label: runtime.supportsNativeDialogs ? "打开照片" : "导入照片",
+      label: runtime.supportsNativeDialogs ? t("workbench.openPhoto") : t("workbench.importPhoto"),
       onClick: () =>
         void runOpenFilesAction({
           runtime,
@@ -47,7 +48,7 @@ export function WorkbenchTopbarActions({
       tone: "primary" as const,
     },
     {
-      label: runtime.supportsNativeDialogs ? "打开文件夹" : "导入文件夹",
+      label: runtime.supportsNativeDialogs ? t("workbench.openFolder") : t("workbench.importFolder"),
       onClick: () =>
         void runOpenDirectoryAction({
           runtime,
@@ -58,7 +59,7 @@ export function WorkbenchTopbarActions({
       testId: "open-directory-button",
     },
     {
-      label: "帮助",
+      label: t("workbench.help"),
       onClick: onOpenShortcutHelp,
       testId: "shortcut-help-button",
     },
@@ -68,10 +69,10 @@ export function WorkbenchTopbarActions({
     <TopbarGroup className="pc-topbar-actions">
       <TopbarGroup className="pc-topbar-button-group">
         <TopbarActionButton onClick={() => workbench.undo()} testId="undo-button" tone="secondary">
-          撤销
+          {t("workbench.undo")}
         </TopbarActionButton>
         <TopbarActionButton onClick={() => workbench.redo()} testId="redo-button" tone="secondary">
-          重做
+          {t("workbench.redo")}
         </TopbarActionButton>
       </TopbarGroup>
       <WorkbenchLayoutControls workbench={workbench} />

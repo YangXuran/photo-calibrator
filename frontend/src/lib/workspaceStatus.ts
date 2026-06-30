@@ -1,4 +1,5 @@
 import type { WorkspaceFile } from "../types";
+import { t } from "../i18n";
 
 export type WorkspaceStateTone = "accent" | "success" | "warning" | "neutral";
 
@@ -26,22 +27,22 @@ export function getWorkspaceStateSummary(item?: WorkspaceFile): WorkspaceStateSu
   let stateLabel = "Not prepared";
   let stateTone: WorkspaceStateTone = "neutral";
   if (cropApplied) {
-    stateLabel = "Crop applied";
+    stateLabel = t("workspaceStatus.cropApplied");
     stateTone = "success";
   } else if (item?.result) {
-    stateLabel = "Calibrated";
+    stateLabel = t("workspaceStatus.calibrated");
     stateTone = "success";
   } else if (item?.cropEdited) {
-    stateLabel = "Crop adjusted";
+    stateLabel = t("workspaceStatus.cropAdjusted");
     stateTone = "accent";
   } else if (item?.crop) {
-    stateLabel = "Crop suggested";
+    stateLabel = t("workspaceStatus.cropSuggested");
     stateTone = "warning";
   } else if (item?.sessionId) {
-    stateLabel = "Prepared";
+    stateLabel = t("workspaceStatus.prepared");
     stateTone = "neutral";
   } else if (item) {
-    stateLabel = "Imported";
+    stateLabel = t("workspaceStatus.imported");
     stateTone = "neutral";
   }
 
@@ -52,7 +53,7 @@ export function getWorkspaceStateSummary(item?: WorkspaceFile): WorkspaceStateSu
     exportLabel: item?.file ? "Full-resolution export ready" : "No original file export",
     colorSpaceLabel: colorSpace ?? "-",
     previewLabel: previewSource ?? "-",
-    cropLabel: cropApplied ? "Crop applied" : item?.cropEdited ? "Crop adjusted" : item?.crop ? "Crop suggested" : "No crop",
+    cropLabel: cropApplied ? t("workspaceStatus.cropApplied") : item?.cropEdited ? t("workspaceStatus.cropAdjusted") : item?.crop ? t("workspaceStatus.cropSuggested") : t("workspaceStatus.noCrop"),
     sizeLabel: width && height ? `${width}×${height}` : "-",
     sessionLabel: item?.sessionId ? (item.sessionId.length > 20 ? item.sessionId.slice(0, 18) + "…" : item.sessionId) : "-",
     hasSession: Boolean(item?.sessionId),
