@@ -411,6 +411,33 @@ def test_tone_recovery_preserves_chroma_on_colored_image() -> None:
     before_luma = img.astype(np.float32).mean(axis=2)
     after_luma = out.astype(np.float32).mean(axis=2)
 
-    assert after_sat >= before_sat * 0.88
+    assert after_sat >= before_sat * 0.98
+    assert float(after_luma.mean()) >= float(before_luma.mean()) - 1.0
     assert float(np.percentile(after_luma, 1)) >= float(np.percentile(before_luma, 1)) - 45.0
     assert float(np.percentile(after_luma, 99) - np.percentile(after_luma, 1)) > float(np.percentile(before_luma, 99) - np.percentile(before_luma, 1))
+
+
+def test_tone_recovery_does_not_darken_bright_compressed_color() -> None:
+    axis = np.linspace(150, 210, 96, dtype=np.float32)
+    xx = np.tile(axis, (96, 1))
+    img = np.stack(
+        [
+            np.clip(xx * 1.08, 0, 255),
+            np.clip(xx * 0.9 + 18, 0, 255),
+            np.clip(xx * 0.72 + 32, 0, 255),
+        ],
+        axis=2,
+    ).astype(np.uint8)
+
+    out, analysis = apply_tone_recovery(img, strength=0.8)
+    before_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    after_hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV)
+    before_luma = img.astype(np.float32).mean(axis=2)
+    after_luma = out.astype(np.float32).mean(axis=2)
+    hue_delta = np.abs(before_hsv[:, :, 0].astype(np.int16) - after_hsv[:, :, 0].astype(np.int16))
+    hue_delta = np.minimum(hue_delta, 180 - hue_delta)
+
+    assert analysis["algorithm"] == "luminance-ratio-chroma-preserving"
+    assert float(after_luma.mean()) >= float(before_luma.mean()) - 1.0
+    assert float(after_hsv[:, :, 1].mean()) >= float(before_hsv[:, :, 1].mean()) * 0.98
+    assert float(hue_delta.mean()) <= 1.5

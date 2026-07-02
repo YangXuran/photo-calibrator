@@ -6,6 +6,8 @@ then verifies that detect_film_frame() recovers the ground truth.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -79,6 +81,37 @@ def _inner_region(canvas_size, border_width):
     """Return (x, y, w, h) of the inner photo area before rotation."""
     w, h = canvas_size
     return (border_width, border_width, w - 2 * border_width, h - 2 * border_width)
+
+
+def _make_sprocket_film_test_image(canvas_size: tuple[int, int] = (900, 600)) -> np.ndarray:
+    """Create a negative strip with repeated sprocket holes outside the photo area."""
+    w, h = canvas_size
+    img = np.full((h, w, 3), (124, 78, 50), dtype=np.uint8)
+
+    photo_x0, photo_y0 = 90, 110
+    photo_x1, photo_y1 = w - 90, h - 110
+    for row in range(photo_y0, photo_y1):
+        t = (row - photo_y0) / max(photo_y1 - photo_y0, 1)
+        img[row, photo_x0:photo_x1] = (
+            int(105 + 45 * t),
+            int(74 + 35 * (1.0 - t)),
+            int(48 + 30 * t),
+        )
+    cv2.rectangle(img, (photo_x0, photo_y0), (photo_x1, photo_y1), (80, 48, 30), 3)
+
+    hole_w = max(28, w // 18)
+    hole_h = max(34, h // 12)
+    step = max(70, w // 8)
+    for x in range(55, w - hole_w - 40, step):
+        cv2.rectangle(img, (x, 28), (x + hole_w, 28 + hole_h), (225, 242, 245), -1)
+        cv2.rectangle(img, (x, h - 28 - hole_h), (x + hole_w, h - 28), (225, 242, 245), -1)
+
+    # Add edge clutter that used to attract the crop detector before the
+    # sprocket exclusion pass.
+    for x in range(20, w, 35):
+        cv2.line(img, (x, 0), (x + 10, 42), (42, 30, 25), 2)
+        cv2.line(img, (x, h - 1), (x + 12, h - 42), (42, 30, 25), 2)
+    return img
 
 
 # ── Tests ──────────────────────────────────────────────────────────
@@ -176,6 +209,109 @@ def test_safe_crop_inset_moves_detected_edges_inward() -> None:
 
     assert inset == (7, 5)
     assert safe_crop == (47, 35, 706, 530)
+
+
+def test_sprocket_rows_are_excluded_from_auto_crop() -> None:
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    img = _make_sprocket_film_test_image()
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.45
+    assert result.debug is not None
+    sprocket = result.debug["sprocket_exclusion"]
+    assert sprocket["active"]
+    assert "top" in sprocket["edges"]
+    assert "bottom" in sprocket["edges"]
+    assert result.crop_y >= sprocket["edges"]["top"]["inner_edge"]
+    assert result.crop_y + result.crop_h <= sprocket["edges"]["bottom"]["inner_edge"]
+
+
+def test_real_sprocket_scan_regression_20260629103226() -> None:
+    from photo_calibrator.core.film_scan import detect_film_frame
+
+    image_path = Path(__file__).resolve().parents[1] / "photo_test" / "20260629103226_3_50.jpg"
+    img_bgr = cv2.imread(str(image_path))
+    if img_bgr is None:
+        pytest.skip("real sprocket regression image is not available")
+
+    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.5
+    assert result.crop_y >= 130
+    assert result.crop_y + result.crop_h <= 825
+    assert result.debug is not None
+    sprocket = result.debug["sprocket_exclusion"]
+    assert sprocket["active"]
+    assert sprocket["edges"]["top"]["inner_edge"] >= 125
+    assert sprocket["edges"]["bottom"]["inner_edge"] <= 825
+
+
+def test_real_raw_scan_without_sprockets_does_not_trigger_exclusion_00188() -> None:
+    from photo_calibrator.core.film_scan import detect_film_frame
+    from photo_calibrator.io.raw import decode_raw_preview
+
+    image_path = Path(__file__).resolve().parents[1] / "photo_test" / "Capture00188.NEF"
+    if not image_path.exists():
+        pytest.skip("real RAW crop regression image is not available")
+    try:
+        decoded = decode_raw_preview(image_path.read_bytes(), image_path.name)
+    except ValueError as exc:
+        pytest.skip(str(exc))
+    if decoded is None:
+        pytest.skip("RAW preview could not be decoded")
+
+    img_bgr, _source = decoded
+    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    result = detect_film_frame(img)
+
+    assert result.confidence > 0.5
+    assert result.crop_y < 80
+    assert result.crop_h > img.shape[0] * 0.90
+    assert result.debug is not None
+    assert not result.debug["sprocket_exclusion"]["active"]
+
+
+def test_real_medium_format_raw_previews_do_not_trigger_sprocket_exclusion_at_analysis_size() -> None:
+    from photo_calibrator.core.film_scan import detect_film_frame
+    from photo_calibrator.io.raw import decode_raw_preview
+
+    image_paths = sorted((Path(__file__).resolve().parents[1] / "photo_test").glob("Capture*.NEF"))
+    if not image_paths:
+        pytest.skip("real medium-format RAW regression images are not available")
+
+    decoded_count = 0
+    for image_path in image_paths:
+        try:
+            decoded = decode_raw_preview(image_path.read_bytes(), image_path.name)
+        except ValueError:
+            continue
+        if decoded is None:
+            continue
+
+        img_bgr, _source = decoded
+        img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        max_side = max(img.shape[:2])
+        if max_side > 960:
+            scale = 960.0 / float(max_side)
+            img = cv2.resize(
+                img,
+                (max(1, int(round(img.shape[1] * scale))), max(1, int(round(img.shape[0] * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        result = detect_film_frame(img)
+        decoded_count += 1
+
+        assert result.confidence > 0.5, image_path.name
+        assert result.crop_w > img.shape[1] * 0.80, image_path.name
+        assert result.crop_h > img.shape[0] * 0.90, image_path.name
+        assert result.debug is not None
+        assert not result.debug["sprocket_exclusion"]["active"], image_path.name
+
+    if decoded_count == 0:
+        pytest.skip("RAW previews could not be decoded")
 
 
 # ── Perspective distortion tests ───────────────────────────────────
@@ -314,6 +450,28 @@ def test_identify_120_six_by_six() -> None:
     assert result.confidence > 0.5
     if result.film_format is not None:
         assert "6×6" in result.film_format.name or result.film_format.orientation == "square"
+
+
+def test_identify_four_by_three_without_sprockets_prefers_120() -> None:
+    from photo_calibrator.core.film_scan import identify_film_format
+
+    corners = [(0, 0), (133, 0), (133, 100), (0, 100)]
+    result = identify_film_format(corners, prefer_medium_format=True)
+
+    assert result is not None
+    assert result.name == "120 6×4.5"
+
+
+def test_identify_medium_format_panoramas_from_ratio_without_fixed_entries() -> None:
+    from photo_calibrator.core.film_scan import identify_film_format
+
+    six_by_twelve = identify_film_format([(0, 0), (200, 0), (200, 100), (0, 100)], prefer_medium_format=True)
+    generic_panorama = identify_film_format([(0, 0), (233, 0), (233, 100), (0, 100)], prefer_medium_format=True)
+
+    assert six_by_twelve is not None
+    assert six_by_twelve.name == "120 6×12"
+    assert generic_panorama is not None
+    assert generic_panorama.name == "120 6×14"
 
 
 # ── Evaluation tests ───────────────────────────────────────────────

@@ -358,7 +358,12 @@ test.describe("electron desktop e2e", () => {
       
       const filmScanButton = window.getByTestId("focus-crop-detect");
       await expect(filmScanButton).toBeVisible({ timeout: 15000 });
+      const filmScanResponse = window.waitForResponse((response) => response.url().endsWith("/api/film-scan") && response.ok(), { timeout: 30000 });
       await filmScanButton.click();
+      const filmScanPayload = await (await filmScanResponse).json();
+      expect(filmScanPayload.film_scan.confidence).toBeGreaterThan(0.5);
+      expect(filmScanPayload.crop_rect.width).toBeLessThan(0.95);
+      expect(filmScanPayload.crop_rect.height).toBeLessThan(0.95);
       await expect(window.locator(".pc-crop-overlay")).toBeVisible({ timeout: 30000 });
       await expect.poll(async () => window.evaluate(() => document.querySelectorAll(".pc-crop-debug-band").length), { timeout: 15000 }).toBeGreaterThan(0);
       await expect.poll(async () => window.evaluate(() => document.querySelectorAll(".pc-crop-debug-weighted").length), { timeout: 15000 }).toBeGreaterThan(0);

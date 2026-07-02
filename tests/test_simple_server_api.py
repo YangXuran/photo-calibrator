@@ -333,6 +333,33 @@ def test_preview_payload_returns_session_and_preview_image() -> None:
     assert payload["processing"]["preview_source"]
 
 
+def test_preview_session_rehydrates_file_source_when_target_size_changes(tmp_path: Path) -> None:
+    image = np.zeros((800, 1200, 3), dtype=np.uint8)
+    image[:, :] = (118, 132, 146)
+    image[160:640, 240:960] = (210, 188, 150)
+    image_path = tmp_path / "large-preview.jpg"
+    assert cv2.imwrite(str(image_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+    small = _preview_payload(
+        {
+            "path": str(image_path),
+            "file_name": image_path.name,
+            "analysis_max_side": 320,
+        }
+    )
+    assert max(small["processing"]["analysis_width"], small["processing"]["analysis_height"]) <= 320
+
+    large = _preview_payload(
+        {
+            "session_id": small["session_id"],
+            "analysis_max_side": 960,
+        }
+    )
+
+    assert large["session_id"] != small["session_id"]
+    assert max(large["processing"]["analysis_width"], large["processing"]["analysis_height"]) >= 900
+
+
 def test_calibrate_session_reuses_cached_input_analysis() -> None:
     payload = _calibrate_payload(
         {
@@ -805,6 +832,29 @@ def test_film_scan_payload_reuses_existing_session() -> None:
 
     assert payload["session_id"] == calibration["session_id"]
     assert payload["processing"]["analysis_width"] == calibration["processing"]["analysis_width"]
+
+
+def test_film_scan_session_rehydrates_low_resolution_file_preview() -> None:
+    image_path = Path(__file__).resolve().parents[1] / "photo_test" / "20260629103226_3_50.jpg"
+    if not image_path.exists():
+        pytest.skip("real film scan regression image is not available")
+
+    preview = _preview_payload(
+        {
+            "path": str(image_path),
+            "file_name": image_path.name,
+            "analysis_max_side": 320,
+        }
+    )
+    assert max(preview["processing"]["analysis_width"], preview["processing"]["analysis_height"]) <= 320
+
+    payload = _film_scan_payload({"session_id": preview["session_id"]})
+
+    assert payload["session_id"] != preview["session_id"]
+    assert max(payload["processing"]["analysis_width"], payload["processing"]["analysis_height"]) >= 900
+    assert payload["film_scan"]["confidence"] > 0.5
+    assert payload["crop_rect"]["width"] < 0.95
+    assert payload["crop_rect"]["height"] < 0.95
 
 
 def test_calibrate_and_export_apply_crop_rect() -> None:

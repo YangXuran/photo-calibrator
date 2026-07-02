@@ -99,6 +99,29 @@ class FilmScanEval:
     """Human-readable notes, e.g. 'aspect ratio matches 135 full-frame'."""
 
 
+@dataclass(frozen=True)
+class _SprocketExclusion:
+    """Detected sprocket rows/columns that should stay outside the photo crop."""
+
+    left_inner_edge: int | None = None
+    right_inner_edge: int | None = None
+    top_inner_edge: int | None = None
+    bottom_inner_edge: int | None = None
+    debug: dict[str, Any] | None = None
+
+    @property
+    def active(self) -> bool:
+        return any(
+            edge is not None
+            for edge in (
+                self.left_inner_edge,
+                self.right_inner_edge,
+                self.top_inner_edge,
+                self.bottom_inner_edge,
+            )
+        )
+
+
 # ── Constants ──────────────────────────────────────────────────────
 
 
@@ -112,6 +135,13 @@ _ANGLE_TOLERANCE_DEG = 8.0  # cluster lines within ±8° (allows perspective sla
 _MIN_CONFIDENCE_LINES = 4  # need at least 4 long lines for a quad
 _SAFE_CROP_INSET_RATIO = 0.01
 _SAFE_CROP_INSET_MAX_PX = 24
+_SPROCKET_EDGE_SEARCH_RATIO = 0.22
+_SPROCKET_EDGE_SEARCH_MAX_PX = 260
+_SPROCKET_COMPONENT_MIN_COUNT = 6
+_SPROCKET_COMPONENT_MIN_SPAN_RATIO = 0.30
+_SPROCKET_MARGIN_RATIO = 0.012
+_SPROCKET_SIZE_OUTLIER_RATIO = 2.35
+_SPROCKET_SIZE_INLIER_RATIO = 0.45
 
 # ── Known film formats ─────────────────────────────────────────────
 
@@ -130,6 +160,14 @@ _KNOWN_FILM_FORMATS: list[FilmFormat] = [
     FilmFormat("Micro 4/3", 1.33, "landscape"),          # 17×13 mm → 4:3
     FilmFormat("1-inch sensor", 1.33, "landscape"),       # 13×9 mm → 4:3
 ]
+
+_COMMON_MEDIUM_FORMATS: tuple[FilmFormat, ...] = (
+    FilmFormat("120 6×4.5", 1.33, "landscape", 0.07),
+    FilmFormat("120 6×6", 1.00, "square", 0.06),
+    FilmFormat("120 6×7", 1.25, "landscape", 0.08),
+)
+_MEDIUM_PANORAMA_MIN_RATIO = 1.70
+_MEDIUM_PANORAMA_MAX_RATIO = 3.60
 
 
 # ── Public API ─────────────────────────────────────────────────────
@@ -156,14 +194,17 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
     confidence = 0.0
     if len(h_group) >= 2 and len(v_group) >= 2:
         corners, confidence = _fit_quad(h_group, v_group, w, h)
-        if corners is not None:
-            angle = _compute_angle(h_group, v_group)
+    if corners is not None:
+        angle = _compute_angle(h_group, v_group)
 
     hough_crop = _corners_to_crop(corners, img_w=w, img_h=h) if corners else (0, 0, w, h)
-    crop_candidates, crop_debug = _edge_crop_candidates(normalized, hough_crop)
-    scored_crop, crop_score = _select_best_crop(normalized, crop_candidates, hough_crop)
+    sprocket = _detect_sprocket_exclusion(img_rgb)
+    crop_candidates, crop_debug = _edge_crop_candidates(normalized, hough_crop, sprocket)
+    scored_crop, crop_score = _select_best_crop(normalized, crop_candidates, hough_crop, sprocket)
     crop = scored_crop or hough_crop
+    crop = _constrain_crop_to_sprocket_exclusion(crop, sprocket, w, h)
     crop = _refine_crop_to_content(img_rgb, crop)
+    crop = _constrain_crop_to_sprocket_exclusion(crop, sprocket, w, h)
 
     if corners is None:
         if crop_score < 0.28:
@@ -181,7 +222,7 @@ def detect_film_frame(img_rgb: np.ndarray) -> FilmScanResult:
     is_persp = _detect_perspective(corners) if len(corners) == 4 else False
     transform = _perspective_transform(corners) if is_persp else None
 
-    film_fmt = identify_film_format(corners) if confidence > 0.4 else None
+    film_fmt = identify_film_format(corners, prefer_medium_format=not sprocket.active) if confidence > 0.4 else None
     evaluation = evaluate_film_correction(corners, crop, film_fmt, (w, h))
 
     return FilmScanResult(
@@ -229,6 +270,377 @@ def _normalize_negative_crop_view(img_rgb: np.ndarray) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     return ACCELERATOR.gaussian_blur(enhanced, (5, 5), 0)
+
+
+def _detect_sprocket_exclusion(img_rgb: np.ndarray) -> _SprocketExclusion:
+    """Detect repeated sprocket holes near image edges and expose inner crop limits.
+
+    Film perforations are intentionally high-frequency, high-contrast shapes.
+    They are useful for recognizing the film strip, but they are poor crop
+    boundaries because their edges can dominate Hough/profile scoring.  This
+    detector looks for repeated small components in the outer image bands and
+    converts them into one-sided exclusion limits for the later crop scorer.
+    """
+    h, w = img_rgb.shape[:2]
+    if h < 80 or w < 80:
+        return _SprocketExclusion(debug={"active": False, "edges": {}})
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    edge_results: dict[str, dict[str, Any]] = {}
+    inner_edges: dict[str, int | None] = {
+        "left": None,
+        "right": None,
+        "top": None,
+        "bottom": None,
+    }
+
+    for edge in ("top", "bottom", "left", "right"):
+        result = _detect_sprocket_edge(gray, edge)
+        if result is None:
+            continue
+        inner_edges[edge] = int(result["inner_edge"])
+        edge_results[edge] = result
+
+    active = any(value is not None for value in inner_edges.values())
+    return _SprocketExclusion(
+        left_inner_edge=inner_edges["left"],
+        right_inner_edge=inner_edges["right"],
+        top_inner_edge=inner_edges["top"],
+        bottom_inner_edge=inner_edges["bottom"],
+        debug={"active": active, "edges": edge_results},
+    )
+
+
+def _detect_sprocket_edge(gray: np.ndarray, edge: str) -> dict[str, Any] | None:
+    h, w = gray.shape[:2]
+    horizontal = edge in ("top", "bottom")
+    edge_length = h if horizontal else w
+    search_size = max(48, min(int(round(edge_length * _SPROCKET_EDGE_SEARCH_RATIO)), _SPROCKET_EDGE_SEARCH_MAX_PX))
+
+    if edge == "top":
+        band = gray[:search_size, :]
+        x_offset, y_offset = 0, 0
+    elif edge == "bottom":
+        band = gray[h - search_size : h, :]
+        x_offset, y_offset = 0, h - search_size
+    elif edge == "left":
+        band = gray[:, :search_size]
+        x_offset, y_offset = 0, 0
+    elif edge == "right":
+        band = gray[:, w - search_size : w]
+        x_offset, y_offset = w - search_size, 0
+    else:
+        raise ValueError(f"Unknown sprocket edge: {edge}")
+
+    if band.size == 0:
+        return None
+
+    components = _sprocket_components_from_band(band, x_offset, y_offset, w, h)
+    group = _select_sprocket_component_group(components, horizontal, w, h)
+    if group is None:
+        return None
+
+    boxes = group["boxes"]
+    margin = max(6, min(24, int(round((h if horizontal else w) * _SPROCKET_MARGIN_RATIO))))
+    if edge == "top":
+        inner_edge = max(box["y"] + box["h"] for box in boxes) + margin
+        inner_edge = int(np.clip(inner_edge, 0, h - 1))
+    elif edge == "bottom":
+        inner_edge = min(box["y"] for box in boxes) - margin
+        inner_edge = int(np.clip(inner_edge, 1, h))
+    elif edge == "left":
+        inner_edge = max(box["x"] + box["w"] for box in boxes) + margin
+        inner_edge = int(np.clip(inner_edge, 0, w - 1))
+    else:
+        inner_edge = min(box["x"] for box in boxes) - margin
+        inner_edge = int(np.clip(inner_edge, 1, w))
+
+    polarities = [str(box["polarity"]) for box in boxes]
+    dominant_polarity = max(set(polarities), key=polarities.count)
+    return {
+        "inner_edge": inner_edge,
+        "component_count": len(boxes),
+        "span": int(group["span"]),
+        "polarity": dominant_polarity,
+        "boxes": [
+            {
+                "x": int(box["x"]),
+                "y": int(box["y"]),
+                "w": int(box["w"]),
+                "h": int(box["h"]),
+            }
+            for box in boxes[:16]
+        ],
+    }
+
+
+def _sprocket_components_from_band(
+    band: np.ndarray,
+    x_offset: int,
+    y_offset: int,
+    img_w: int,
+    img_h: int,
+) -> list[dict[str, float | int | str]]:
+    mean = float(np.mean(band))
+    std = float(np.std(band))
+    masks: list[tuple[str, np.ndarray, float]] = []
+
+    bright_threshold = max(150.0, float(np.percentile(band, 92.0)), mean + std * 0.90)
+    if bright_threshold <= 254.5:
+        masks.append(("bright", band >= bright_threshold, bright_threshold))
+
+    dark_threshold = min(105.0, float(np.percentile(band, 8.0)), mean - std * 0.90)
+    if dark_threshold >= 0.5:
+        masks.append(("dark", band <= dark_threshold, dark_threshold))
+
+    components: list[dict[str, float | int | str]] = []
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    for polarity, mask_bool, threshold in masks:
+        mask = mask_bool.astype(np.uint8) * 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel, iterations=1)
+        num_labels, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+        for label in range(1, num_labels):
+            x, y, w, h, area = (int(v) for v in stats[label])
+            if not _is_sprocket_component_shape(w, h, int(area), img_w, img_h):
+                continue
+            components.append(
+                {
+                    "x": x + x_offset,
+                    "y": y + y_offset,
+                    "w": w,
+                    "h": h,
+                    "area": int(area),
+                    "cx": float(centroids[label][0] + x_offset),
+                    "cy": float(centroids[label][1] + y_offset),
+                    "polarity": polarity,
+                    "threshold": float(threshold),
+                }
+            )
+    return _dedupe_sprocket_components(components)
+
+
+def _is_sprocket_component_shape(width: int, height: int, area: int, img_w: int, img_h: int) -> bool:
+    if width <= 0 or height <= 0:
+        return False
+    img_area = img_w * img_h
+    min_area = max(40, int(round(img_area * 0.00004)))
+    max_area = max(min_area + 1, int(round(img_area * 0.012)))
+    if area < min_area or area > max_area:
+        return False
+
+    min_w = max(8, int(round(img_w * 0.008)))
+    min_h = max(8, int(round(img_h * 0.012)))
+    max_w = max(min_w + 4, int(round(img_w * 0.12)))
+    max_h = max(min_h + 4, int(round(img_h * 0.16)))
+    if not (min_w <= width <= max_w and min_h <= height <= max_h):
+        return False
+
+    fill = area / float(width * height)
+    if fill < 0.12:
+        return False
+    aspect = width / float(height)
+    return 0.18 <= aspect <= 5.5
+
+
+def _dedupe_sprocket_components(
+    components: list[dict[str, float | int | str]],
+) -> list[dict[str, float | int | str]]:
+    components.sort(key=lambda item: float(item["area"]), reverse=True)
+    deduped: list[dict[str, float | int | str]] = []
+    for component in components:
+        cx = float(component["cx"])
+        cy = float(component["cy"])
+        if any(abs(cx - float(kept["cx"])) < 8 and abs(cy - float(kept["cy"])) < 8 for kept in deduped):
+            continue
+        deduped.append(component)
+    return deduped
+
+
+def _select_sprocket_component_group(
+    components: list[dict[str, float | int | str]],
+    horizontal: bool,
+    img_w: int,
+    img_h: int,
+) -> dict[str, Any] | None:
+    if len(components) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+
+    alignment_length = img_h if horizontal else img_w
+    run_length = img_w if horizontal else img_h
+    tolerance = max(14, min(42, int(round(alignment_length * 0.045))))
+    min_span = run_length * _SPROCKET_COMPONENT_MIN_SPAN_RATIO
+    best: dict[str, Any] | None = None
+    best_score = float("-inf")
+
+    for seed in components[:40]:
+        seed_center = float(seed["cy"] if horizontal else seed["cx"])
+        group = [
+            component
+            for component in components
+            if abs(float(component["cy"] if horizontal else component["cx"]) - seed_center) <= tolerance
+        ]
+        group = _regular_sprocket_run(group, horizontal, run_length)
+        if group is None:
+            continue
+        group = _consistent_sprocket_components(group, horizontal, run_length)
+        if group is None:
+            continue
+        group = _linear_sprocket_alignment(group, horizontal)
+        if group is None:
+            continue
+        if horizontal:
+            run_start = min(int(component["x"]) for component in group)
+            run_end = max(int(component["x"]) + int(component["w"]) for component in group)
+        else:
+            run_start = min(int(component["y"]) for component in group)
+            run_end = max(int(component["y"]) + int(component["h"]) for component in group)
+        span = run_end - run_start
+        if span < min_span:
+            continue
+        widths = np.array([float(component["w"]) for component in group], dtype=np.float32)
+        heights = np.array([float(component["h"]) for component in group], dtype=np.float32)
+        areas = np.array([float(component["area"]) for component in group], dtype=np.float32)
+        median_area = float(np.median(areas))
+        median_short = float(np.median(np.minimum(widths, heights)))
+        median_long = float(np.median(np.maximum(widths, heights)))
+        shape_ratio = median_short / max(median_long, 1.0)
+        thin_penalty = max(0.0, 0.55 - shape_ratio) * 4.0
+        score = (
+            min(len(group), 12) * 0.8
+            + span / max(run_length, 1) * 4.0
+            + min(4.0, median_area / max(img_w * img_h * 0.001, 1.0))
+            + min(2.0, median_short / 20.0)
+            - thin_penalty
+        )
+        if score > best_score:
+            best_score = score
+            best = {"boxes": group, "span": span, "score": score}
+
+    return best
+
+
+def _consistent_sprocket_components(
+    components: list[dict[str, float | int | str]],
+    horizontal: bool,
+    run_length: int,
+) -> list[dict[str, float | int | str]] | None:
+    if len(components) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+
+    def _center(component: dict[str, float | int | str]) -> float:
+        return float(component["cx"] if horizontal else component["cy"])
+
+    widths = np.array([float(component["w"]) for component in components], dtype=np.float32)
+    heights = np.array([float(component["h"]) for component in components], dtype=np.float32)
+    areas = np.array([float(component["area"]) for component in components], dtype=np.float32)
+    short_dims = np.minimum(widths, heights)
+    long_dims = np.maximum(widths, heights)
+
+    median_area = max(float(np.median(areas)), 1.0)
+    median_short = max(float(np.median(short_dims)), 1.0)
+    median_long = max(float(np.median(long_dims)), 1.0)
+    core: list[dict[str, float | int | str]] = []
+    for component, area, short_dim, long_dim in zip(components, areas, short_dims, long_dims, strict=True):
+        area_ratio = float(area) / median_area
+        short_ratio = float(short_dim) / median_short
+        long_ratio = float(long_dim) / median_long
+        if not (_SPROCKET_SIZE_INLIER_RATIO <= area_ratio <= _SPROCKET_SIZE_OUTLIER_RATIO):
+            continue
+        if not (_SPROCKET_SIZE_INLIER_RATIO <= short_ratio <= _SPROCKET_SIZE_OUTLIER_RATIO):
+            continue
+        if not (_SPROCKET_SIZE_INLIER_RATIO <= long_ratio <= _SPROCKET_SIZE_OUTLIER_RATIO):
+            continue
+        core.append(component)
+
+    if len(core) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+    core.sort(key=_center)
+    span = _center(core[-1]) - _center(core[0])
+    if span < run_length * _SPROCKET_COMPONENT_MIN_SPAN_RATIO:
+        return None
+    return core
+
+
+def _linear_sprocket_alignment(
+    components: list[dict[str, float | int | str]],
+    horizontal: bool,
+) -> list[dict[str, float | int | str]] | None:
+    """Keep only component groups that form one narrow perforation row/column."""
+    if len(components) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+
+    run_centers = np.array(
+        [float(component["cx"] if horizontal else component["cy"]) for component in components],
+        dtype=np.float32,
+    )
+    alignment_centers = np.array(
+        [float(component["cy"] if horizontal else component["cx"]) for component in components],
+        dtype=np.float32,
+    )
+    alignment_sizes = np.array(
+        [float(component["h"] if horizontal else component["w"]) for component in components],
+        dtype=np.float32,
+    )
+    if run_centers.size < 2 or float(np.ptp(run_centers)) < 1.0:
+        return None
+
+    slope, intercept = np.polyfit(run_centers, alignment_centers, 1)
+    residuals = np.abs(alignment_centers - (slope * run_centers + intercept))
+    median_size = max(float(np.median(alignment_sizes)), 1.0)
+    max_residual = float(np.max(residuals))
+    std_residual = float(np.std(residuals))
+    max_allowed = max(5.0, median_size * 0.42)
+    std_allowed = max(2.5, median_size * 0.18)
+    if max_residual > max_allowed or std_residual > std_allowed:
+        return None
+    return components
+
+
+def _regular_sprocket_run(
+    components: list[dict[str, float | int | str]],
+    horizontal: bool,
+    run_length: int,
+) -> list[dict[str, float | int | str]] | None:
+    if len(components) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+
+    def _center(component: dict[str, float | int | str]) -> float:
+        return float(component["cx"] if horizontal else component["cy"])
+
+    ordered = sorted(components, key=_center)
+    centers = np.array([_center(component) for component in ordered], dtype=np.float32)
+    gaps = np.diff(centers)
+    if gaps.size == 0:
+        return None
+    small_gaps = gaps[gaps <= run_length * 0.25]
+    median_gap = float(np.median(small_gaps)) if small_gaps.size else float(np.median(gaps))
+    split_gap = max(run_length * 0.22, median_gap * 3.5, 48.0)
+
+    runs: list[list[dict[str, float | int | str]]] = []
+    current = [ordered[0]]
+    for index, gap in enumerate(gaps, start=1):
+        if float(gap) > split_gap:
+            runs.append(current)
+            current = []
+        current.append(ordered[index])
+    runs.append(current)
+
+    runs.sort(
+        key=lambda run: (
+            len(run),
+            _center(run[-1]) - _center(run[0]) if len(run) > 1 else 0.0,
+        ),
+        reverse=True,
+    )
+    best = runs[0]
+    if len(best) < _SPROCKET_COMPONENT_MIN_COUNT:
+        return None
+    span = _center(best[-1]) - _center(best[0])
+    if span < run_length * _SPROCKET_COMPONENT_MIN_SPAN_RATIO:
+        return None
+    return best
 
 
 def _detect_lines(edges: np.ndarray) -> list[tuple[float, float, float, float]]:
@@ -541,6 +953,7 @@ def _refine_crop_to_content(
 def _edge_crop_candidates(
     gray: np.ndarray,
     hough_crop: tuple[int, int, int, int],
+    sprocket: _SprocketExclusion | None = None,
 ) -> tuple[list[tuple[int, int, int, int]], dict[str, Any]]:
     """Generate crop candidates from edge profiles plus the Hough proposal."""
     h, w = gray.shape[:2]
@@ -577,6 +990,27 @@ def _edge_crop_candidates(
     top_candidates = _merge_candidate_values(top_candidates, band_top, top_debug)
     bottom_candidates = _merge_candidate_values(bottom_candidates, band_bottom, bottom_debug)
 
+    left_candidates = _apply_sprocket_trim_constraint(
+        left_candidates,
+        sprocket.left_inner_edge if sprocket else None,
+        left_debug,
+    )
+    right_candidates = _apply_sprocket_trim_constraint(
+        right_candidates,
+        w - sprocket.right_inner_edge if sprocket and sprocket.right_inner_edge is not None else None,
+        right_debug,
+    )
+    top_candidates = _apply_sprocket_trim_constraint(
+        top_candidates,
+        sprocket.top_inner_edge if sprocket else None,
+        top_debug,
+    )
+    bottom_candidates = _apply_sprocket_trim_constraint(
+        bottom_candidates,
+        h - sprocket.bottom_inner_edge if sprocket and sprocket.bottom_inner_edge is not None else None,
+        bottom_debug,
+    )
+
     candidates: set[tuple[int, int, int, int]] = {hough_crop}
     for left, right, top, bottom in product(left_candidates, right_candidates, top_candidates, bottom_candidates):
         width = w - left - right
@@ -593,8 +1027,37 @@ def _edge_crop_candidates(
             "top": top_debug,
             "bottom": bottom_debug,
         },
+        "sprocket_exclusion": sprocket.debug if sprocket is not None else {"active": False, "edges": {}},
     }
     return list(candidates), debug
+
+
+def _apply_sprocket_trim_constraint(
+    candidates: list[int],
+    required_trim: int | None,
+    debug: dict[str, Any],
+) -> list[int]:
+    if required_trim is None:
+        debug["sprocket_required_trim"] = None
+        return candidates
+
+    required_trim = max(0, int(required_trim))
+    tolerance = max(4, int(round(required_trim * 0.05)))
+    constrained: list[int] = [required_trim]
+    for value in candidates:
+        if value + tolerance < required_trim:
+            continue
+        constrained.append(max(int(value), required_trim))
+
+    merged: list[int] = []
+    for value in constrained:
+        if all(abs(value - kept) >= 6 for kept in merged):
+            merged.append(value)
+        if len(merged) >= 4:
+            break
+    debug["sprocket_required_trim"] = required_trim
+    debug["merged_candidates"] = merged
+    return merged
 
 
 def _merge_candidate_values(primary: list[int], extra: list[int], debug: dict[str, Any] | None = None) -> list[int]:
@@ -897,12 +1360,13 @@ def _select_best_crop(
     gray: np.ndarray,
     candidates: list[tuple[int, int, int, int]],
     hough_crop: tuple[int, int, int, int],
+    sprocket: _SprocketExclusion | None = None,
 ) -> tuple[tuple[int, int, int, int] | None, float]:
     """Score candidate rectangles and return the best one."""
     best_rect: tuple[int, int, int, int] | None = None
     best_score = float("-inf")
     for rect in candidates:
-        score = _score_crop_rect(gray, rect, hough_crop)
+        score = _score_crop_rect(gray, rect, hough_crop, sprocket)
         if score > best_score:
             best_rect = rect
             best_score = score
@@ -916,6 +1380,7 @@ def _score_crop_rect(
     gray: np.ndarray,
     rect: tuple[int, int, int, int],
     hough_crop: tuple[int, int, int, int],
+    sprocket: _SprocketExclusion | None = None,
 ) -> float:
     x, y, w, h = rect
     img_h, img_w = gray.shape[:2]
@@ -976,7 +1441,91 @@ def _score_crop_rect(
         if ref <= strip:
             continue
         anchor_penalty += min(1.2, abs(trim - ref) / max(ref, strip) * 0.7)
-    return edge_score + center_std / 28.0 - coverage_penalty - aspect_penalty - weak_trim_penalty - anchor_penalty
+    sprocket_penalty = _sprocket_overlap_penalty(rect, img_w, img_h, sprocket)
+    return (
+        edge_score
+        + center_std / 28.0
+        - coverage_penalty
+        - aspect_penalty
+        - weak_trim_penalty
+        - anchor_penalty
+        - sprocket_penalty
+    )
+
+
+def _sprocket_overlap_penalty(
+    rect: tuple[int, int, int, int],
+    img_w: int,
+    img_h: int,
+    sprocket: _SprocketExclusion | None,
+) -> float:
+    if sprocket is None or not sprocket.active:
+        return 0.0
+
+    x, y, w, h = rect
+    x1 = x + w
+    y1 = y + h
+    penalty = 0.0
+    bonus = 0.0
+
+    def _edge_penalty(overlap: int, length: int) -> float:
+        return 2.0 + overlap / max(length, 1) * 18.0
+
+    def _alignment_bonus(distance: int) -> float:
+        return max(0.0, 0.55 - distance / 48.0)
+
+    if sprocket.left_inner_edge is not None:
+        if x < sprocket.left_inner_edge:
+            penalty += _edge_penalty(sprocket.left_inner_edge - x, img_w)
+        else:
+            bonus += _alignment_bonus(abs(x - sprocket.left_inner_edge))
+    if sprocket.right_inner_edge is not None:
+        if x1 > sprocket.right_inner_edge:
+            penalty += _edge_penalty(x1 - sprocket.right_inner_edge, img_w)
+        else:
+            bonus += _alignment_bonus(abs(x1 - sprocket.right_inner_edge))
+    if sprocket.top_inner_edge is not None:
+        if y < sprocket.top_inner_edge:
+            penalty += _edge_penalty(sprocket.top_inner_edge - y, img_h)
+        else:
+            bonus += _alignment_bonus(abs(y - sprocket.top_inner_edge))
+    if sprocket.bottom_inner_edge is not None:
+        if y1 > sprocket.bottom_inner_edge:
+            penalty += _edge_penalty(y1 - sprocket.bottom_inner_edge, img_h)
+        else:
+            bonus += _alignment_bonus(abs(y1 - sprocket.bottom_inner_edge))
+
+    return max(0.0, penalty - bonus)
+
+
+def _constrain_crop_to_sprocket_exclusion(
+    crop: tuple[int, int, int, int],
+    sprocket: _SprocketExclusion | None,
+    img_w: int,
+    img_h: int,
+) -> tuple[int, int, int, int]:
+    if sprocket is None or not sprocket.active:
+        return crop
+
+    x, y, w, h = crop
+    x1 = x + w
+    y1 = y + h
+    if sprocket.left_inner_edge is not None:
+        x = max(x, sprocket.left_inner_edge)
+    if sprocket.right_inner_edge is not None:
+        x1 = min(x1, sprocket.right_inner_edge)
+    if sprocket.top_inner_edge is not None:
+        y = max(y, sprocket.top_inner_edge)
+    if sprocket.bottom_inner_edge is not None:
+        y1 = min(y1, sprocket.bottom_inner_edge)
+
+    new_w = x1 - x
+    new_h = y1 - y
+    min_w = max(24, int(round(img_w * 0.35)))
+    min_h = max(24, int(round(img_h * 0.30)))
+    if new_w < min_w or new_h < min_h:
+        return crop
+    return (int(x), int(y), int(new_w), int(new_h))
 
 
 def _classify_border(
@@ -1106,7 +1655,11 @@ def _perspective_transform(
 # ── Film format identification ─────────────────────────────────────
 
 
-def identify_film_format(corners: list[tuple[int, int]]) -> FilmFormat | None:
+def identify_film_format(
+    corners: list[tuple[int, int]],
+    *,
+    prefer_medium_format: bool = False,
+) -> FilmFormat | None:
     """Identify film format from the detected frame aspect ratio.
 
     Computes the aspect ratio from the 4 corners (average of opposite
@@ -1128,7 +1681,12 @@ def identify_film_format(corners: list[tuple[int, int]]) -> FilmFormat | None:
 
     ratio = avg_w / avg_h
 
-    # Find closest format
+    if prefer_medium_format:
+        medium_fmt = _infer_medium_format_from_ratio(ratio)
+        if medium_fmt is not None:
+            return medium_fmt
+
+    # Find closest non-contextual format.
     best: FilmFormat | None = None
     best_dist = float("inf")
 
@@ -1139,6 +1697,45 @@ def identify_film_format(corners: list[tuple[int, int]]) -> FilmFormat | None:
             best_dist = dist
 
     return best
+
+
+def _infer_medium_format_from_ratio(ratio: float) -> FilmFormat | None:
+    if ratio <= 0.0:
+        return None
+
+    normalized = ratio if ratio >= 1.0 else 1.0 / ratio
+    orientation = "square" if abs(normalized - 1.0) <= 0.06 else ("landscape" if ratio >= 1.0 else "portrait")
+
+    best_common: FilmFormat | None = None
+    best_dist = float("inf")
+    for fmt in _COMMON_MEDIUM_FORMATS:
+        dist = abs(normalized - fmt.nominal_ratio)
+        if dist < fmt.ratio_tolerance and dist < best_dist:
+            best_common = fmt
+            best_dist = dist
+    if best_common is not None:
+        return FilmFormat(
+            best_common.name,
+            ratio if ratio >= 1.0 else 1.0 / best_common.nominal_ratio,
+            orientation,
+            best_common.ratio_tolerance,
+        )
+
+    if not (_MEDIUM_PANORAMA_MIN_RATIO <= normalized <= _MEDIUM_PANORAMA_MAX_RATIO):
+        return None
+
+    long_side = round(normalized * 6.0 * 2.0) / 2.0
+    long_label = _format_medium_side(long_side)
+    name = f"120 6×{long_label}"
+    if orientation == "portrait":
+        name = f"{name} (portrait)"
+    return FilmFormat(name, ratio, orientation, 0.09)
+
+
+def _format_medium_side(value: float) -> str:
+    if abs(value - round(value)) < 0.05:
+        return str(int(round(value)))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 # ── Quality evaluation ─────────────────────────────────────────────

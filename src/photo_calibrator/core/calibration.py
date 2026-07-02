@@ -11,6 +11,7 @@ from .accelerator import ACCELERATOR
 from .cast_detection import CastReport, analyze_image_array, auto_detect_cast, ensure_rgb_image, ensure_uint8_rgb, rgb_to_lab_float
 
 DEFAULT_STRENGTH = 0.8
+LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 
 class CalibrationMode(str, Enum):
@@ -432,11 +433,7 @@ def analyze_tone_recovery(img_rgb: np.ndarray) -> dict[str, float | str]:
     """Estimate a safe luminance range for restoring post-calibration depth."""
 
     src, _, _ = _working_rgb(img_rgb)
-    luminance = (
-        src[:, :, 0] * 0.2126
-        + src[:, :, 1] * 0.7152
-        + src[:, :, 2] * 0.0722
-    ).astype(np.float32, copy=False)
+    luminance = (src * LUMA_WEIGHTS).sum(axis=2).astype(np.float32, copy=False)
     if luminance.size == 0:
         return {
             "source": "auto",
@@ -476,7 +473,7 @@ def apply_tone_recovery(
     midtone: float | None = None,
     local_contrast: float | None = None,
 ) -> tuple[np.ndarray, dict[str, float | str]]:
-    """Restore luminance depth while preserving calibrated chroma."""
+    """Restore luminance depth with hue- and saturation-preserving RGB ratios."""
 
     src, dtype, scale = _working_rgb(img_rgb)
     analysis = analyze_tone_recovery(src)
@@ -488,18 +485,21 @@ def apply_tone_recovery(
     amount = float(np.clip(amount, 0.0, 1.0))
     clarity = float(np.clip(clarity, 0.0, 0.5))
     if amount <= 1e-5:
-        return img_rgb.copy(), {**analysis, "applied_strength": 0.0, "applied_local_contrast": 0.0}
+        return img_rgb.copy(), {
+            **analysis,
+            "algorithm": "luminance-ratio-chroma-preserving",
+            "applied_strength": 0.0,
+            "applied_local_contrast": 0.0,
+            "brightness_compensation": 0.0,
+            "gamut_limited_pixels": 0.0,
+        }
 
     span = max(wp - bp, 1e-3)
-    luminance = (
-        src[:, :, 0] * 0.2126
-        + src[:, :, 1] * 0.7152
-        + src[:, :, 2] * 0.0722
-    ).astype(np.float32, copy=False)
+    luminance = (src * LUMA_WEIGHTS).sum(axis=2).astype(np.float32, copy=False)
     normalized = np.clip((luminance - bp) / span, 0.0, 1.0)
     if 0.05 < mid < 0.95:
         mid_norm = float(np.clip((mid - bp) / span, 0.05, 0.95))
-        gamma = float(np.clip(np.log(0.46) / np.log(mid_norm), 0.65, 1.45))
+        gamma = float(np.clip(np.log(0.5) / np.log(mid_norm), 0.68, 1.0))
     else:
         gamma = 1.0
     gamma_mapped = np.power(normalized, gamma).astype(np.float32)
@@ -510,21 +510,35 @@ def apply_tone_recovery(
         base = cv2.GaussianBlur(mapped_luma, (0, 0), blur_sigma)
         mapped_luma = np.clip(mapped_luma + (mapped_luma - base) * clarity, 0.0, 1.0)
 
-    lab = ACCELERATOR.rgb_to_lab_float(np.clip(np.rint(src * 255.0), 0, 255).astype(np.uint8))
-    chroma = np.sqrt(lab[:, :, 1] * lab[:, :, 1] + lab[:, :, 2] * lab[:, :, 2])
-    chroma_protect = 1.0 - 0.42 * np.clip((chroma - 12.0) / 58.0, 0.0, 1.0)
-    target_luma = luminance + (mapped_luma - luminance) * amount * chroma_protect
-    max_delta = 0.05 + 0.16 * amount
-    target_luma = np.clip(target_luma, luminance - max_delta, luminance + max_delta)
-    lab[:, :, 0] = np.clip(lab[:, :, 0] + (target_luma - luminance) * 100.0, 0.0, 100.0)
-    out = np.clip(ACCELERATOR.lab_to_rgb_float(lab), 0.0, 1.0)
+    target_luma = luminance + (mapped_luma - luminance) * amount
+    max_darkening = 0.035 * amount
+    max_lift = 0.05 + 0.2 * amount
+    target_luma = np.clip(target_luma, luminance - max_darkening, luminance + max_lift)
+
+    brightness_compensation = 0.0
+    if luminance.size:
+        mean_before = float(luminance.mean())
+        mean_after = float(target_luma.mean())
+        if mean_after < mean_before:
+            brightness_compensation = min(mean_before - mean_after, 0.08 * amount)
+            target_luma = np.clip(target_luma + brightness_compensation, 0.0, 1.0)
+
+    gain = target_luma / np.maximum(luminance, 1e-4)
+    max_channel = np.maximum(src.max(axis=2), 1e-4)
+    gamut_gain_limit = 1.0 / max_channel
+    safe_gain = np.minimum(gain, gamut_gain_limit)
+    out = np.clip(src * safe_gain[:, :, None], 0.0, 1.0)
+    gamut_limited = float(np.mean(safe_gain < (gain - 1e-5))) if gain.size else 0.0
     return _restore_dtype(out, dtype, scale), {
         **analysis,
+        "algorithm": "luminance-ratio-chroma-preserving",
         "black_point": bp,
         "white_point": wp,
         "midtone": mid,
         "applied_strength": amount,
         "applied_local_contrast": clarity,
+        "brightness_compensation": float(brightness_compensation),
+        "gamut_limited_pixels": gamut_limited,
     }
 
 

@@ -914,6 +914,103 @@ def _prepare_file_analysis(
     return entry
 
 
+class AnalysisSessionResolver:
+    """Resolve path/upload/session inputs into an analysis entry at the needed size."""
+
+    def __init__(
+        self,
+        body: dict,
+        *,
+        default_max_side: int,
+        min_max_side: int | None = None,
+        max_max_side: int = DEFAULT_ANALYSIS_MAX_SIDE,
+        resolution_mode: str = "minimum",
+        reader_plugin: str | None = None,
+        raw_options: dict[str, object] | None = None,
+        missing_session_message: str = "Unknown or expired session_id",
+        missing_input_message: str = "request requires path, session_id, or image_data",
+    ) -> None:
+        if resolution_mode not in {"minimum", "target"}:
+            raise ValueError("resolution_mode must be 'minimum' or 'target'")
+        self.body = body
+        self.default_max_side = int(default_max_side)
+        self.min_max_side = int(min_max_side) if min_max_side is not None else None
+        self.max_max_side = int(max_max_side)
+        self.resolution_mode = resolution_mode
+        self.reader_plugin = reader_plugin
+        self.raw_options = raw_options
+        self.missing_session_message = missing_session_message
+        self.missing_input_message = missing_input_message
+
+    def resolve(self) -> AnalysisEntry:
+        if self.body.get("path"):
+            return _prepare_file_analysis(
+                str(self.body["path"]),
+                max_side=self._target_max_side(),
+                reader_plugin=self.reader_plugin,
+                raw_options=self.raw_options,
+            )
+        if self.body.get("session_id"):
+            entry = _get_analysis(str(self.body["session_id"]))
+            if entry is None:
+                raise ValueError(self.missing_session_message)
+            return self._rehydrate_if_needed(entry)
+        if self.body.get("image_data"):
+            return _prepare_uploaded_analysis(
+                self.body["image_data"],
+                file_name=str(self.body.get("file_name", "")),
+                max_side=self._target_max_side(),
+                reader_plugin=self.reader_plugin,
+                raw_options=self.raw_options,
+            )
+        raise ValueError(self.missing_input_message)
+
+    def _target_max_side(self, entry: AnalysisEntry | None = None) -> int:
+        requested = self._int_body("analysis_max_side", self.default_max_side)
+        target = max(1, requested)
+        if self.min_max_side is not None:
+            target = max(target, self.min_max_side)
+        target = min(target, self.max_max_side)
+        if entry is not None:
+            original_side = max(
+                int(entry.prepared.original_width),
+                int(entry.prepared.original_height),
+                self._current_side(entry),
+            )
+            target = min(target, original_side)
+        return max(1, int(target))
+
+    def _rehydrate_if_needed(self, entry: AnalysisEntry) -> AnalysisEntry:
+        target_side = self._target_max_side(entry)
+        if not self._needs_rehydrate(entry, target_side):
+            return entry
+        source_path = entry.session_metadata.get("source_path")
+        if not source_path:
+            return entry
+        return _prepare_file_analysis(
+            source_path,
+            max_side=target_side,
+            reader_plugin=entry.session_metadata.get("reader_plugin"),
+            raw_options=entry.session_metadata.get("raw_options"),
+        )
+
+    def _needs_rehydrate(self, entry: AnalysisEntry, target_side: int) -> bool:
+        current_side = self._current_side(entry)
+        if self.resolution_mode == "target":
+            return abs(target_side - current_side) > max(current_side, 1) * 0.10
+        return current_side < target_side * 0.95
+
+    @staticmethod
+    def _current_side(entry: AnalysisEntry) -> int:
+        return max(int(entry.prepared.analysis_width), int(entry.prepared.analysis_height), 1)
+
+    def _int_body(self, key: str, default: int) -> int:
+        try:
+            return int(self.body.get(key, default))
+        except (TypeError, ValueError):
+            return int(default)
+
+
 def _prepare_image_for_analysis(data_url: str, max_side: int = DEFAULT_ANALYSIS_MAX_SIDE) -> PreparedImage:
     return _prepare_uploaded_image(data_url, "", max_side)
 
@@ -1918,40 +2015,14 @@ def _calibrate_payload(body: dict) -> dict:
 
 def _preview_payload(body: dict) -> dict:
     start = time.perf_counter()
-    max_side = int(body.get("analysis_max_side", 320))
-    path = body.get("path") or body.get("file_name")
-    if body.get("path"):
-        entry = _prepare_file_analysis(
-            str(body["path"]),
-            max_side=max_side,
-            reader_plugin=_plugin_reader_id(body),
-            raw_options=_raw_decode_options(body),
-        )
-    elif body.get("session_id"):
-        entry = _get_analysis(str(body["session_id"]))
-        if entry is None:
-            raise ValueError("Unknown or expired session_id")
-        
-        cached_max_side = entry.prepared.analysis_width if entry.prepared.analysis_width >= entry.prepared.analysis_height else entry.prepared.analysis_height
-        if abs(max_side - cached_max_side) > cached_max_side * 0.1:
-            source_path = entry.session_metadata.get("source_path")
-            if source_path:
-                entry = _prepare_file_analysis(
-                    source_path,
-                    max_side=max_side,
-                    reader_plugin=entry.session_metadata.get("reader_plugin"),
-                    raw_options=entry.session_metadata.get("raw_options"),
-                )
-    elif body.get("image_data"):
-        entry = _prepare_uploaded_analysis(
-            body["image_data"],
-            file_name=str(body.get("file_name", "")),
-            max_side=max_side,
-            reader_plugin=_plugin_reader_id(body),
-            raw_options=_raw_decode_options(body),
-        )
-    else:
-        raise ValueError("preview requires path, session_id, or image_data")
+    entry = AnalysisSessionResolver(
+        body,
+        default_max_side=320,
+        resolution_mode="target",
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
+        missing_input_message="preview requires path, session_id, or image_data",
+    ).resolve()
     prepared = entry.prepared
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     return {
@@ -2929,28 +3000,17 @@ def _image_buffer_to_export_rgb(image_buffer) -> np.ndarray:
 
 def _film_scan_payload(body: dict) -> dict:
     detector_plugin = _plugin_film_scan_detector_id(body)
-    session_id = body.get("session_id")
-    if session_id:
-        entry = _get_analysis(session_id)
-        if entry is None:
-            raise ValueError("session_id is missing or expired")
-    elif body.get("path"):
-        entry = _prepare_file_analysis(
-            str(body["path"]),
-            max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
-            reader_plugin=_plugin_reader_id(body),
-            raw_options=_raw_decode_options(body),
-        )
-    elif body.get("image_data"):
-        entry = _prepare_uploaded_analysis(
-            body["image_data"],
-            file_name=str(body.get("file_name", "")),
-            max_side=int(body.get("analysis_max_side", DEFAULT_ANALYSIS_MAX_SIDE)),
-            reader_plugin=_plugin_reader_id(body),
-            raw_options=_raw_decode_options(body),
-        )
-    else:
-        raise ValueError("film scan requires session_id, path, or image_data")
+    entry = AnalysisSessionResolver(
+        body,
+        default_max_side=FILM_SCAN_MAX_SIDE,
+        min_max_side=FILM_SCAN_MAX_SIDE,
+        max_max_side=FILM_SCAN_MAX_SIDE,
+        resolution_mode="minimum",
+        reader_plugin=_plugin_reader_id(body),
+        raw_options=_raw_decode_options(body),
+        missing_session_message="session_id is missing or expired",
+        missing_input_message="film scan requires session_id, path, or image_data",
+    ).resolve()
 
     prepared = entry.prepared
     plugin_result = None
