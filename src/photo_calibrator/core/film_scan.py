@@ -122,6 +122,46 @@ class _SprocketExclusion:
         )
 
 
+@dataclass(frozen=True)
+class _ImageRegionStats:
+    """Integral-image statistics for repeated crop candidate scoring."""
+
+    width: int
+    height: int
+    integral: np.ndarray
+    integral_sq: np.ndarray
+
+    @classmethod
+    def from_gray(cls, gray: np.ndarray) -> "_ImageRegionStats":
+        gray64 = gray.astype(np.float64, copy=False)
+        return cls(
+            width=int(gray.shape[1]),
+            height=int(gray.shape[0]),
+            integral=cv2.integral(gray64, sdepth=cv2.CV_64F),
+            integral_sq=cv2.integral(gray64 * gray64, sdepth=cv2.CV_64F),
+        )
+
+    def mean_std(self, y0: int, y1: int, x0: int, x1: int) -> tuple[float, float] | None:
+        if x0 < 0 or y0 < 0 or x1 > self.width or y1 > self.height or x1 <= x0 or y1 <= y0:
+            return None
+        area = float((x1 - x0) * (y1 - y0))
+        total = (
+            self.integral[y1, x1]
+            - self.integral[y0, x1]
+            - self.integral[y1, x0]
+            + self.integral[y0, x0]
+        )
+        total_sq = (
+            self.integral_sq[y1, x1]
+            - self.integral_sq[y0, x1]
+            - self.integral_sq[y1, x0]
+            + self.integral_sq[y0, x0]
+        )
+        mean = float(total / area)
+        variance = max(0.0, float(total_sq / area - mean * mean))
+        return mean, float(np.sqrt(variance))
+
+
 # ── Constants ──────────────────────────────────────────────────────
 
 
@@ -1192,6 +1232,7 @@ def _scan_edge_candidates(
     if legacy is not None:
         candidates.append((1.7, int(legacy), "legacy"))
 
+    gradient_scale = max(float(np.percentile(seq_grads[:search], 90)), 1.0)
     for idx in range(edge_span, search - window):
         pre_mean = float(np.mean(seq_means[max(0, idx - window) : idx]))
         pre_std = float(np.mean(seq_stds[max(0, idx - window) : idx]))
@@ -1202,7 +1243,7 @@ def _scan_edge_candidates(
         std_delta = post_std - pre_std
         border_flat = max(0.0, (interior_std - pre_std) / max(interior_std, 1.0))
         border_extreme = abs(pre_mean - interior_mean) / 32.0
-        transition = mean_delta / 18.0 + max(0.0, std_delta) / 10.0 + post_grad / max(np.percentile(seq_grads[:search], 90), 1.0)
+        transition = mean_delta / 18.0 + max(0.0, std_delta) / 10.0 + post_grad / gradient_scale
         content_gain = abs(post_mean - interior_mean) < abs(pre_mean - interior_mean)
         if not content_gain and post_std < pre_std + 1.5:
             continue
@@ -1365,8 +1406,9 @@ def _select_best_crop(
     """Score candidate rectangles and return the best one."""
     best_rect: tuple[int, int, int, int] | None = None
     best_score = float("-inf")
+    stats = _ImageRegionStats.from_gray(gray)
     for rect in candidates:
-        score = _score_crop_rect(gray, rect, hough_crop, sprocket)
+        score = _score_crop_rect(gray, rect, hough_crop, sprocket, stats)
         if score > best_score:
             best_rect = rect
             best_score = score
@@ -1381,9 +1423,11 @@ def _score_crop_rect(
     rect: tuple[int, int, int, int],
     hough_crop: tuple[int, int, int, int],
     sprocket: _SprocketExclusion | None = None,
+    stats: _ImageRegionStats | None = None,
 ) -> float:
     x, y, w, h = rect
-    img_h, img_w = gray.shape[:2]
+    stats = stats or _ImageRegionStats.from_gray(gray)
+    img_h, img_w = stats.height, stats.width
     if w <= 0 or h <= 0:
         return -999.0
     x1 = x + w
@@ -1392,35 +1436,28 @@ def _score_crop_rect(
         return -999.0
 
     strip = max(6, min(24, min(w, h) // 18))
-    center = gray[y + h // 4 : y + (h * 3) // 4, x + w // 4 : x + (w * 3) // 4]
-    if center.size == 0:
+    center_stats = stats.mean_std(y + h // 4, y + (h * 3) // 4, x + w // 4, x + (w * 3) // 4)
+    if center_stats is None:
         return -999.0
-    center_std = float(np.std(center))
+    _center_mean, center_std = center_stats
     coverage = (w * h) / float(img_w * img_h)
-
-    def _safe_region(y0: int, y1: int, x0: int, x1: int) -> np.ndarray | None:
-        if x0 < 0 or y0 < 0 or x1 > img_w or y1 > img_h or x1 <= x0 or y1 <= y0:
-            return None
-        return gray[y0:y1, x0:x1]
 
     edge_score = 0.0
     weak_trim_penalty = 0.0
     active_edges = 0
     trims = (x, img_w - x1, y, img_h - y1)
     for trim, outer, inner in (
-        (x, _safe_region(y, y1, max(0, x - strip), x), _safe_region(y, y1, x, min(img_w, x + strip))),
-        (img_w - x1, _safe_region(y, y1, x1, min(img_w, x1 + strip)), _safe_region(y, y1, max(0, x1 - strip), x1)),
-        (y, _safe_region(max(0, y - strip), y, x, x1), _safe_region(y, min(img_h, y + strip), x, x1)),
-        (img_h - y1, _safe_region(y1, min(img_h, y1 + strip), x, x1), _safe_region(max(0, y1 - strip), y1, x, x1)),
+        (x, stats.mean_std(y, y1, max(0, x - strip), x), stats.mean_std(y, y1, x, min(img_w, x + strip))),
+        (img_w - x1, stats.mean_std(y, y1, x1, min(img_w, x1 + strip)), stats.mean_std(y, y1, max(0, x1 - strip), x1)),
+        (y, stats.mean_std(max(0, y - strip), y, x, x1), stats.mean_std(y, min(img_h, y + strip), x, x1)),
+        (img_h - y1, stats.mean_std(y1, min(img_h, y1 + strip), x, x1), stats.mean_std(max(0, y1 - strip), y1, x, x1)),
     ):
-        if inner is None or inner.size == 0:
+        if inner is None:
             continue
-        inner_mean = float(np.mean(inner))
-        inner_std = float(np.std(inner))
-        if outer is None or outer.size == 0:
+        inner_mean, inner_std = inner
+        if outer is None:
             continue
-        outer_mean = float(np.mean(outer))
-        outer_std = float(np.std(outer))
+        outer_mean, outer_std = outer
         support = abs(inner_mean - outer_mean) / 22.0 + max(0.0, inner_std - outer_std) / 10.0
         edge_score += support
         if trim > strip and support < 0.75:

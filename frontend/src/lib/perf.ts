@@ -1,6 +1,21 @@
-const TRACE_ENABLED = true;
+const TRACE_ENABLED = isPerfTraceEnabled();
 const traces: { tag: string; ms: number; delta: number }[] = [];
 let baseTs = 0;
+
+function isPerfTraceEnabled() {
+  if (typeof window === "undefined") return false;
+  const explicitFlag = (window as any).__PHOTO_CALIBRATOR_PERF__ === true;
+  const storageFlag = readFlag("photo-calibrator:perf");
+  return explicitFlag || storageFlag;
+}
+
+function readFlag(key: string) {
+  try {
+    return window.localStorage?.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
 
 export function perfReset(tag: string) {
   if (!TRACE_ENABLED) return;

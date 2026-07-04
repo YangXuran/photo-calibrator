@@ -1,6 +1,7 @@
 import type { WorkbenchController } from "../hooks/useWorkbench";
 import { t } from "../i18n";
 import { CropCard } from "./CropCard";
+import { InfoGrid } from "./InfoGrid";
 import { PaneSection } from "./PaneSection";
 
 type ComposeToolPanelProps = {
@@ -11,6 +12,14 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
   const selectedFile = workbench.selectedFile;
   const collapseScope = "workbench";
   const imageTransform = selectedFile?.imageTransform ?? { rotation: 0, flipH: false, flipV: false };
+  const perspectiveCorrection = selectedFile?.crop?.perspective_correction;
+  const perspectiveDetected = Boolean(perspectiveCorrection?.enabled && perspectiveCorrection.corners?.length === 4);
+  const perspectiveApplied = Boolean(selectedFile?.result?.processing?.perspective_applied);
+  const perspectiveStatus = perspectiveApplied
+    ? t("compose.keystoneApplied")
+    : perspectiveDetected
+      ? t("compose.keystoneSuggested")
+      : t("compose.keystoneNone");
 
   return (
     <div className="pc-tool-panel" data-testid="compose-tool-panel">
@@ -99,9 +108,13 @@ export function ComposeToolPanel({ workbench }: ComposeToolPanelProps) {
         testId="compose-keystone-section"
         title={t("compose.keystoneTitle")}
       >
-        <div className="pc-placeholder-panel">
-          <p>{t("compose.pending")}</p>
-        </div>
+        <InfoGrid
+          items={[
+            { label: t("compose.keystoneStatus"), value: perspectiveStatus },
+            { label: t("compose.keystoneCorners"), value: perspectiveDetected ? String(perspectiveCorrection?.corners.length ?? 0) : "-" },
+            { label: t("crop.source"), value: selectedFile?.crop?.processing?.film_scan_source ?? "-" },
+          ]}
+        />
       </PaneSection>
     </div>
   );

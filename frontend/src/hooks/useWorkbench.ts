@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postHistoryCommit, postHistoryMove, postPreview, postSessionDelete, postSessionSave, postWorkspaceOpen, putConfig } from "../lib/api";
+import { fetchAIEvaluators, fetchCapabilities, fetchConfig, fetchHealth, fetchPlugins, fetchSessionList, fetchSessionLoad, postAIEvaluate, postCalibration, postCalibrationSession, postDocumentRender, postExport, postFilmScan, postHistoryCommit, postHistoryMove, postPreview, postPreviewBatch, postSessionDelete, postSessionSave, postWorkspaceOpen, putConfig } from "../lib/api";
 import { fileToDataUrl, isBrowserDisplayable, workspaceFileId } from "../lib/files";
 import { DEFAULT_WORKBENCH_PREFERENCES } from "../lib/layoutPresets";
 import { t } from "../i18n";
@@ -25,8 +25,10 @@ import type {
   LookAdjustments,
   ManualCurves,
   NotificationItem,
+  PerspectiveCorrection,
   PluginInfo,
   PersistedEditState,
+  PreviewPayload,
   SessionListItem,
   SessionSavePayload,
   SourceFilter,
@@ -299,6 +301,7 @@ function buildCalibrationSignature(
   toneRecovery: ToneRecoverySettings,
   cropRect?: CropRect,
   imageTransform?: ImageTransform,
+  perspectiveCorrection?: PerspectiveCorrection,
 ): string {
   return [
     mode,
@@ -313,6 +316,7 @@ function buildCalibrationSignature(
     serializeToneRecovery(toneRecovery),
     serializeCropRect(cropRect),
     serializeImageTransform(imageTransform),
+    serializePerspectiveCorrection(perspectiveCorrection),
   ].join("::");
 }
 
@@ -337,6 +341,19 @@ function serializeCropRect(cropRect?: CropRect): string {
 
 function cropRectForRequest(crop?: CropPayload): CropRect | undefined {
   return crop?.crop_rect;
+}
+
+function perspectiveCorrectionForRequest(crop?: CropPayload): PerspectiveCorrection | undefined {
+  const correction = crop?.perspective_correction;
+  return correction?.enabled && correction.corners?.length === 4 ? correction : undefined;
+}
+
+function serializePerspectiveCorrection(correction?: PerspectiveCorrection): string {
+  if (!correction?.enabled || correction.corners.length !== 4) return "perspective:none";
+  return [
+    "perspective",
+    ...correction.corners.map(([x, y]) => `${x.toFixed(5)},${y.toFixed(5)}`),
+  ].join(":");
 }
 
 function isCropApplied(item?: WorkspaceFile): boolean {
@@ -421,6 +438,7 @@ type CalibrationRequestFieldInput = {
   toneRecovery: ToneRecoverySettings;
   cropRect?: CropRect;
   imageTransform?: ImageTransform;
+  perspectiveCorrection?: PerspectiveCorrection;
   item?: WorkspaceFile;
   resolveAutoBest?: boolean;
 };
@@ -435,6 +453,7 @@ function calibrationRequestFields({
   toneRecovery,
   cropRect,
   imageTransform,
+  perspectiveCorrection,
   item,
   resolveAutoBest = false,
 }: CalibrationRequestFieldInput): Record<string, unknown> {
@@ -447,6 +466,7 @@ function calibrationRequestFields({
     tone_recovery: toneRecoveryPayloadForRequest(cloneToneRecovery(toneRecovery)),
     accelerator,
     crop_rect: cropRect,
+    perspective_correction: perspectiveCorrection,
     image_transform: imageTransformForRequest(imageTransform),
     r_curve: effectiveCurves.r,
     g_curve: effectiveCurves.g,
@@ -469,6 +489,7 @@ function calibrationRequestFieldsFromState(
     toneRecovery: cloneToneRecovery(state.toneRecovery),
     cropRect: state.cropApplied ? cropRectForRequest(state.crop) : undefined,
     imageTransform: normalizeImageTransform(state.imageTransform),
+    perspectiveCorrection: state.cropApplied ? perspectiveCorrectionForRequest(state.crop) : undefined,
     item,
     resolveAutoBest: options?.resolveAutoBest,
   });
@@ -692,7 +713,18 @@ export function useWorkbench() {
     if (activeCommitKeyRef.current === commitKey) return;
     activeCommitKeyRef.current = commitKey;
     pendingCommitRef.current = { description, actionType, state };
-    const signature = buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, state.curves, cloneLookAdjustments(state.lookAdjustments), cloneToneRecovery(state.toneRecovery), state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform));
+    const signature = buildCalibrationSignature(
+      state.mode,
+      state.strength,
+      Boolean(state.negativeBaseEnabled),
+      state.accelerator,
+      state.curves,
+      cloneLookAdjustments(state.lookAdjustments),
+      cloneToneRecovery(state.toneRecovery),
+      state.cropApplied ? cropRectForRequest(state.crop) : undefined,
+      normalizeImageTransform(state.imageTransform),
+      state.cropApplied ? perspectiveCorrectionForRequest(state.crop) : undefined,
+    );
     if (
       selectedFile?.result?.calibrated_image
       && selectedFile.calibrationSignature === signature
@@ -1228,7 +1260,20 @@ export function useWorkbench() {
         cropApplied: state.cropApplied,
         persistedState: state,
         imageTransform: normalizeImageTransform(state.imageTransform),
-        calibrationSignature: calibratedImage ? buildCalibrationSignature(state.mode, state.strength, Boolean(state.negativeBaseEnabled), state.accelerator, curves, cloneLookAdjustments(state.lookAdjustments), nextTone, state.cropApplied ? cropRectForRequest(state.crop) : undefined, normalizeImageTransform(state.imageTransform)) : undefined,
+        calibrationSignature: calibratedImage
+          ? buildCalibrationSignature(
+            state.mode,
+            state.strength,
+            Boolean(state.negativeBaseEnabled),
+            state.accelerator,
+            curves,
+            cloneLookAdjustments(state.lookAdjustments),
+            nextTone,
+            state.cropApplied ? cropRectForRequest(state.crop) : undefined,
+            normalizeImageTransform(state.imageTransform),
+            state.cropApplied ? perspectiveCorrectionForRequest(state.crop) : undefined,
+          )
+          : undefined,
         result: calibratedImage && item.result ? { ...item.result, calibrated_image: calibratedImage } : item.result,
       } : item));
     }
@@ -1327,6 +1372,7 @@ export function useWorkbench() {
     const lookSignature = serializeLookAdjustments(lookAdjustments);
     const toneSignature = serializeToneRecovery(toneRecovery);
     const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
+    const perspectiveCorrection = isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined;
     const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
     const requestFields = calibrationRequestFields({
       mode,
@@ -1338,8 +1384,9 @@ export function useWorkbench() {
       toneRecovery,
       cropRect,
       imageTransform,
+      perspectiveCorrection,
     });
-    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, lookAdjustments, toneRecovery, cropRect, imageTransform);
+    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, lookAdjustments, toneRecovery, cropRect, imageTransform, perspectiveCorrection);
     if (
       selectedFile.result?.calibrated_image
       && selectedFile.calibrationSignature === signature
@@ -1693,6 +1740,7 @@ export function useWorkbench() {
           toneRecovery,
           cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
           imageTransform: normalizeImageTransform(selectedFile.imageTransform),
+          perspectiveCorrection: isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined,
         });
         const preview = await postPreview({
           session_id: selectedFile.sessionId,
@@ -1790,6 +1838,37 @@ export function useWorkbench() {
       }),
     );
 
+    function applyPreview(item: WorkspaceFile, preview: PreviewPayload) {
+      setFiles((existing) =>
+        existing.map((entry) => {
+          if (entry.id === item.id) {
+            if (entry.displayUrl?.startsWith("blob:")) URL.revokeObjectURL(entry.displayUrl);
+            if (entry.thumbnailUrl?.startsWith("blob:") && entry.thumbnailUrl !== entry.displayUrl) URL.revokeObjectURL(entry.thumbnailUrl);
+            return {
+              ...entry,
+              sessionId: preview.session_id,
+              preview,
+              thumbnailUrl: preview.original_preview,
+              displayUrl: preview.original_preview,
+              thumbnailLoading: false,
+            };
+          }
+          return entry;
+        }),
+      );
+    }
+
+    function clearThumbnailLoading(item: WorkspaceFile) {
+      setFiles((existing) =>
+        existing.map((entry) => {
+          if (entry.id === item.id) {
+            return { ...entry, thumbnailLoading: false };
+          }
+          return entry;
+        }),
+      );
+    }
+
     async function loadOne(item: WorkspaceFile) {
       const filePath = (item.file as any)?.path as string | undefined;
       const body: Record<string, unknown> = { file_name: item.name, analysis_max_side: 320 };
@@ -1801,39 +1880,58 @@ export function useWorkbench() {
       return { item, preview: await postPreview(body) };
     }
 
-    const promises = toProcess.map(async (item) => {
+    async function loadPathBatch(items: WorkspaceFile[]) {
+      if (items.length === 0) return;
+      const byId = new Map(items.map((item) => [item.id, item]));
+      const payload = await postPreviewBatch({
+        items: items.map((item) => ({
+          client_id: item.id,
+          path: (item.file as any)?.path,
+          file_name: item.name,
+        })),
+        analysis_max_side: 320,
+        workers: Math.min(4, items.length),
+      });
+      const completed = new Set<string>();
+      for (const result of payload.results ?? []) {
+        const item = result.client_id ? byId.get(result.client_id) : undefined;
+        if (!item) continue;
+        completed.add(item.id);
+        if (result.ok === false || !result.session_id || !result.original_preview) {
+          clearThumbnailLoading(item);
+          continue;
+        }
+        applyPreview(item, {
+          session_id: result.session_id,
+          original_preview: result.original_preview,
+          processing: result.processing,
+        });
+      }
+      for (const item of items) {
+        if (!completed.has(item.id)) clearThumbnailLoading(item);
+      }
+    }
+
+    async function loadIndividually(item: WorkspaceFile) {
       try {
         const result = await loadOne(item);
-        setFiles((existing) =>
-          existing.map((entry) => {
-            if (entry.id === result.item.id) {
-              if (entry.displayUrl?.startsWith("blob:")) URL.revokeObjectURL(entry.displayUrl);
-              if (entry.thumbnailUrl?.startsWith("blob:") && entry.thumbnailUrl !== entry.displayUrl) URL.revokeObjectURL(entry.thumbnailUrl);
-              return {
-                ...entry,
-                sessionId: result.preview.session_id,
-                preview: result.preview,
-                thumbnailUrl: result.preview.original_preview,
-                displayUrl: result.preview.original_preview,
-                thumbnailLoading: false,
-              };
-            }
-            return entry;
-          }),
-        );
+        applyPreview(result.item, result.preview);
         return result;
       } catch {
-        setFiles((existing) =>
-          existing.map((entry) => {
-            if (entry.id === item.id) {
-              return { ...entry, thumbnailLoading: false };
-            }
-            return entry;
-          }),
-        );
+        clearThumbnailLoading(item);
         return null;
       }
-    });
+    }
+
+    const pathItems = toProcess.filter((item) => Boolean((item.file as any)?.path));
+    const uploadItems = toProcess.filter((item) => !((item.file as any)?.path));
+    const promises: Promise<unknown>[] = [];
+    if (pathItems.length > 0) {
+      promises.push(loadPathBatch(pathItems).catch(async () => {
+        await Promise.allSettled(pathItems.map(loadIndividually));
+      }));
+    }
+    promises.push(...uploadItems.map(loadIndividually));
 
     await Promise.allSettled(promises);
   }
@@ -1893,7 +1991,18 @@ export function useWorkbench() {
           sessionId: undefined,
           result: restoredResult,
           calibrationSignature: restoredResult && restoredState && hasAnalysisCharts(restoredResult.charts)
-            ? buildCalibrationSignature(restoredState.mode, restoredState.strength, Boolean(restoredState.negativeBaseEnabled), restoredState.accelerator, restoredState.curves, cloneLookAdjustments(restoredState.lookAdjustments), cloneToneRecovery(restoredState.toneRecovery), restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined, normalizeImageTransform(restoredState.imageTransform))
+            ? buildCalibrationSignature(
+              restoredState.mode,
+              restoredState.strength,
+              Boolean(restoredState.negativeBaseEnabled),
+              restoredState.accelerator,
+              restoredState.curves,
+              cloneLookAdjustments(restoredState.lookAdjustments),
+              cloneToneRecovery(restoredState.toneRecovery),
+              restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined,
+              normalizeImageTransform(restoredState.imageTransform),
+              restoredState.cropApplied ? perspectiveCorrectionForRequest(restoredState.crop) : undefined,
+            )
             : undefined,
           crop: restoredState?.crop,
           cropEdited: restoredState?.cropEdited,
@@ -1969,7 +2078,7 @@ export function useWorkbench() {
         cropEdited: false,
         cropApplied: false,
         calibrationSignature: undefined,
-        result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
+        result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false, perspective_applied: false } } : item.result,
       } : item));
       let payload: CropPayload;
       if (selectedFile.sessionId) {
@@ -2003,7 +2112,7 @@ export function useWorkbench() {
                 cropEdited: false,
                 cropApplied: false,
                 calibrationSignature: undefined,
-                result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
+                result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false, perspective_applied: false } } : item.result,
               }
             : item,
         ),
@@ -2035,6 +2144,7 @@ export function useWorkbench() {
           toneRecovery,
           cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
           imageTransform: normalizeImageTransform(selectedFile.imageTransform),
+          perspectiveCorrection: isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined,
           item: selectedFile,
           resolveAutoBest: true,
         }),
@@ -2280,7 +2390,7 @@ export function useWorkbench() {
               cropEdited: true,
               cropApplied: false,
               calibrationSignature: undefined,
-              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
+              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false, perspective_applied: false } } : item.result,
             }
           : item,
       ),
@@ -2313,7 +2423,7 @@ export function useWorkbench() {
               cropEdited: false,
               cropApplied: false,
               calibrationSignature: undefined,
-              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false } } : item.result,
+              result: item.result ? { ...item.result, processing: { ...item.result.processing, crop_applied: false, perspective_applied: false } } : item.result,
             }
           : item,
       ),

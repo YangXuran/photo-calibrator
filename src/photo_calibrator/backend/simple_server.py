@@ -627,6 +627,57 @@ def _crop_rect_from_body(body: dict) -> dict[str, float] | None:
     return {"left": left, "top": top, "width": width, "height": height}
 
 
+def _perspective_correction_from_body(body: dict) -> dict | None:
+    value = body.get("perspective_correction", body.get("perspective"))
+    if not isinstance(value, dict):
+        return None
+    enabled = bool(value.get("enabled", True))
+    if not enabled:
+        return None
+
+    raw_corners = value.get("corners_normalized", value.get("corners"))
+    if not isinstance(raw_corners, list) or len(raw_corners) != 4:
+        raise ValueError("perspective_correction requires four corners")
+
+    try:
+        source_width = float(value.get("source_width") or 0.0)
+        source_height = float(value.get("source_height") or 0.0)
+    except (TypeError, ValueError):
+        raise ValueError("perspective_correction source size must be numeric") from None
+
+    corners: list[tuple[float, float]] = []
+    for point in raw_corners:
+        if isinstance(point, dict):
+            x = float(point.get("x"))
+            y = float(point.get("y"))
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            x = float(point[0])
+            y = float(point[1])
+        else:
+            raise ValueError("perspective_correction corners must be [x, y] pairs")
+        corners.append((x, y))
+
+    normalized = all(-0.001 <= x <= 1.001 and -0.001 <= y <= 1.001 for x, y in corners)
+    if not normalized:
+        if source_width <= 0.0 or source_height <= 0.0:
+            raise ValueError("absolute perspective_correction corners require source_width/source_height")
+        corners = [(x / source_width, y / source_height) for x, y in corners]
+
+    clipped = [
+        (float(np.clip(x, 0.0, 1.0)), float(np.clip(y, 0.0, 1.0)))
+        for x, y in corners
+    ]
+    if len({(round(x, 5), round(y, 5)) for x, y in clipped}) < 4:
+        raise ValueError("perspective_correction corners must describe a quadrilateral")
+
+    return {
+        "enabled": True,
+        "corners": [[x, y] for x, y in clipped],
+        "source_width": source_width or None,
+        "source_height": source_height or None,
+    }
+
+
 def _apply_crop_rect(image: np.ndarray, crop_rect: dict[str, float] | None) -> np.ndarray:
     if not crop_rect:
         return image
@@ -642,6 +693,98 @@ def _apply_crop_rect(image: np.ndarray, crop_rect: dict[str, float] | None) -> n
     x1 = max(x0 + 1, min(x1, width))
     y1 = max(y0 + 1, min(y1, height))
     return np.ascontiguousarray(image[y0:y1, x0:x1])
+
+
+def _perspective_points_for_image(
+    correction: dict,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    scale_x = max(width - 1, 1)
+    scale_y = max(height - 1, 1)
+    return np.array(
+        [
+            [float(point[0]) * scale_x, float(point[1]) * scale_y]
+            for point in correction["corners"]
+        ],
+        dtype=np.float32,
+    )
+
+
+def _perspective_target_size(src: np.ndarray) -> tuple[int, int]:
+    tl, tr, br, bl = src
+    top = float(np.linalg.norm(tr - tl))
+    bottom = float(np.linalg.norm(br - bl))
+    left = float(np.linalg.norm(bl - tl))
+    right = float(np.linalg.norm(br - tr))
+    target_w = max(1, int(round((top + bottom) * 0.5)))
+    target_h = max(1, int(round((left + right) * 0.5)))
+    return target_w, target_h
+
+
+def _warp_border_value(image: np.ndarray):
+    if image.size == 0:
+        return 0.0
+    if image.ndim == 3:
+        return tuple(float(np.median(image[:, :, idx])) for idx in range(image.shape[2]))
+    return float(np.median(image))
+
+
+def _project_crop_rect_after_perspective(
+    crop_rect: dict[str, float] | None,
+    matrix: np.ndarray,
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> dict[str, float] | None:
+    if not crop_rect:
+        return None
+    src_w, src_h = source_size
+    dst_w, dst_h = target_size
+    x0 = crop_rect["left"] * max(src_w - 1, 1)
+    y0 = crop_rect["top"] * max(src_h - 1, 1)
+    x1 = (crop_rect["left"] + crop_rect["width"]) * max(src_w - 1, 1)
+    y1 = (crop_rect["top"] + crop_rect["height"]) * max(src_h - 1, 1)
+    points = np.array([[[x0, y0]], [[x1, y0]], [[x1, y1]], [[x0, y1]]], dtype=np.float32)
+    projected = cv2.perspectiveTransform(points, matrix).reshape(-1, 2)
+    left = float(np.floor(np.min(projected[:, 0]))) / max(dst_w, 1)
+    top = float(np.floor(np.min(projected[:, 1]))) / max(dst_h, 1)
+    right = float(np.ceil(np.max(projected[:, 0]))) / max(dst_w, 1)
+    bottom = float(np.ceil(np.max(projected[:, 1]))) / max(dst_h, 1)
+    left = float(np.clip(left, 0.0, 0.999))
+    top = float(np.clip(top, 0.0, 0.999))
+    right = float(np.clip(right, 0.0, 1.0))
+    bottom = float(np.clip(bottom, 0.0, 1.0))
+    if right <= left or bottom <= top:
+        return None
+    return {"left": left, "top": top, "width": right - left, "height": bottom - top}
+
+
+def _apply_perspective_correction(
+    image: np.ndarray,
+    correction: dict | None,
+) -> tuple[np.ndarray, np.ndarray | None, tuple[int, int]]:
+    if not correction:
+        height, width = image.shape[:2]
+        return image, None, (width, height)
+    height, width = image.shape[:2]
+    if width <= 1 or height <= 1:
+        return image, None, (width, height)
+    src = _perspective_points_for_image(correction, width, height)
+    target_w, target_h = _perspective_target_size(src)
+    dst = np.array(
+        [[0, 0], [target_w - 1, 0], [target_w - 1, target_h - 1], [0, target_h - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(
+        image,
+        matrix,
+        (target_w, target_h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=_warp_border_value(image),
+    )
+    return np.ascontiguousarray(warped), matrix, (target_w, target_h)
 
 
 def _image_transform_from_body(body: dict) -> dict[str, float | bool] | None:
@@ -710,6 +853,31 @@ def _apply_crop_and_transform(
 ) -> np.ndarray:
     """Apply a source-space crop before rotating or flipping its pixels."""
     return _apply_image_transform(_apply_crop_rect(image, crop_rect), image_transform)
+
+
+def _apply_geometry_corrections(
+    image: np.ndarray,
+    crop_rect: dict[str, float] | None,
+    image_transform: dict[str, float | bool] | None,
+    perspective_correction: dict | None,
+) -> np.ndarray:
+    """Apply source-space perspective, crop, then rotate/flip.
+
+    Crop rectangles are authored in original image coordinates.  When a
+    perspective correction is active, the crop corners are projected through
+    the same homography and then cropped in the rectified image.
+    """
+    if not perspective_correction:
+        return _apply_crop_and_transform(image, crop_rect, image_transform)
+    src_h, src_w = image.shape[:2]
+    corrected, matrix, target_size = _apply_perspective_correction(image, perspective_correction)
+    projected_crop = _project_crop_rect_after_perspective(
+        crop_rect,
+        matrix,
+        (src_w, src_h),
+        target_size,
+    ) if matrix is not None else crop_rect
+    return _apply_image_transform(_apply_crop_rect(corrected, projected_crop), image_transform)
 
 
 def _plugin_reader_id(body: dict) -> str | None:
@@ -2051,6 +2219,121 @@ def _preview_payload(body: dict) -> dict:
     }
 
 
+def _preview_batch_items(body: dict) -> list[dict]:
+    if isinstance(body.get("items"), list):
+        items = [dict(item) for item in body["items"] if isinstance(item, dict)]
+    elif isinstance(body.get("paths"), list):
+        items = [
+            {
+                "path": str(path),
+                "file_name": Path(str(path)).name,
+            }
+            for path in body["paths"]
+        ]
+    else:
+        items = []
+    if not items:
+        raise ValueError("preview-batch requires items or paths")
+    return items
+
+
+def _preview_batch_item_payload(index: int, item: dict, body: dict, max_side: int) -> dict:
+    request_body = {
+        key: value
+        for key, value in body.items()
+        if key not in {"items", "paths", "workers", "async"}
+    }
+    request_body.update(item)
+    request_body["analysis_max_side"] = max_side
+    payload = _preview_payload(request_body)
+    return {
+        "index": index,
+        "client_id": item.get("client_id"),
+        "path": item.get("path"),
+        "file_name": item.get("file_name"),
+        "ok": True,
+        **payload,
+    }
+
+
+def _preview_batch_cancel_result(index: int, item: dict, error: str) -> dict:
+    return {
+        "index": index,
+        "client_id": item.get("client_id"),
+        "path": item.get("path"),
+        "file_name": item.get("file_name"),
+        "cancelled": True,
+        "error": error,
+    }
+
+
+def _run_preview_batch_sync(body: dict) -> dict:
+    items = _preview_batch_items(body)
+    max_side = int(body.get("analysis_max_side", 320))
+    workers = max(1, min(int(body.get("workers", BATCH_WORKERS)), BATCH_WORKERS, len(items)))
+    results: list[dict | None] = [None] * len(items)
+
+    def one(index: int, item: dict) -> dict:
+        return _preview_batch_item_payload(index, item, body, max_side)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_map = {pool.submit(one, index, item): index for index, item in enumerate(items)}
+        for future in as_completed(future_map):
+            index = future_map[future]
+            try:
+                results[index] = future.result()
+            except Exception as exc:
+                results[index] = {
+                    "index": index,
+                    "client_id": items[index].get("client_id"),
+                    "path": items[index].get("path"),
+                    "file_name": items[index].get("file_name"),
+                    "ok": False,
+                    "error": str(exc),
+                }
+
+    return {"workers": workers, "results": results}
+
+
+def _start_preview_batch_job(body: dict) -> dict:
+    items = _preview_batch_items(body)
+    max_side = int(body.get("analysis_max_side", 320))
+    workers = max(1, min(int(body.get("workers", BATCH_WORKERS)), BATCH_WORKERS, len(items)))
+    job = _job_create(
+        "preview-batch",
+        total_items=len(items),
+        workers=workers,
+        metadata={"analysis_max_side": max_side},
+    )
+
+    def run_one(index: int, item: dict, cancel_event: Event) -> dict:
+        if cancel_event.is_set():
+            return _preview_batch_cancel_result(index, item, "cancelled")
+        result = _preview_batch_item_payload(index, item, body, max_side)
+        if cancel_event.is_set():
+            return _preview_batch_cancel_result(index, item, "cancelled")
+        return result
+
+    def cancel_result(index: int, item: dict, error: str) -> dict:
+        return _preview_batch_cancel_result(index, item, error)
+
+    _JOB_EXECUTOR.submit(
+        _run_async_batch_job,
+        job["job_id"],
+        items,
+        workers=workers,
+        run_one=run_one,
+        cancel_result=cancel_result,
+    )
+    return _job_status_snapshot(job["job_id"]) or {"error": "unknown job_id"}
+
+
+def _preview_batch_payload(body: dict) -> dict:
+    if body.get("async"):
+        return _start_preview_batch_job(body)
+    return _run_preview_batch_sync(body)
+
+
 def _calibrate_session_payload(body: dict) -> dict:
     start = time.perf_counter()
     entry = _get_analysis(str(body["session_id"]))
@@ -2062,13 +2345,19 @@ def _calibrate_session_payload(body: dict) -> dict:
 def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> dict:
     t0 = time.perf_counter()
     image_transform = _image_transform_from_body(body)
+    perspective_correction = _perspective_correction_from_body(body)
     img = entry.prepared.image
     crop_rect = _crop_rect_from_body(body)
     calibration_start = time.perf_counter()
     calibration = _apply_calibration(entry, img, body)
-    if crop_rect or image_transform:
+    if crop_rect or image_transform or perspective_correction:
         calibration = dict(calibration)
-        calibration["image"] = _apply_crop_and_transform(calibration["image"], crop_rect, image_transform)
+        calibration["image"] = _apply_geometry_corrections(
+            calibration["image"],
+            crop_rect,
+            image_transform,
+            perspective_correction,
+        )
         if bool(body.get("fast", False)) and is_dataclass(calibration["post_report"]):
             transformed = calibration["image"]
             calibration["post_report"] = replace(
@@ -2081,6 +2370,7 @@ def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> 
         metadata = dict(calibration.get("metadata") or {})
         metadata["crop_applied"] = bool(crop_rect)
         metadata["image_transform_applied"] = bool(image_transform)
+        metadata["perspective_applied"] = bool(perspective_correction)
         calibration["metadata"] = metadata
     calibration_ms = (time.perf_counter() - calibration_start) * 1000.0
     elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -2091,12 +2381,13 @@ def _calibrate_entry_payload(entry: AnalysisEntry, body: dict, start: float) -> 
     result = _calibration_response(
         entry,
         calibration,
-        _apply_crop_and_transform(img, crop_rect, image_transform),
+        _apply_geometry_corrections(img, crop_rect, image_transform, perspective_correction),
         elapsed_ms,
         include_original=include_original,
         fast=fast,
         crop_rect=crop_rect,
         image_transform=image_transform,
+        perspective_correction=perspective_correction,
     )
     resp_ms = (time.perf_counter() - resp_start) * 1000.0
     total_ms = (time.perf_counter() - t0) * 1000.0
@@ -2203,6 +2494,7 @@ def _calibration_response(
     fast: bool = False,
     crop_rect: dict[str, float] | None = None,
     image_transform: dict[str, float | bool] | None = None,
+    perspective_correction: dict | None = None,
 ) -> dict:
     prepared = entry.prepared
     accelerator = _accelerator_payload()
@@ -2290,6 +2582,8 @@ def _calibration_response(
             "crop_applied": bool(crop_rect),
             "image_transform": image_transform,
             "image_transform_applied": bool(image_transform),
+            "perspective_correction": perspective_correction,
+            "perspective_applied": bool(perspective_correction),
         },
     }
     payload["document"] = _session_document_payload(entry, {**calibration, "processing": payload["processing"]})
@@ -2370,10 +2664,11 @@ def _export_payload(body: dict) -> dict:
             raw_options=_raw_decode_options(body),
         )
     export_result = _apply_calibration(entry, source_buffer.data, body)
-    export_image = _apply_crop_and_transform(
+    export_image = _apply_geometry_corrections(
         export_result["image"],
         _crop_rect_from_body(body),
         _image_transform_from_body(body),
+        _perspective_correction_from_body(body),
     )
     buf = _export_buffer_from_result(source_buffer, export_image, body)
     writer_metadata = None
@@ -2902,10 +3197,11 @@ def _export_path_payload(body: dict) -> dict:
             ),
         )
     else:
-        export_image = _apply_crop_and_transform(
+        export_image = _apply_geometry_corrections(
             result["image"],
             _crop_rect_from_body(body),
             _image_transform_from_body(body),
+            _perspective_correction_from_body(body),
         )
         buf = _export_buffer_from_result(source_buffer, export_image, body)
         writer_metadata = _write_image_with_plugins(
@@ -2998,6 +3294,37 @@ def _image_buffer_to_export_rgb(image_buffer) -> np.ndarray:
     return rgb
 
 
+def _perspective_payload_from_corners(
+    corners: list | tuple,
+    width: int,
+    height: int,
+    *,
+    enabled: bool,
+) -> dict | None:
+    if not enabled or len(corners) != 4:
+        return None
+    normalized: list[list[float]] = []
+    for point in corners:
+        if isinstance(point, dict):
+            x = float(point.get("x", 0.0))
+            y = float(point.get("y", 0.0))
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            x = float(point[0])
+            y = float(point[1])
+        else:
+            return None
+        normalized.append([
+            float(np.clip(x / max(width - 1, 1), 0.0, 1.0)),
+            float(np.clip(y / max(height - 1, 1), 0.0, 1.0)),
+        ])
+    return {
+        "enabled": True,
+        "corners": normalized,
+        "source_width": int(width),
+        "source_height": int(height),
+    }
+
+
 def _film_scan_payload(body: dict) -> dict:
     detector_plugin = _plugin_film_scan_detector_id(body)
     entry = AnalysisSessionResolver(
@@ -3023,6 +3350,12 @@ def _film_scan_payload(body: dict) -> dict:
         crop_top = float(np.clip(float(crop_rect.get("top", 0.0)), 0.0, 1.0))
         crop_width = float(np.clip(float(crop_rect.get("width", 0.0)), 0.0, 1.0 - crop_left))
         crop_height = float(np.clip(float(crop_rect.get("height", 0.0)), 0.0, 1.0 - crop_top))
+        perspective_correction = _perspective_payload_from_corners(
+            plugin_result.corners,
+            width,
+            height,
+            enabled=plugin_result.is_perspective,
+        )
         return {
             "session_id": entry.cache_key,
             "crop_rect": {
@@ -3031,6 +3364,7 @@ def _film_scan_payload(body: dict) -> dict:
                 "width": crop_width,
                 "height": crop_height,
             },
+            "perspective_correction": perspective_correction,
             "film_scan": {
                 "angle_deg": plugin_result.angle_deg,
                 "confidence": plugin_result.confidence,
@@ -3098,10 +3432,17 @@ def _film_scan_payload(body: dict) -> dict:
     crop_rect["top"] = float(np.clip(crop_rect["top"], 0.0, 1.0))
     crop_rect["width"] = float(np.clip(crop_rect["width"], 0.0, 1.0 - crop_rect["left"]))
     crop_rect["height"] = float(np.clip(crop_rect["height"], 0.0, 1.0 - crop_rect["top"]))
+    perspective_correction = _perspective_payload_from_corners(
+        result.corners,
+        width,
+        height,
+        enabled=result.is_perspective,
+    )
 
     return {
         "session_id": entry.cache_key,
         "crop_rect": crop_rect,
+        "perspective_correction": perspective_correction,
         "film_scan": {
             "angle_deg": result.angle_deg,
             "confidence": result.confidence,
@@ -3962,6 +4303,7 @@ _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/calibrate": _calibrate_payload,
     "/api/calibrate-session": _calibrate_session_payload,
     "/api/preview": _preview_payload,
+    "/api/preview-batch": _preview_batch_payload,
     "/api/calibrate-batch": _calibrate_batch_payload,
     "/api/calibrate-path": _calibrate_path_payload,
     "/api/calibrate-paths": _calibrate_paths_payload,

@@ -208,7 +208,11 @@ export const zhCN = {
     rotationAngle: "旋转角度",
     resetTransform: "重置旋转翻转",
     keystoneTitle: "透视校正",
-    pending: "待实现",
+    keystoneStatus: "状态",
+    keystoneSuggested: "待应用",
+    keystoneApplied: "已应用",
+    keystoneNone: "未检测",
+    keystoneCorners: "四角",
   },
   crop: {
     autoSuggest: "自动建议",
@@ -226,6 +230,9 @@ export const zhCN = {
     angle: "角度",
     format: "格式",
     source: "来源",
+    perspective: "透视校正",
+    perspectiveYes: "已检测",
+    perspectiveNo: "未检测",
   },
   curves: {
     title: "曲线编辑器",

@@ -7,6 +7,7 @@ import type {
   EvaluatorInfo,
   ExportPayload,
   PluginInfo,
+  PreviewBatchPayload,
   PreviewPayload,
   SessionListPayload,
   SessionLoadPayload,
@@ -48,6 +49,16 @@ export async function fetchAIEvaluators(): Promise<{ evaluators: EvaluatorInfo[]
 export async function postPreview(body: object): Promise<PreviewPayload> {
   return expectJson(
     await fetch(apiUrl("/api/preview"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function postPreviewBatch(body: object): Promise<PreviewBatchPayload> {
+  return expectJson(
+    await fetch(apiUrl("/api/preview-batch"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

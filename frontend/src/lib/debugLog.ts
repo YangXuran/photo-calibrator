@@ -1,6 +1,21 @@
-const enabled = true; // typeof window !== "undefined" && (window as any).__PHOTO_CALIBRATOR_DEBUG__ === true;
+const enabled = isDebugLogEnabled();
 
 const buffer: { ts: number; tag: string; detail?: unknown }[] = [];
+
+function isDebugLogEnabled() {
+  if (typeof window === "undefined") return false;
+  const explicitFlag = (window as any).__PHOTO_CALIBRATOR_DEBUG__ === true;
+  const storageFlag = readFlag("photo-calibrator:debug");
+  return explicitFlag || storageFlag;
+}
+
+function readFlag(key: string) {
+  try {
+    return window.localStorage?.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
 
 export function debugLog(tag: string, detail?: unknown) {
   if (!enabled) return;

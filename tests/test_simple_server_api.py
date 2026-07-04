@@ -23,6 +23,7 @@ from photo_calibrator.backend.simple_server import (
     _ai_evaluators_payload,
     _accelerator_payload,
     _accelerator_benchmark_payload,
+    _batch_status_payload,
     _document_payload,
     _document_render_payload,
     _set_accelerator_payload,
@@ -37,6 +38,7 @@ from photo_calibrator.backend.simple_server import (
     _plugins_payload,
     _plugin_analyze_payload,
     _preview_payload,
+    _preview_batch_payload,
     _prepare_file_for_analysis,
     _prepare_uploaded_image,
     _session_load_payload,
@@ -99,6 +101,26 @@ def sample_film_data_url() -> str:
     assert ok
     payload = base64.b64encode(encoded.tobytes()).decode("ascii")
     return f"data:image/png;base64,{payload}"
+
+
+def perspective_film_data_url() -> str:
+    width, height = 800, 600
+    img = np.full((height, width, 3), 235, dtype=np.uint8)
+    cv2.rectangle(img, (80, 70), (720, 530), (15, 15, 15), thickness=28)
+    cv2.rectangle(img, (115, 105), (685, 495), (150, 120, 90), thickness=-1)
+    shrink = int(width * 0.1)
+    src = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
+    dst = np.array([[shrink, 0], [width - 1 - shrink, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(
+        img,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(235, 235, 235),
+    )
+    return data_url_from_rgb(warped)
 
 
 def large_tiff_data_url() -> str:
@@ -358,6 +380,64 @@ def test_preview_session_rehydrates_file_source_when_target_size_changes(tmp_pat
 
     assert large["session_id"] != small["session_id"]
     assert max(large["processing"]["analysis_width"], large["processing"]["analysis_height"]) >= 900
+
+
+def test_preview_batch_payload_processes_path_items_with_client_ids(tmp_path: Path) -> None:
+    paths: list[Path] = []
+    for index, color in enumerate([(118, 132, 146), (146, 118, 132)]):
+        image = np.zeros((90, 120, 3), dtype=np.uint8)
+        image[:, :] = color
+        path = tmp_path / f"preview-{index}.jpg"
+        assert cv2.imwrite(str(path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        paths.append(path)
+
+    payload = _preview_batch_payload(
+        {
+            "items": [
+                {"client_id": "first", "path": str(paths[0]), "file_name": paths[0].name},
+                {"client_id": "second", "path": str(paths[1]), "file_name": paths[1].name},
+            ],
+            "analysis_max_side": 80,
+            "workers": 2,
+        }
+    )
+
+    assert payload["workers"] == 2
+    assert [result["client_id"] for result in payload["results"]] == ["first", "second"]
+    assert all(result["ok"] for result in payload["results"])
+    assert all(result["session_id"] for result in payload["results"])
+    assert all(result["processing"]["analysis_width"] <= 80 for result in payload["results"])
+    assert_preview_url(payload["results"][0]["original_preview"])
+
+
+def test_preview_batch_async_job_reports_results(tmp_path: Path) -> None:
+    image = np.zeros((80, 120, 3), dtype=np.uint8)
+    image[:, :] = (100, 120, 150)
+    path = tmp_path / "preview-job.jpg"
+    assert cv2.imwrite(str(path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+    payload = _preview_batch_payload(
+        {
+            "async": True,
+            "items": [{"client_id": "job-item", "path": str(path), "file_name": path.name}],
+            "analysis_max_side": 80,
+            "workers": 1,
+        }
+    )
+
+    final = None
+    for _ in range(50):
+        status = _batch_status_payload({"job_id": [payload["job_id"]]})
+        if status["done"]:
+            final = status
+            break
+        time.sleep(0.01)
+
+    assert final is not None
+    assert final["state"] == "completed"
+    assert final["results"][0]["client_id"] == "job-item"
+    assert final["results"][0]["ok"] is True
+    assert_preview_url(final["results"][0]["original_preview"])
 
 
 def test_calibrate_session_reuses_cached_input_analysis() -> None:
@@ -834,6 +914,22 @@ def test_film_scan_payload_reuses_existing_session() -> None:
     assert payload["processing"]["analysis_width"] == calibration["processing"]["analysis_width"]
 
 
+def test_film_scan_payload_returns_perspective_correction_when_detected() -> None:
+    payload = _film_scan_payload(
+        {
+            "image_data": perspective_film_data_url(),
+            "file_name": "film-perspective.png",
+            "analysis_max_side": 900,
+        }
+    )
+
+    correction = payload["perspective_correction"]
+    assert payload["film_scan"]["is_perspective"] is True
+    assert correction["enabled"] is True
+    assert len(correction["corners"]) == 4
+    assert all(0.0 <= point[0] <= 1.0 and 0.0 <= point[1] <= 1.0 for point in correction["corners"])
+
+
 def test_film_scan_session_rehydrates_low_resolution_file_preview() -> None:
     image_path = Path(__file__).resolve().parents[1] / "photo_test" / "20260629103226_3_50.jpg"
     if not image_path.exists():
@@ -949,6 +1045,37 @@ def test_crop_region_rotates_with_image_in_preview_and_export() -> None:
 
     assert exported is not None
     assert exported.shape[:2] == (40, 10)
+
+
+def test_perspective_correction_is_coupled_with_crop_in_preview_and_export() -> None:
+    body = {
+        "image_data": sample_data_url_size(width=100, height=80),
+        "file_name": "perspective-crop.png",
+        "mode": "global",
+        "strength": 0.8,
+        "crop_rect": {"left": 0.25, "top": 0.2, "width": 0.5, "height": 0.6},
+        "perspective_correction": {
+            "enabled": True,
+            "corners": [[0.2, 0.0], [0.8, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        },
+    }
+
+    calibration = _calibrate_payload(body)
+
+    assert calibration["processing"]["perspective_applied"] is True
+    assert calibration["processing"]["crop_applied"] is True
+    assert calibration["output"]["width"] > 0
+    assert calibration["output"]["height"] > 0
+    assert calibration["output"]["width"] != 50 or calibration["output"]["height"] != 48
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = Path(tmp) / "perspective-crop.png"
+        payload = _export_payload({**body, "output_path": str(output_path), "format": "png"})
+        exported = cv2.imread(payload["path"], cv2.IMREAD_UNCHANGED)
+
+    assert exported is not None
+    assert exported.shape[1] == calibration["output"]["width"]
+    assert exported.shape[0] == calibration["output"]["height"]
 
 
 def test_calibrate_payload_supports_plugin_reader(monkeypatch) -> None:

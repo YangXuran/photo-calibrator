@@ -182,6 +182,8 @@ export type CalibrationPayload = {
     original_height?: number;
     crop_rect?: CropRect | null;
     crop_applied?: boolean;
+    perspective_correction?: PerspectiveCorrection | null;
+    perspective_applied?: boolean;
     analysis_basis?: string;
     negative_base_enabled?: boolean;
     requested_mode?: string;
@@ -217,6 +219,25 @@ export type PreviewPayload = {
     analysis_height?: number;
     preview_source?: string;
   };
+};
+
+export type PreviewBatchResult = Partial<PreviewPayload> & {
+  index: number;
+  client_id?: string;
+  path?: string;
+  file_name?: string;
+  ok?: boolean;
+  cancelled?: boolean;
+  error?: string;
+};
+
+export type PreviewBatchPayload = {
+  workers: number;
+  results: PreviewBatchResult[];
+  job_id?: string;
+  batch_id?: string;
+  state?: string;
+  done?: boolean;
 };
 
 export type CapabilityPayload = {
@@ -270,6 +291,13 @@ export type CropRect = {
   height: number;
 };
 
+export type PerspectiveCorrection = {
+  enabled: boolean;
+  corners: Array<[number, number]>;
+  source_width?: number | null;
+  source_height?: number | null;
+};
+
 export type ImageTransform = {
   rotation: number;
   flipH: boolean;
@@ -320,11 +348,13 @@ export type CropDiagnostics = {
 export type CropPayload = {
   session_id?: string;
   crop_rect: CropRect;
+  perspective_correction?: PerspectiveCorrection | null;
   film_scan?: {
     angle_deg?: number;
     confidence?: number;
     border_type?: string | null;
     film_format?: string | null;
+    is_perspective?: boolean;
     diagnosis?: string[];
     debug?: CropDiagnostics | null;
   };

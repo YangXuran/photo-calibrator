@@ -50,6 +50,7 @@ export function CropCard({ collapseScope, crop, cropApplied, cropEdited, onApply
           { label: t("crop.confidence"), value: crop?.film_scan?.confidence != null ? crop.film_scan.confidence.toFixed(2) : "-" },
           { label: t("crop.angle"), value: crop?.film_scan?.angle_deg != null ? `${crop.film_scan.angle_deg.toFixed(2)}°` : "-" },
           { label: t("crop.format"), value: crop?.film_scan?.film_format ?? "-" },
+          { label: t("crop.perspective"), value: crop?.perspective_correction?.enabled ? t("crop.perspectiveYes") : t("crop.perspectiveNo") },
           { label: t("crop.source"), value: crop?.processing?.film_scan_source ?? "-" },
           { label: "Left / Top", value: `${percent(crop?.crop_rect.left)} / ${percent(crop?.crop_rect.top)}` },
           { label: "Width / Height", value: `${percent(crop?.crop_rect.width)} / ${percent(crop?.crop_rect.height)}` },
