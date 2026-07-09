@@ -79,7 +79,7 @@ def _request_json(method: str, url: str, payload: dict | None = None, timeout: f
     return body
 
 
-def _wait_for_health(base_url: str, timeout: float = 25.0) -> None:
+def _wait_for_health(base_url: str, timeout: float = 90.0) -> None:
     deadline = time.time() + timeout
     last_error: Exception | None = None
     while time.time() < deadline:
@@ -93,11 +93,13 @@ def _wait_for_health(base_url: str, timeout: float = 25.0) -> None:
     raise RuntimeError(f"Backend did not become healthy at {base_url}: {last_error}")
 
 
-def _start_backend(port: int, accelerator: str) -> subprocess.Popen:
+def _start_backend(port: int, accelerator: str, log_path: Path) -> tuple[subprocess.Popen, object]:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(ROOT / "src") if not existing else f"{ROOT / 'src'}{os.pathsep}{existing}"
-    return subprocess.Popen(
+    env["PYTHONFAULTHANDLER"] = "1"
+    log_handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen(
         [
             sys.executable,
             "-m",
@@ -111,9 +113,20 @@ def _start_backend(port: int, accelerator: str) -> subprocess.Popen:
         ],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=log_handle,
         stderr=subprocess.STDOUT,
     )
+    return process, log_handle
+
+
+def _print_backend_log(log_path: Path) -> None:
+    if not log_path.exists():
+        return
+    content = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    if content:
+        print("---- backend smoke log ----", file=sys.stderr)
+        print(content[-12000:], file=sys.stderr)
+        print("---- end backend smoke log ----", file=sys.stderr)
 
 
 def _assert_preview_url(value: object) -> None:
@@ -122,13 +135,14 @@ def _assert_preview_url(value: object) -> None:
 
 
 def run_smoke(accelerator: str = "cpu-opencv") -> None:
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    process = _start_backend(port, accelerator)
-    try:
-        _wait_for_health(base_url)
-        with tempfile.TemporaryDirectory(prefix="photo-calibrator-smoke-") as tmp:
-            tmpdir = Path(tmp)
+    with tempfile.TemporaryDirectory(prefix="photo-calibrator-smoke-") as tmp:
+        tmpdir = Path(tmp)
+        port = _free_port()
+        base_url = f"http://127.0.0.1:{port}"
+        backend_log = tmpdir / "backend.log"
+        process, log_handle = _start_backend(port, accelerator, backend_log)
+        try:
+            _wait_for_health(base_url)
             pure_path = tmpdir / "generated-pure-color.png"
             border_path = tmpdir / "generated-bordered-frame.png"
             export_path = tmpdir / "generated-pure-color-calibrated.jpg"
@@ -201,13 +215,17 @@ def run_smoke(accelerator: str = "cpu-opencv") -> None:
                     sort_keys=True,
                 )
             )
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=8)
+        except Exception:
+            _print_backend_log(backend_log)
+            raise
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=8)
+            log_handle.close()
 
 
 def main() -> None:
