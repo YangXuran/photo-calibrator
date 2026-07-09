@@ -723,10 +723,27 @@ cv2.imwrite(path, img)
       await window.getByTestId("inspector-tab-adjust").click();
       const slider = window.getByTestId("strength-input");
       await expect(slider).toBeVisible();
+      await expect.poll(async () => window.evaluate(() => {
+        const records = window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? [];
+        return records.some((item) => item.accepted);
+      }), { timeout: 30000 }).toBeTruthy();
+      await window.evaluate(() => {
+        window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ = [];
+      });
 
       let commitRequests = 0;
+      const calibrationRequests = [];
       window.on("request", (request) => {
         if (request.url().endsWith("/api/history/commit")) commitRequests += 1;
+        if (/\/api\/calibrate(-session)?$/.test(new URL(request.url()).pathname)) {
+          const body = request.postDataJSON();
+          calibrationRequests.push({
+            endpoint: new URL(request.url()).pathname,
+            fast: body.fast,
+            hasPath: Boolean(body.path),
+            sessionId: body.session_id,
+          });
+        }
       });
       const box = await slider.boundingBox();
       expect(box).not.toBeNull();
@@ -734,6 +751,14 @@ cv2.imwrite(path, img)
       await window.mouse.move(box.x + box.width * 0.67, box.y + box.height / 2);
       await window.mouse.down();
       await window.mouse.move(box.x + box.width * 0.46, box.y + box.height / 2, { steps: 12 });
+      await expect.poll(async () => window.evaluate(() => {
+        const records = window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? [];
+        return records.some((item) => item.fast && item.accepted);
+      }), { timeout: 5000 }).toBeTruthy();
+      const dragTimings = await window.evaluate(() => window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? []);
+      expect(dragTimings.some((item) => item.fast && item.accepted && item.analysisWidth <= 640 && item.analysisHeight <= 640)).toBeTruthy();
+      expect(calibrationRequests.some((item) => item.endpoint === "/api/calibrate-session" && item.fast === true && item.sessionId)).toBeTruthy();
+      expect(calibrationRequests.some((item) => item.endpoint === "/api/calibrate" && item.hasPath)).toBeFalsy();
       await window.mouse.up();
       const committedStrength = await slider.inputValue();
       const commitBody = await (await commitResponse).json();

@@ -74,6 +74,14 @@ AUTO_BEST_CANDIDATES = (
     CalibrationMode.SELECTIVE,
     CalibrationMode.FILM,
 )
+AUTO_STYLE_PRESETS = {
+    "custom",
+    "neutral",
+    "film",
+    "portrait",
+    "slide",
+    "soft",
+}
 
 cv2.setUseOptimized(True)
 try:
@@ -1833,11 +1841,15 @@ def _calibration_params_from_body(body: dict) -> CalibrationParams:
 
     requested_mode = str(body.get("mode", CalibrationMode.GLOBAL.value))
     mode = CalibrationMode.GLOBAL if requested_mode == AUTO_BEST_MODE else CalibrationMode(requested_mode)
+    auto_style = _auto_style_from_body(body)
+    strength = float(body.get("strength", 0.8))
+    if auto_style is not None:
+        strength = float(auto_style["neutralization"])
     return CalibrationParams(
         mode=mode,
         a_shift=_opt_float("a_shift"),
         b_shift=_opt_float("b_shift"),
-        strength=float(body.get("strength", 0.8)),
+        strength=strength,
         highlight_pct=float(body.get("highlight_pct", 55.0)),
         sat_pct=float(body.get("sat_pct", 25.0)),
         curve_low_pct=float(body.get("curve_low_pct", 1.0)),
@@ -1851,12 +1863,143 @@ def _calibration_params_from_body(body: dict) -> CalibrationParams:
     )
 
 
+def _clamp_float(value: object, low: float, high: float, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if not np.isfinite(number):
+        number = default
+    return float(np.clip(number, low, high))
+
+
+def _auto_style_from_body(body: dict) -> dict[str, object] | None:
+    raw = body.get("auto_style") or body.get("autoStyle")
+    if raw in (None, False):
+        return None
+    if not isinstance(raw, dict):
+        raw = {}
+    preset = str(raw.get("preset", "neutral")).strip().lower().replace("_", "-")
+    if preset not in AUTO_STYLE_PRESETS:
+        preset = "neutral"
+    neutralization = _clamp_float(raw.get("neutralization", body.get("strength", 0.8)), 0.0, 1.2, 0.8)
+    look_preservation = _clamp_float(raw.get("look_preservation", raw.get("lookPreservation", 0.0)), 0.0, 1.0, 0.0)
+    warmth_bias = _clamp_float(raw.get("warmth_bias", raw.get("warmthBias", 0.0)), -1.0, 1.0, 0.0)
+    tint_bias = _clamp_float(raw.get("tint_bias", raw.get("tintBias", 0.0)), -1.0, 1.0, 0.0)
+    tone_style = _clamp_float(raw.get("tone_style", raw.get("toneStyle", 0.0)), -1.0, 1.0, 0.0)
+    highlight_protection = _clamp_float(raw.get("highlight_protection", raw.get("highlightProtection", 0.0)), 0.0, 1.0, 0.0)
+    skin_priority = _clamp_float(raw.get("skin_priority", raw.get("skinPriority", 0.0)), 0.0, 1.0, 0.0)
+    return {
+        "preset": preset,
+        "neutralization": neutralization,
+        "look_preservation": look_preservation,
+        "warmth_bias": warmth_bias,
+        "tint_bias": tint_bias,
+        "tone_style": tone_style,
+        "highlight_protection": highlight_protection,
+        "skin_priority": skin_priority,
+    }
+
+
+def _merge_auto_style_look(look: dict, auto_style: dict[str, object] | None) -> dict:
+    normalized = normalize_look_adjustments(look)
+    if auto_style is None:
+        return normalized
+
+    warmth_bias = float(auto_style["warmth_bias"])
+    tint_bias = float(auto_style["tint_bias"])
+    look_preservation = float(auto_style["look_preservation"])
+    tone_style = float(auto_style["tone_style"])
+    preset = str(auto_style["preset"])
+
+    normalized["lab_bias"]["a"] = float(np.clip(normalized["lab_bias"]["a"] + tint_bias * 7.0, -40.0, 40.0))
+    normalized["lab_bias"]["b"] = float(np.clip(normalized["lab_bias"]["b"] + warmth_bias * 8.0, -40.0, 40.0))
+
+    grade = normalized["color_grade"]
+    preserve_sat = look_preservation * 0.22
+    clarity = max(0.0, tone_style)
+    softness = max(0.0, -tone_style)
+    clarity_sat = clarity * 0.18
+    softness_lum = softness * 0.16
+    grade["blending"] = min(1.0, float(grade["blending"]) + look_preservation * 0.16)
+    if preset == "film":
+        grade["shadows"]["hue"] = 220.0
+        grade["shadows"]["saturation"] = min(1.0, grade["shadows"]["saturation"] + 0.08 + preserve_sat * 1.05)
+        grade["highlights"]["hue"] = 45.0
+        grade["highlights"]["saturation"] = min(1.0, grade["highlights"]["saturation"] + 0.06 + preserve_sat)
+        grade["global"]["saturation"] = min(1.0, grade["global"]["saturation"] + clarity_sat * 0.45)
+    elif preset == "slide":
+        grade["global"]["saturation"] = min(1.0, grade["global"]["saturation"] + 0.09 + clarity_sat)
+        grade["highlights"]["luminance"] = min(1.0, grade["highlights"]["luminance"] + clarity * 0.05)
+    elif preset == "portrait":
+        grade["midtones"]["hue"] = 32.0
+        grade["midtones"]["saturation"] = min(1.0, grade["midtones"]["saturation"] + 0.055 + preserve_sat * 0.25)
+    elif preset == "soft":
+        grade["global"]["luminance"] = min(1.0, grade["global"]["luminance"] + 0.035 + softness_lum * 0.65)
+        grade["shadows"]["luminance"] = min(1.0, grade["shadows"]["luminance"] + softness * 0.05)
+    elif look_preservation > 0.001 or abs(tone_style) > 0.001:
+        grade["global"]["saturation"] = min(1.0, grade["global"]["saturation"] + look_preservation * 0.08 + clarity_sat * 0.8)
+        grade["midtones"]["saturation"] = min(1.0, grade["midtones"]["saturation"] + preserve_sat * 0.28)
+    if clarity > 0.001:
+        grade["shadows"]["luminance"] = max(-1.0, grade["shadows"]["luminance"] - clarity * 0.05)
+        grade["highlights"]["luminance"] = min(1.0, grade["highlights"]["luminance"] + clarity * 0.045)
+    if softness > 0.001 and preset != "soft":
+        grade["global"]["luminance"] = min(1.0, grade["global"]["luminance"] + softness_lum * 0.45)
+        grade["shadows"]["luminance"] = min(1.0, grade["shadows"]["luminance"] + softness * 0.035)
+    return normalize_look_adjustments(normalized)
+
+
+def _merge_auto_style_tone(tone: dict, auto_style: dict[str, object] | None) -> dict:
+    if auto_style is None:
+        return tone
+
+    merged = dict(tone)
+    tone_style = float(auto_style["tone_style"])
+    highlight_protection = float(auto_style["highlight_protection"])
+    look_preservation = float(auto_style["look_preservation"])
+    preset = str(auto_style["preset"])
+    style_wants_tone = (
+        abs(tone_style) > 0.025
+        or highlight_protection > 0.18
+        or look_preservation > 0.45
+        or preset in {"slide", "soft"}
+    )
+    if style_wants_tone and not merged.get("enabled"):
+        merged["enabled"] = True
+        merged["auto"] = True
+
+    if not merged.get("enabled"):
+        return merged
+
+    base_strength = float(merged.get("strength", 0.45))
+    clarity = max(0.0, tone_style)
+    softness = max(0.0, -tone_style)
+    strength_delta = clarity * 0.32 + softness * 0.08 + highlight_protection * 0.09 + look_preservation * 0.04
+    if preset == "soft":
+        strength_delta -= 0.06
+    merged["strength"] = float(np.clip(base_strength + strength_delta, 0.0, 1.0))
+    if tone_style > 0.05:
+        merged["local_contrast"] = float(np.clip(0.06 + tone_style * 0.22, 0.0, 0.34))
+    elif tone_style < -0.05:
+        merged["local_contrast"] = float(np.clip(0.025 - softness * 0.018, 0.0, 0.06))
+    if highlight_protection > 0.001 and merged.get("white_point") is None:
+        merged["white_point"] = float(np.clip(0.985 - highlight_protection * 0.09, 0.86, 1.0))
+    if clarity > 0.05 and merged.get("black_point") is None:
+        merged["black_point"] = float(np.clip(0.012 + clarity * 0.035, 0.0, 0.08))
+    if tone_style < -0.05 and merged.get("midtone") is None:
+        merged["midtone"] = float(np.clip(0.5 + softness * 0.08, 0.35, 0.68))
+    return merged
+
+
 def _negative_base_enabled(body: dict) -> bool:
     return bool(body.get("negative_base", body.get("negative_base_enabled", False)))
 
 
 def _look_adjustments_from_body(body: dict) -> dict:
-    return normalize_look_adjustments(body.get("look") or body.get("look_adjustments") or {})
+    return _merge_auto_style_look(
+        body.get("look") or body.get("look_adjustments") or {},
+        _auto_style_from_body(body),
+    )
 
 
 def _tone_recovery_from_body(body: dict) -> dict:
@@ -1873,7 +2016,7 @@ def _tone_recovery_from_body(body: dict) -> dict:
     for key in ("strength", "black_point", "white_point", "midtone", "local_contrast"):
         if raw.get(key) is not None:
             payload[key] = float(raw[key])
-    return payload
+    return _merge_auto_style_tone(payload, _auto_style_from_body(body))
 
 
 def _plugin_calibrator_id(body: dict) -> str | None:
@@ -1938,12 +2081,40 @@ def _is_identity_curve(curve: list[list[float]] | None) -> bool:
     return True
 
 
-def _auto_best_score(input_report, output_report) -> float:
+def _auto_best_score(
+    input_report,
+    output_report,
+    *,
+    mode: CalibrationMode | None = None,
+    auto_style: dict[str, object] | None = None,
+) -> float:
     """Lower is better; prefer low residual cast without excessive RGB imbalance."""
-    cast_score = float(output_report.lab.cast_strength)
+    neutralization_weight = 1.0
+    style_bias = 0.0
+    if auto_style is not None:
+        look_preservation = float(auto_style["look_preservation"])
+        tone_style = float(auto_style["tone_style"])
+        highlight_protection = float(auto_style["highlight_protection"])
+        skin_priority = float(auto_style["skin_priority"])
+        neutralization_weight = max(0.7, 1.0 - look_preservation * 0.22 - max(0.0, -tone_style) * 0.08)
+        if mode == CalibrationMode.PRESERVE_SPLIT_TONE:
+            style_bias -= look_preservation * 0.65 + highlight_protection * 0.18
+        elif mode == CalibrationMode.FILM:
+            style_bias -= look_preservation * 0.58 + max(0.0, tone_style) * 0.18
+        elif mode == CalibrationMode.SKIN_PRIORITY:
+            style_bias -= skin_priority * 0.72
+        elif mode == CalibrationMode.HIGHLIGHTS_ONLY:
+            style_bias -= highlight_protection * 0.55
+        elif mode == CalibrationMode.TONE_ZONE:
+            style_bias -= max(0.0, tone_style) * 0.35 + highlight_protection * 0.12
+        elif mode == CalibrationMode.MIDTONES_ONLY:
+            style_bias -= max(0.0, -tone_style) * 0.22 + look_preservation * 0.18
+        elif mode == CalibrationMode.SELECTIVE:
+            style_bias -= skin_priority * 0.22 + look_preservation * 0.1
+    cast_score = float(output_report.lab.cast_strength) * neutralization_weight
     rgb_spread_score = float(output_report.channel_spread) / 32.0
     regression_penalty = max(0.0, float(output_report.lab.cast_strength) - float(input_report.lab.cast_strength)) * 2.0
-    return cast_score + rgb_spread_score + regression_penalty
+    return cast_score + rgb_spread_score + regression_penalty + style_bias
 
 
 def _apply_core_calibration(
@@ -1953,6 +2124,7 @@ def _apply_core_calibration(
     fast: bool = False,
     requested_mode: str | None = None,
     negative_base: bool = False,
+    auto_style: dict[str, object] | None = None,
 ) -> dict:
     prepared = entry.prepared
     requested_mode = requested_mode or params.mode.value
@@ -1987,10 +2159,17 @@ def _apply_core_calibration(
                 reuse_input_analysis=False,
                 analyze_output=True,
             )
-            score = _auto_best_score(eval_report, eval_result.post_report)
+            base_score = _auto_best_score(eval_report, eval_result.post_report)
+            score = _auto_best_score(
+                eval_report,
+                eval_result.post_report,
+                mode=candidate_mode,
+                auto_style=auto_style,
+            )
             candidates.append({
                 "mode": candidate_mode.value,
                 "score": score,
+                "base_score": base_score,
                 "input_strength": eval_report.lab.cast_strength,
                 "output_strength": eval_result.post_report.lab.cast_strength,
                 "reduction_pct": eval_result.reduction_pct,
@@ -2018,6 +2197,8 @@ def _apply_core_calibration(
             "auto_best_score": best_score,
             "auto_best_eval_max_side": AUTO_BEST_EVAL_MAX_SIDE,
         }
+        if auto_style is not None:
+            metadata["auto_style_preset"] = str(auto_style["preset"])
         if use_negative_base:
             metadata["analysis_basis"] = "negative-positive-base"
             metadata["negative_base_enabled"] = "true"
@@ -2035,6 +2216,7 @@ def _apply_core_calibration(
                 "selected_mode": best_params.mode.value,
                 "score": best_score,
                 "eval_max_side": AUTO_BEST_EVAL_MAX_SIDE,
+                "auto_style": auto_style,
                 "candidates": candidates,
             },
         }
@@ -2080,6 +2262,8 @@ def _apply_core_calibration(
         except Exception:
             pass
     metadata = {**result.metadata, "calibration_source": "core"}
+    if auto_style is not None:
+        metadata["auto_style_preset"] = str(auto_style["preset"])
     if use_negative_base:
         metadata["analysis_basis"] = "negative-positive-base"
         metadata["negative_base_enabled"] = "true"
@@ -2100,6 +2284,7 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
     calibrator_id = _plugin_calibrator_id(body)
     requested_mode = str(body.get("mode", params.mode.value))
     negative_base = _negative_base_enabled(body)
+    auto_style = _auto_style_from_body(body)
     look_adjustments = _look_adjustments_from_body(body)
     tone_recovery = _tone_recovery_from_body(body)
     fast = bool(body.get("fast", False)) and requested_mode != AUTO_BEST_MODE
@@ -2113,6 +2298,7 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
             fast=fast,
             requested_mode=requested_mode,
             negative_base=negative_base,
+            auto_style=auto_style,
         )
     if not is_identity_look(look_adjustments):
         payload["image"] = ensure_uint8_rgb(apply_look_adjustments(payload["image"], look_adjustments))
@@ -2156,6 +2342,9 @@ def _apply_calibration(entry: AnalysisEntry, image: np.ndarray, body: dict) -> d
     payload["calibrator_plugin"] = calibrator_id
     payload["look_adjustments"] = look_adjustments
     payload.setdefault("tone_recovery", tone_recovery)
+    if auto_style is not None:
+        payload["auto_style"] = auto_style
+        payload.setdefault("metadata", {})["auto_style"] = auto_style
     return payload
 
 
@@ -2574,6 +2763,7 @@ def _calibration_response(
             "auto_best_selected_mode": metadata.get("auto_best_selected_mode"),
             "auto_best_score": metadata.get("auto_best_score"),
             "auto_best": calibration.get("auto_best"),
+            "auto_style": calibration.get("auto_style"),
             "look_enabled": metadata.get("look_enabled") == "true",
             "look_adjustments": calibration.get("look_adjustments"),
             "tone_recovery_enabled": metadata.get("tone_recovery_enabled") == "true",

@@ -4,7 +4,7 @@
 
 ## 0. 当前状态
 
-仓库已经进入可运行的 Electron 桌面产品阶段（React + Python backend）。`npm run dev` 会启动 Vite、Electron 和本地后端，HTTP API 默认端口为 8766。2026-06-27 的主流程已经覆盖文件夹导入、自适应高清预览、偏色分析、负片校准、曲线、自动裁切、显式应用裁切、旋转/翻转、持久化历史、批量导出、macOS arm64 DMG 构建，以及 viewer overlay/滑动对比的关键稳定性修复。根目录 `README.md` 是项目对外简洁介绍；详细状态仍以 `STATUS.md` 为准。后续开发必须区分“当前产品主流程”和仍保留的 `web/` 旧轻量界面；产品 UI 以 `frontend/` 为准。历史核心文件仍可作为算法来源参考：
+仓库已经进入可运行的 Electron 桌面产品阶段（React + Python backend）。`npm run dev` 会启动 Vite、Electron 和本地后端，HTTP API 默认端口为 8766。2026-07-08 的主流程已经覆盖文件夹导入、自适应高清预览、路径缩略图批量预览、偏色分析、负片校准、自动校准可视化风格层、曲线、自动裁切、透视校正联动、显式应用裁切、旋转/翻转、持久化历史、批量导出、macOS arm64 DMG 构建，以及 viewer overlay/滑动对比的关键稳定性修复。根目录 `README.md` 是项目对外简洁介绍；详细状态仍以 `STATUS.md` 为准。后续开发必须区分“当前产品主流程”和仍保留的 `web/` 旧轻量界面；产品 UI 以 `frontend/` 为准。历史核心文件仍可作为算法来源参考：
 
 - `color_cast_detector.py`: 偏色检测、肤色/亮度分区、CCC、PCI、诱导效应、Matplotlib 报告图。
 - `color_cast_calibrator.py`: 基于 Lab a*/b* 偏移的全局/中间调/肤色/高光/保留分离色调校准。
@@ -24,8 +24,8 @@
 
 已实现的性能/加速基础：
 
-- CPU 多线程：OpenCV optimized + 线程数配置；本地路径批处理 API `/api/calibrate-paths` 和上传批处理 API `/api/calibrate-batch` 都使用 worker 并行，并保持输入顺序返回结果。
-- 缓存：本地预览 JPEG 缓存、内存 `PreparedImage`/输入分析/静态图表缓存；同一 `cache_key` 有 per-key lock，重复上传/重复路径并行处理只构建一次分析结果；前端通过 `session_id` 调参，滑杆 `input` 防抖调用 `/api/calibrate-session`，不重解码。
+- CPU 多线程：OpenCV optimized + 线程数配置；本地路径批处理 API `/api/calibrate-paths`、上传批处理 API `/api/calibrate-batch` 和路径预览批处理 API `/api/preview-batch` 都使用 worker 并行，并保持输入顺序返回结果。
+- 缓存：本地预览 JPEG 缓存、内存 `PreparedImage`/输入分析/静态图表缓存；同一 `cache_key` 有 per-key lock，重复上传/重复路径并行处理只构建一次分析结果；前端通过 `session_id` 调参，滑杆 `input` 由 `InteractivePreviewController` 统一做 session gate、fast 请求合并、stale-frame guard 和 timing 监控后调用 `/api/calibrate-session`，不重解码；路径缩略图通过 `/api/preview-batch` 合并请求，普通上传仍走单图 fallback；编辑区 adaptive preview 在交互后回填 640-2400 px 高清预览。
 - Accelerator 后端：`cpu-opencv`、`opencl-umat`、可选 `torch-cuda`/`torch-mps`/`metal-mps`。没有 GPU 或依赖时必须自动 fallback 到 CPU。
 - 高收益算子接口：resize、RGB/Lab、Lab/RGB、曲线 LUT、矩阵、直方图、3D LUT 已进入 accelerator 调用面。macOS 实测 OpenCL 和逐算子 Torch 往返慢于优化 CPU，因此 `auto` 使用 `hybrid-cpu-mps`：OpenCV CPU 处理常规算子，仅将明显更快的 3D LUT 交给 MPS。
 - Accelerator 验证：
@@ -37,14 +37,14 @@
 Phase 4 新增能力：
 
 - **肤色检测增强** (P0): Haar cascade 人脸检测 → CrCb 高斯模型自适应采样 → 马氏距离全图扩展；无人脸时 YCrCb 固定阈值回退。`_find_haarcascade()` 跨发行版兼容 pip/Fedora/Debian。
-- **胶片扫描** (P0): `film_scan.py` — Canny 边缘 → Hough 直线 → 四边形拟合 → 旋转角/裁切矩形；透视畸变检测 + 3×3 校正矩阵；11 种胶片格式识别；裁切质量自动评估。
+- **胶片扫描** (P0): `film_scan.py` — Canny/高频边缘 → Hough 直线 → 四边形拟合 → 边缘带候选/加权裁切 → 齿孔排除 → 旋转角/裁切矩形；透视畸变检测 + normalized `perspective_correction` + 3×3 校正回放；胶片格式识别（含常见 120 比例推断）；裁切质量自动评估。
 - **插件系统** (P1): `plugins/` — hook 协议 (AnalyzerHook/CalibratorHook/ImageReaderHook/ImageWriterHook/FilmScanDetectorHook/AIEvaluatorHook)；manifest 校验 + `@register` 装饰器；`PluginManager` 发现/加载/生命周期/hook 查询；内置 `noop` stub。
 - **AI 评估** (P1): `ai/` — `EvalInput`/`EvalOutput` 数据模型；provider-agnostic 提示词模板；`OpenAICompatibleProvider` 一个类覆盖 Ollama/llama.cpp/vLLM/OpenAI/DeepSeek/Groq（零新依赖，stdlib urllib）；`MockProvider` 测试用。
 
 当前已经确认的集成现实：
 
-- **已接入产品主流程**: 基础/负片校准、session 与自适应预览、缓存、结构化分析图表、TIFF/RAW/HDR/EXR I/O、原图全分辨率导出回放、film scan API、插件 service、AI evaluation API/UI、Electron bridge、文件夹数据库和持久化撤销/重做。
-- **裁切与对比契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。预览和导出统一执行“校准 -> 原图坐标裁切 -> 翻转/旋转”。Original/Calibrated 使用同一裁切几何，滑动对比只改变 `clip-path`，不得改变图片尺寸。
+- **已接入产品主流程**: 基础/负片校准、自动校准 `auto_style` 可视化控制（预设、风格地图、Lab 色彩罗盘）、session 与自适应预览、路径缩略图批量预览、缓存、结构化分析图表、TIFF/RAW/HDR/EXR I/O、原图全分辨率导出回放、film scan API、插件 service、AI evaluation API/UI、Electron bridge、文件夹数据库和持久化撤销/重做。
+- **裁切、透视与对比契约**: Detect 只生成可编辑建议；用户点击“应用裁切”后才写入输出历史。若检测到透视畸变，`/api/film-scan` 返回 `perspective_correction`，前端必须把它和 `crop_rect` 作为一个几何建议一起保存。预览和导出统一执行“校准 -> 透视校正（如有）-> 将原图坐标裁切框投影到校正后图像并裁切 -> 翻转/旋转”。不得实现“裁切完再透视”的二次流程。Original/Calibrated 使用同一几何回放，滑动对比只改变 `clip-path`，不得改变图片尺寸。
 - **Viewer overlay 契约**: `ViewerStageMedia` 是唯一图片 zoom/pan transform 层。Loading/busy HUD、分割线控件等屏幕级 overlay 必须放在 `ViewerStageSurface` 或独立 stage overlay，不得作为 `ViewerStageMedia` 子元素跟随图片缩放。滑动对比中的曲线/色轮 live preview 只能渲染在 calibrated 图层内，不能整屏覆盖 original/calibrated 两侧。图片 transform 层不得恢复 `transition: transform`，否则 split divider 会和图片缩放不同步。
 - **历史契约**: 滑杆/曲线拖动期间只预览，pointer/key release 后提交一次；每个文件独立历史，数据库最多保留 50 条并持久化 redo 游标。
 - **仍需外部环境确认**: 真实云 AI provider、不同相机 RAW profile、签名/公证后的 DMG 和 Linux 分发。Apple Silicon MPS 已完成本机实测。
@@ -60,7 +60,7 @@ Phase 4 新增能力：
 
 ### 当前后端剩余重点
 
-以下是按 2026-06-27 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O 或基础 session 功能。
+以下是按 2026-07-04 当前代码状态整理的 backend 剩余工作。它们不是同一优先级，后续 agent 应优先从 P1 开始，而不是再回到已经完成的基础 I/O、基础 session、路径缩略图批处理或自动透视回放功能。
 
 #### P1: 发布质量与专业色彩管理
 
@@ -353,12 +353,13 @@ plugins/
 5. 估计旋转角和透视变换。
 6. 自动裁切并保留可调边距。
 7. UI 显示检测框，允许用户拖拽四角。
+8. 若存在透视畸变，检测接口返回 normalized `perspective_correction`；用户点击“应用裁切”时必须和 `crop_rect` 一起进入预览/导出请求。
 
 失败回退：
 
 - 若置信度低，不自动应用，只显示建议框。
 - 负片、黑边、白边、相框、胶片齿孔场景都要作为测试样例。
-- 胶片翻拍裁切是独立 pipeline operation，不应写死在导入阶段。
+- 胶片翻拍裁切/透视是独立几何操作，不应写死在导入阶段。当前自动检测建议已经接入预览/导出回放；后续仍需把手动四角编辑和 `pipeline.Document` 一等 operation 化。
 
 ## 10. AI 评估接入
 
@@ -540,6 +541,7 @@ AI 模块应设计为 provider-agnostic：
 - Electron E2E 使用 `frontend/dist`，不是 Vite dev server 的源码；凡是改 `frontend/src` 后做 Electron E2E，必须先跑 `npm --prefix frontend run build`。
 - Accelerator 验证：`PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmark --backend auto --image-side 64 --lut-size 7 --iterations 1`
 - 当前 benchmark/capability 操作至少包含：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`histogram`、`3d-lut`、`rgb-gray`、`gaussian-blur`、`sobel-profile`。测试应检查必要子集或同步完整集合，不能保留旧的精确集合断言。
+- 2026-07-04 最新本机验证：`.venv/bin/python -m pytest -q` -> `341 passed, 1 warning`；`tests/test_simple_server_api.py` -> `104 passed`；`tests/test_film_scan.py` -> `20 passed`；`npm run test:ui` -> `14 passed`。
 - 当前状态文档以 `STATUS.md` 为准；如果代码和本文档冲突，以实际测试结果和代码路径为准，不以旧阶段宣称为准。
 
 ### 15.3 Agent A: Accelerator / Performance
@@ -623,9 +625,9 @@ AI 模块应设计为 provider-agnostic：
 可以做：
 
 - 改进 RGB 曲线、矩阵、3D LUT、film mode。
-- 新增胶片边框检测、旋转角估计、裁切框建议。
+- 新增胶片边框检测、旋转角估计、裁切框建议、齿孔排除和透视畸变识别。
 - 增加肤色检测稳健性和分区指标。
-- 为 backend 暴露 film scan 所需结构化字段，但不要自己改 Web UI 交互。
+- 为 backend 暴露 film scan 所需结构化字段，包括 `is_perspective` 和可回放的四角/矩阵信息，但不要自己改 Web UI 交互。
 
 不要做：
 
@@ -636,7 +638,7 @@ AI 模块应设计为 provider-agnostic：
 验收：
 
 - `python3 -m pytest tests/test_calibration.py tests/test_cast_detection.py`
-- 胶片扫描新增功能必须用合成图覆盖：水平、轻微旋转、黑边/白边、低置信度失败回退。
+- 胶片扫描新增功能必须用合成图覆盖：水平、轻微旋转、黑边/白边、齿孔排除、透视畸变、低置信度失败回退。
 
 ### 15.6 Agent D: Backend API / Pipeline / Cache
 
@@ -656,6 +658,8 @@ AI 模块应设计为 provider-agnostic：
 - 增强 session 生命周期、缓存统计、缓存清理 API。
 - 增加 sidecar 保存/加载 API。
 - 接入 film scan API。
+- 维护 `/api/preview-batch`、async batch job/status/cancel 和 per-key analysis cache 的兼容性。
+- 维护后端几何回放契约：`crop_rect` 与 `perspective_correction` 必须一起回放，预览和导出使用同一 `_apply_geometry_corrections` 路径。
 - 把主导出链逐步切换到原图重放，而不是分析图导出。
 - 作为 backend owner 负责 plugin / AI / io 新能力的 route 集成。
 
@@ -686,9 +690,9 @@ AI 模块应设计为 provider-agnostic：
 
 - 改进图表、布局、对比模式、遮罩显示。
 - 增加批处理上传 UI，调用 `/api/calibrate-batch`。
-- 增加预览加载态、错误态、缩略图质量。
+- 增加预览加载态、错误态、缩略图质量；路径缩略图优先合并到 `/api/preview-batch`，上传文件保留单图 fallback。
 - 增加 `data-testid` 并扩展 Playwright 覆盖。
-- 维护真实 film scan、裁切应用、旋转/翻转、持久化历史和导出交互。
+- 维护真实 film scan、裁切应用、自动透视状态、旋转/翻转、持久化历史和导出交互。
 - 维护 Analysis | Viewer | Inspector 信息架构，禁止重新引入重复面板。
 - 维护 viewer stage layering：屏幕级 HUD/控件不得放进 `ViewerStageMedia`；split 模式 live preview 必须只覆盖 calibrated 图层；`pc-stage-media` 不得恢复 transform 过渡动画。
 
@@ -758,43 +762,29 @@ AI 模块应设计为 provider-agnostic：
 
 ## 16. 国际化 (i18n)
 
-**代码语言：英文。UI 显示语言：通过 `web/i18n.js` 翻译层输出。**
+**代码语言：英文。产品 UI 当前以中文显示，文案集中在 `frontend/src/i18n/zh-CN.ts`。**
 
 ### 规则
 
-- 所有源代码（Python/JS/HTML 属性名/注释/变量名/API 字段）**只能用英文**。
-- 所有用户可见的 UI 文本必须通过 `web/i18n.js` 的 `t("key")` 获取，**禁止硬编码显示文案**。
+- 所有源代码（Python/TypeScript/HTML 属性名/注释/变量名/API 字段）默认使用英文。
+- `frontend/` 当前 Electron 产品 UI 的用户可见文本必须通过 `frontend/src/i18n/index.ts` 的 `t("key")` 获取，禁止在组件里硬编码显示文案。
+- 新增产品 UI 文案时修改 `frontend/src/i18n/zh-CN.ts`；旧 `web/` 轻量界面若被修改，再同步它自己的 legacy 文案层。
 - 后端 API 响应中的标签字段（如 chart `name`）默认英文；如需多语言，前端在渲染时做映射。
 
 ### i18n 使用
 
-```js
-import { t, setLocale, translateDOM } from "../i18n.js";
+```ts
+import { t } from "../i18n";
 
-// JS 中使用
-element.textContent = t("calibration.mode.global");
-
-// HTML 中使用 data-i18n 属性
-<span data-i18n="toolbar.openFolder">Open Folder</span>
-
-// 页面加载后调用
-translateDOM();
+const label = t("crop.autoSuggest");
 ```
 
 ### 添加新文案
 
-1. 在 `web/i18n.js` 的 `messages.en` 和 `messages.zh` 中各加一条。
-2. Key 命名：`模块.含义`，如 `calibration.mode.global`、`crop.showBox`。
-3. UI 中使用 `t("key")` 或 `data-i18n="key"` 引用。
-
-### 切换语言
-
-```js
-import { setLocale } from "./i18n.js";
-setLocale("zh"); // 切换到中文，自动调用 translateDOM()
-```
-
-默认语言为 `en`。
+1. 在 `frontend/src/i18n/zh-CN.ts` 中添加 key。
+2. Key 命名：`模块.含义`，如 `compose.keystoneStatus`、`crop.perspectiveYes`。
+3. UI 中使用 `t("key")` 引用。
+4. 改 `frontend/src` 后先跑 `npm --prefix frontend run typecheck && npm --prefix frontend run build`，再跑 Electron E2E。
 
 ## 17. 下一步执行清单
 

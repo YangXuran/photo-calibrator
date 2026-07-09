@@ -307,6 +307,44 @@ def test_calibrate_payload_applies_look_adjustment_node() -> None:
     assert_preview_url(rendered["calibrated_image"])
 
 
+def test_calibrate_payload_applies_auto_style_controls() -> None:
+    payload = _calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "auto-style.png",
+        "mode": "global",
+        "strength": 0.8,
+        "auto_style": {
+            "preset": "film",
+            "neutralization": 0.55,
+            "look_preservation": 0.8,
+            "warmth_bias": 0.5,
+            "tint_bias": -0.25,
+            "tone_style": 0.6,
+            "highlight_protection": 0.7,
+            "skin_priority": 0.2,
+        },
+    })
+
+    assert payload["processing"]["auto_style"]["preset"] == "film"
+    assert payload["processing"]["auto_style"]["neutralization"] == pytest.approx(0.55)
+    assert payload["processing"]["look_enabled"] is True
+    assert payload["processing"]["look_adjustments"]["lab_bias"]["a"] == pytest.approx(-1.75)
+    assert payload["processing"]["look_adjustments"]["lab_bias"]["b"] == pytest.approx(4.0)
+    grade = payload["processing"]["look_adjustments"]["color_grade"]
+    assert grade["shadows"]["saturation"] == pytest.approx(0.2648)
+    assert grade["highlights"]["saturation"] == pytest.approx(0.236)
+    assert payload["processing"]["tone_recovery_enabled"] is True
+    assert payload["processing"]["tone_recovery"]["enabled"] is True
+    assert payload["processing"]["tone_recovery"]["applied_strength"] == pytest.approx(0.737)
+    assert payload["processing"]["tone_recovery"]["applied_local_contrast"] == pytest.approx(0.192)
+    op_names = [item["name"] for item in payload["document"]["operations"]]
+    assert "calibration" in op_names
+    assert "look-adjustment" in op_names
+    assert "tone-recovery" in op_names
+    calibration_op = next(item for item in payload["document"]["operations"] if item["name"] == "calibration")
+    assert calibration_op["params"]["strength"] == pytest.approx(0.55)
+
+
 def test_auto_best_selects_candidate_mode() -> None:
     payload = _calibrate_payload({
         "image_data": sample_data_url(),
@@ -321,6 +359,29 @@ def test_auto_best_selects_candidate_mode() -> None:
     assert payload["processing"]["auto_best"]["selected_mode"] == payload["mode"]
     assert payload["processing"]["auto_best"]["eval_max_side"] == 480
     assert len(payload["processing"]["auto_best"]["candidates"]) >= 3
+
+
+def test_auto_best_candidates_include_style_score_context() -> None:
+    payload = _calibrate_payload({
+        "image_data": sample_data_url(),
+        "file_name": "auto-best-style.png",
+        "mode": "auto-best",
+        "strength": 0.8,
+        "auto_style": {
+            "preset": "portrait",
+            "neutralization": 0.72,
+            "look_preservation": 0.25,
+            "tone_style": -0.2,
+            "highlight_protection": 0.4,
+            "skin_priority": 1.0,
+        },
+    })
+
+    candidates = payload["processing"]["auto_best"]["candidates"]
+    assert payload["processing"]["auto_style"]["preset"] == "portrait"
+    assert payload["processing"]["auto_best"]["auto_style"]["skin_priority"] == pytest.approx(1.0)
+    assert candidates
+    assert all("base_score" in item for item in candidates)
 
 
 def test_calibrate_payload_supports_plugin_calibrator() -> None:

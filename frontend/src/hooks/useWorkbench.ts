@@ -5,8 +5,10 @@ import { DEFAULT_WORKBENCH_PREFERENCES } from "../lib/layoutPresets";
 import { t } from "../i18n";
 import { directoryFromPath, suggestExportPath, suggestExportPathInDirectory, suggestSessionPath } from "../lib/paths";
 import { loadAISettings, saveAISettings, type AIProviderSettings } from "../components/AIProviderCard";
+import { InteractivePreviewController, type InteractivePreviewBackendTiming } from "../lib/interactivePreviewController";
 import type {
   ActionState,
+  AutoStyleSettings,
   AIEvaluationPayload,
   CalibrationPayload,
   CapabilityPayload,
@@ -64,12 +66,23 @@ type CurvePreviewFallbackCache = {
   height: number;
   data: Uint8ClampedArray;
 };
+type CalibrationPayloadWithTiming = CalibrationPayload & {
+  _timing?: InteractivePreviewBackendTiming;
+};
 
 const WORKBENCH_PREFERENCES_KEY = "photo-calibrator:workbench-preferences";
 const WORKBENCH_INSPECTOR_TAB_KEY = "photo-calibrator:workbench-inspector-tab";
 const WORKBENCH_VIEWER_STATE_KEY = "photo-calibrator:workbench-viewer-state";
 const CURVE_PREVIEW_INTERACTIVE_SIDE = 480;
 const CURVE_PREVIEW_DRAG_FPS = 30;
+const THUMBNAIL_PREVIEW_SIDE = 320;
+const ADAPTIVE_PREVIEW_MIN_SIDE = 640;
+const ADAPTIVE_PREVIEW_MAX_SIDE = 2400;
+const ADAPTIVE_PREVIEW_DELTA_RATIO = 0.18;
+const ADAPTIVE_PREVIEW_REQUEST_DELAY_MS = 650;
+const CALIBRATION_FAST_DEBOUNCE_MS = 0;
+const CALIBRATION_FULL_DEBOUNCE_MS = 140;
+const HIGH_RES_CALIBRATION_SETTLE_MS = 320;
 
 /** A file info from shell bridge with path (no File object for non-browser files) */
 export type PathFileInfo = { name: string; path: string; workspaceRoot?: string };
@@ -225,6 +238,17 @@ const DEFAULT_TONE_RECOVERY: ToneRecoverySettings = {
   strength: 0.45,
 };
 
+const DEFAULT_AUTO_STYLE: AutoStyleSettings = {
+  preset: "neutral",
+  neutralization: 0.8,
+  lookPreservation: 0,
+  warmthBias: 0,
+  tintBias: 0,
+  toneStyle: 0,
+  highlightProtection: 0,
+  skinPriority: 0,
+};
+
 function cloneLookAdjustments(look?: Partial<LookAdjustments>): LookAdjustments {
   return {
     labBias: {
@@ -247,6 +271,22 @@ function cloneLookAdjustments(look?: Partial<LookAdjustments>): LookAdjustments 
   };
 }
 
+function cloneAutoStyle(style?: Partial<AutoStyleSettings>): AutoStyleSettings {
+  const preset = style?.preset && ["custom", "neutral", "film", "portrait", "slide", "soft"].includes(style.preset)
+    ? style.preset
+    : DEFAULT_AUTO_STYLE.preset;
+  return {
+    preset,
+    neutralization: clamp(Number(style?.neutralization ?? DEFAULT_AUTO_STYLE.neutralization), 0, 1.2),
+    lookPreservation: clamp(Number(style?.lookPreservation ?? DEFAULT_AUTO_STYLE.lookPreservation), 0, 1),
+    warmthBias: clamp(Number(style?.warmthBias ?? DEFAULT_AUTO_STYLE.warmthBias), -1, 1),
+    tintBias: clamp(Number(style?.tintBias ?? DEFAULT_AUTO_STYLE.tintBias), -1, 1),
+    toneStyle: clamp(Number(style?.toneStyle ?? DEFAULT_AUTO_STYLE.toneStyle), -1, 1),
+    highlightProtection: clamp(Number(style?.highlightProtection ?? DEFAULT_AUTO_STYLE.highlightProtection), 0, 1),
+    skinPriority: clamp(Number(style?.skinPriority ?? DEFAULT_AUTO_STYLE.skinPriority), 0, 1),
+  };
+}
+
 function cloneToneRecovery(tone?: Partial<ToneRecoverySettings>): ToneRecoverySettings {
   return {
     enabled: Boolean(tone?.enabled ?? DEFAULT_TONE_RECOVERY.enabled),
@@ -262,6 +302,24 @@ function serializeLookAdjustments(look: LookAdjustments): string {
 
 function serializeToneRecovery(tone: ToneRecoverySettings): string {
   return JSON.stringify(cloneToneRecovery(tone));
+}
+
+function serializeAutoStyle(style: AutoStyleSettings): string {
+  return JSON.stringify(cloneAutoStyle(style));
+}
+
+function autoStylePayloadForRequest(style: AutoStyleSettings) {
+  const normalized = cloneAutoStyle(style);
+  return {
+    preset: normalized.preset,
+    neutralization: normalized.neutralization,
+    look_preservation: normalized.lookPreservation,
+    warmth_bias: normalized.warmthBias,
+    tint_bias: normalized.tintBias,
+    tone_style: normalized.toneStyle,
+    highlight_protection: normalized.highlightProtection,
+    skin_priority: normalized.skinPriority,
+  };
 }
 
 function lookPayloadForRequest(look: LookAdjustments) {
@@ -297,6 +355,7 @@ function buildCalibrationSignature(
   negativeBaseEnabled: boolean,
   accelerator: string,
   curves: ManualCurves,
+  autoStyle: AutoStyleSettings,
   lookAdjustments: LookAdjustments,
   toneRecovery: ToneRecoverySettings,
   cropRect?: CropRect,
@@ -312,6 +371,7 @@ function buildCalibrationSignature(
     serializeCurve(curves.r),
     serializeCurve(curves.g),
     serializeCurve(curves.b),
+    serializeAutoStyle(autoStyle),
     serializeLookAdjustments(lookAdjustments),
     serializeToneRecovery(toneRecovery),
     serializeCropRect(cropRect),
@@ -404,6 +464,7 @@ function buildDefaultExportState(
   item: WorkspaceFile,
   accelerator: string,
   curves: ManualCurves,
+  autoStyle: AutoStyleSettings,
   lookAdjustments: LookAdjustments,
   toneRecovery: ToneRecoverySettings = DEFAULT_TONE_RECOVERY,
 ): PersistedEditState {
@@ -413,6 +474,7 @@ function buildDefaultExportState(
     negativeBaseEnabled: false,
     accelerator,
     curves,
+    autoStyle: cloneAutoStyle(autoStyle),
     lookAdjustments: cloneLookAdjustments(lookAdjustments),
     toneRecovery: cloneToneRecovery(toneRecovery),
     crop: item.crop,
@@ -434,6 +496,7 @@ type CalibrationRequestFieldInput = {
   negativeBaseEnabled: boolean;
   accelerator: string;
   curves: ManualCurves;
+  autoStyle: AutoStyleSettings;
   lookAdjustments: LookAdjustments;
   toneRecovery: ToneRecoverySettings;
   cropRect?: CropRect;
@@ -449,6 +512,7 @@ function calibrationRequestFields({
   negativeBaseEnabled,
   accelerator,
   curves,
+  autoStyle,
   lookAdjustments,
   toneRecovery,
   cropRect,
@@ -462,6 +526,7 @@ function calibrationRequestFields({
     mode: resolveAutoBest ? effectiveExportMode(mode, item) : mode,
     strength,
     negative_base: Boolean(negativeBaseEnabled),
+    auto_style: autoStylePayloadForRequest(autoStyle),
     look: lookPayloadForRequest(cloneLookAdjustments(lookAdjustments)),
     tone_recovery: toneRecoveryPayloadForRequest(cloneToneRecovery(toneRecovery)),
     accelerator,
@@ -485,6 +550,7 @@ function calibrationRequestFieldsFromState(
     negativeBaseEnabled: Boolean(state.negativeBaseEnabled),
     accelerator: state.accelerator,
     curves: cloneManualCurves(state.curves),
+    autoStyle: cloneAutoStyle(state.autoStyle),
     lookAdjustments: cloneLookAdjustments(state.lookAdjustments),
     toneRecovery: cloneToneRecovery(state.toneRecovery),
     cropRect: state.cropApplied ? cropRectForRequest(state.crop) : undefined,
@@ -514,6 +580,7 @@ export function useWorkbench() {
   const [mode, setMode] = useState("global");
   const [negativeBaseEnabled, setNegativeBaseEnabled] = useState(false);
   const [strength, setStrength] = useState(0.8);
+  const [autoStyle, setAutoStyle] = useState<AutoStyleSettings>(() => cloneAutoStyle(DEFAULT_AUTO_STYLE));
   const [lookAdjustments, setLookAdjustments] = useState<LookAdjustments>(() => cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS));
   const [toneRecovery, setToneRecovery] = useState<ToneRecoverySettings>(() => cloneToneRecovery(DEFAULT_TONE_RECOVERY));
   const [accelerator, setAccelerator] = useState("auto");
@@ -577,16 +644,16 @@ export function useWorkbench() {
   const [localCurvePreviewBitmap, setLocalCurvePreviewBitmap] = useState<ImageBitmap | null>(null);
   const [localCurvePreviewHistogram, setLocalCurvePreviewHistogram] = useState<HistogramPayload | null>(null);
   const [curveStateFileId, setCurveStateFileId] = useState<string>();
-  const requestRef = useRef(0);
   const calibrationDepthRef = useRef(0);
-  const currentResMaxSideRef = useRef(320);
-  const prevDepsRef = useRef<{ id?: string; mode: string; negativeBaseEnabled: boolean; strength: number; lookSignature: string; toneSignature: string }>({ mode: "global", negativeBaseEnabled: false, strength: 0.8, lookSignature: serializeLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS), toneSignature: serializeToneRecovery(DEFAULT_TONE_RECOVERY) });
+  const interactivePreviewControllerRef = useRef(new InteractivePreviewController());
+  const currentResMaxSideRef = useRef(THUMBNAIL_PREVIEW_SIDE);
+  const prevDepsRef = useRef<{ id?: string; mode: string; negativeBaseEnabled: boolean; strength: number; autoStyleSignature: string; lookSignature: string; toneSignature: string }>({ mode: "global", negativeBaseEnabled: false, strength: 0.8, autoStyleSignature: serializeAutoStyle(DEFAULT_AUTO_STYLE), lookSignature: serializeLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS), toneSignature: serializeToneRecovery(DEFAULT_TONE_RECOVERY) });
   const fileCurvesRef = useRef<Map<string, ManualCurves>>(new Map());
   const fileLookRef = useRef<Map<string, LookAdjustments>>(new Map());
   const highResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highResRequestRef = useRef(0);
   const highResSessionRef = useRef<string | null>(null);
-  const curveSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const calibrationSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const curvePreviewFrameRef = useRef<number | null>(null);
   const curvePreviewRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const curvePreviewBitmapRef = useRef<ImageBitmap | null>(null);
@@ -599,7 +666,7 @@ export function useWorkbench() {
   const lookPreviewBaseRef = useRef<LookAdjustments | null>(null);
   const persistenceWarningShownRef = useRef<Set<string>>(new Set());
   /* undo stack for calibration parameters (mode + strength + accelerator + curves) */
-  type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve; lookAdjustments: LookAdjustments; toneRecovery: ToneRecoverySettings };
+  type UndoSnapshot = { mode: string; strength: number; negativeBaseEnabled: boolean; accelerator: string; lCurve: ChannelCurve; rCurve: ChannelCurve; gCurve: ChannelCurve; bCurve: ChannelCurve; autoStyle: AutoStyleSettings; lookAdjustments: LookAdjustments; toneRecovery: ToneRecoverySettings };
   const undoStackRef = useRef<UndoSnapshot[]>([]);
   const undoIndexRef = useRef(-1);
   const undoingRef = useRef(false);
@@ -621,6 +688,7 @@ export function useWorkbench() {
       negativeBaseEnabled,
       accelerator,
       curves: cloneManualCurves({ l: lCurve, r: rCurve, g: gCurve, b: bCurve }),
+      autoStyle: cloneAutoStyle(autoStyle),
       lookAdjustments: cloneLookAdjustments(lookAdjustments),
       toneRecovery: cloneToneRecovery(toneRecovery),
       crop: selectedFile?.crop,
@@ -719,6 +787,7 @@ export function useWorkbench() {
       Boolean(state.negativeBaseEnabled),
       state.accelerator,
       state.curves,
+      cloneAutoStyle(state.autoStyle),
       cloneLookAdjustments(state.lookAdjustments),
       cloneToneRecovery(state.toneRecovery),
       state.cropApplied ? cropRectForRequest(state.crop) : undefined,
@@ -748,7 +817,22 @@ export function useWorkbench() {
   }
 
   function commitStrength(value: number) {
-    commitEdit(t("history.strength"), "strength", currentEditState({ strength: value }));
+    const nextStyle = cloneAutoStyle({ ...autoStyle, neutralization: value });
+    setStrength(value);
+    setAutoStyle(nextStyle);
+    commitEdit(t("history.strength"), "strength", currentEditState({ strength: value, autoStyle: nextStyle }));
+  }
+
+  function previewAutoStyle(next: AutoStyleSettings) {
+    const normalized = cloneAutoStyle(next);
+    setAutoStyle(normalized);
+    setStrength(normalized.neutralization);
+  }
+
+  function commitAutoStyle(next: AutoStyleSettings, description = t("history.autoStyle")) {
+    const normalized = cloneAutoStyle(next);
+    previewAutoStyle(normalized);
+    commitEdit(description, "auto-style", currentEditState({ autoStyle: normalized, strength: normalized.neutralization }));
   }
 
   function setToneRecoveryCommitted(next: ToneRecoverySettings) {
@@ -868,7 +952,7 @@ export function useWorkbench() {
       b: item.bCurve ?? DEFAULT_IDENTITY_CURVE,
     });
     const itemLook = fileLookRef.current.get(item.id) ?? cloneLookAdjustments(DEFAULT_LOOK_ADJUSTMENTS);
-    return buildDefaultExportState(item, accelerator, curves, itemLook);
+    return buildDefaultExportState(item, accelerator, curves, autoStyle, itemLook);
   }
 
   function updateViewerState(patch: Partial<ViewerWorkspaceState>) {
@@ -1236,6 +1320,8 @@ export function useWorkbench() {
     setMode(state.mode);
     setNegativeBaseEnabled(Boolean(state.negativeBaseEnabled));
     setStrength(state.strength);
+    const nextAutoStyle = cloneAutoStyle(state.autoStyle ?? { ...DEFAULT_AUTO_STYLE, neutralization: state.strength });
+    setAutoStyle(nextAutoStyle);
     setAccelerator(state.accelerator);
     const nextLook = cloneLookAdjustments(state.lookAdjustments);
     setLookAdjustments(nextLook);
@@ -1267,6 +1353,7 @@ export function useWorkbench() {
             Boolean(state.negativeBaseEnabled),
             state.accelerator,
             curves,
+            nextAutoStyle,
             cloneLookAdjustments(state.lookAdjustments),
             nextTone,
             state.cropApplied ? cropRectForRequest(state.crop) : undefined,
@@ -1310,6 +1397,7 @@ export function useWorkbench() {
     setMode(snap.mode);
     setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
+    setAutoStyle(cloneAutoStyle(snap.autoStyle));
     setAccelerator(snap.accelerator);
     const snapLook = cloneLookAdjustments(snap.lookAdjustments);
     setLookAdjustments(snapLook);
@@ -1339,6 +1427,7 @@ export function useWorkbench() {
     setMode(snap.mode);
     setNegativeBaseEnabled(snap.negativeBaseEnabled);
     setStrength(snap.strength);
+    setAutoStyle(cloneAutoStyle(snap.autoStyle));
     setAccelerator(snap.accelerator);
     const snapLook = cloneLookAdjustments(snap.lookAdjustments);
     setLookAdjustments(snapLook);
@@ -1369,24 +1458,41 @@ export function useWorkbench() {
       return;
     }
     const manualCurves = committedCurves;
+    const autoStyleSignature = serializeAutoStyle(autoStyle);
     const lookSignature = serializeLookAdjustments(lookAdjustments);
     const toneSignature = serializeToneRecovery(toneRecovery);
     const cropRect = isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined;
     const perspectiveCorrection = isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined;
     const imageTransform = normalizeImageTransform(selectedFile.imageTransform);
+    const interactivePreview = interactivePreviewControllerRef.current;
     const requestFields = calibrationRequestFields({
       mode,
       strength,
       negativeBaseEnabled,
       accelerator,
       curves: manualCurves,
+      autoStyle,
       lookAdjustments,
       toneRecovery,
       cropRect,
       imageTransform,
       perspectiveCorrection,
     });
-    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, lookAdjustments, toneRecovery, cropRect, imageTransform, perspectiveCorrection);
+    const signature = buildCalibrationSignature(mode, strength, negativeBaseEnabled, accelerator, manualCurves, autoStyle, lookAdjustments, toneRecovery, cropRect, imageTransform, perspectiveCorrection);
+    const selectedFilePath = (selectedFile.file as any)?.path as string | undefined;
+    if (InteractivePreviewController.sessionRequired({ sourcePath: selectedFilePath, sessionId: selectedFile.sessionId })) {
+      debugLog("calib.wait-preview-session", { fileId: selectedFile.id });
+      return;
+    }
+    const fastPreviewGuard = InteractivePreviewController.guard([
+      selectedFile.id,
+      mode,
+      negativeBaseEnabled ? "negative-base:on" : "negative-base:off",
+      serializeCropRect(cropRect),
+      serializeImageTransform(imageTransform),
+      serializePerspectiveCorrection(perspectiveCorrection),
+    ]);
+    interactivePreview.setGuard(fastPreviewGuard);
     if (
       selectedFile.result?.calibrated_image
       && selectedFile.calibrationSignature === signature
@@ -1404,11 +1510,12 @@ export function useWorkbench() {
     const fileChanged = prev.id !== selectedFile?.id;
     const modeChanged = prev.mode !== mode;
     const negativeBaseChanged = prev.negativeBaseEnabled !== negativeBaseEnabled;
+    const autoStyleChanged = prev.autoStyleSignature !== autoStyleSignature;
     const lookChanged = prev.lookSignature !== lookSignature;
     const toneChanged = prev.toneSignature !== toneSignature;
-    const lookOnlyChanged = lookChanged && !toneChanged && !fileChanged && !modeChanged && !negativeBaseChanged && prev.strength === strength;
-    const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || lookChanged || toneChanged || prev.strength !== strength;
-    prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength, lookSignature, toneSignature };
+    const lookOnlyChanged = lookChanged && !toneChanged && !autoStyleChanged && !fileChanged && !modeChanged && !negativeBaseChanged && prev.strength === strength;
+    const fileOrParamsChanged = fileChanged || modeChanged || negativeBaseChanged || autoStyleChanged || lookChanged || toneChanged || prev.strength !== strength;
+    prevDepsRef.current = { id: selectedFile?.id, mode, negativeBaseEnabled, strength, autoStyleSignature, lookSignature, toneSignature };
     debugLog("calib.effect", { fileId: selectedFile?.id?.substring(0, 20), fileChanged: fileOrParamsChanged, mode, strength });
     const fastMode = Boolean(
       selectedFile.sessionId
@@ -1418,12 +1525,15 @@ export function useWorkbench() {
       && !negativeBaseChanged
       && hasAnalysisCharts(selectedFile.result.charts),
     );
-    const debounceMs = fastMode ? 0 : 160;
+    if (!fastMode) interactivePreview.clearQueued();
+    const debounceMs = fastMode ? CALIBRATION_FAST_DEBOUNCE_MS : CALIBRATION_FULL_DEBOUNCE_MS;
     if (fastMode) perfMark(`effect.fire(debounce=${debounceMs}ms)`);
-    const currentRequest = ++requestRef.current;
+    const showStageLoading = fileOrParamsChanged && !lookOnlyChanged && !fastMode;
+    const currentRequest = interactivePreview.nextRequestId();
     const run = async () => {
+      const requestStartedAt = performance.now();
       perfMark("run.start");
-      if (fileOrParamsChanged && !lookOnlyChanged) setLoading(true);
+      if (showStageLoading) setLoading(true);
       setActionState("calibration", "running", selectedFile.name);
       try {
         let payload: CalibrationPayload;
@@ -1440,6 +1550,7 @@ export function useWorkbench() {
           const filePath = (selectedFile.file as any)?.path as string | undefined;
           const body: Record<string, unknown> = {
             file_name: selectedFile.name,
+            analysis_max_side: THUMBNAIL_PREVIEW_SIDE,
             ...requestFields,
             fast: fastMode,
           };
@@ -1451,8 +1562,32 @@ export function useWorkbench() {
           payload = await postCalibration(body);
         }
         perfMark("api.done");
-        if (currentRequest !== requestRef.current) return;
-        const backendTiming = (payload as any)?._timing;
+        const requestElapsedMs = Math.round(performance.now() - requestStartedAt);
+        const { accepted, current: isCurrent } = interactivePreview.evaluateFrame({
+          requestId: currentRequest,
+          fast: fastMode,
+          guard: fastPreviewGuard,
+        });
+        const backendTiming = (payload as CalibrationPayloadWithTiming)?._timing;
+        interactivePreview.recordTiming({
+          requestId: currentRequest,
+          fileId: selectedFile.id,
+          fileName: selectedFile.name,
+          sessionId: payload.session_id ?? selectedFile.sessionId,
+          fast: fastMode,
+          accepted,
+          current: isCurrent,
+          elapsedMs: requestElapsedMs,
+          backendCalibrationMs: backendTiming?.calibration_ms,
+          backendResponseMs: backendTiming?.response_ms,
+          mode,
+          strength,
+          previewSource: payload.processing?.preview_source,
+          analysisWidth: payload.processing?.analysis_width,
+          analysisHeight: payload.processing?.analysis_height,
+        });
+        if (!accepted) return;
+        interactivePreview.markApplied(currentRequest);
         if (backendTiming) perfMark(`backend(calib=${backendTiming.calibration_ms}ms resp=${backendTiming.response_ms}ms)`);
         debugLog("calib.setFiles", { fast: fastMode, calibOk: !!payload.calibrated_image });
         setFiles((items) =>
@@ -1476,9 +1611,10 @@ export function useWorkbench() {
         setDocumentRender(null);
         setAiResult(null);
         perfMark("setFiles.done");
-        if (fastMode && highResSessionRef.current) {
-          if (curveSettleTimerRef.current) clearTimeout(curveSettleTimerRef.current);
-          curveSettleTimerRef.current = setTimeout(async () => {
+        if (isCurrent && fastMode && highResSessionRef.current) {
+          if (calibrationSettleTimerRef.current) clearTimeout(calibrationSettleTimerRef.current);
+          calibrationSettleTimerRef.current = setTimeout(async () => {
+            if (!interactivePreview.evaluateFrame({ requestId: currentRequest, fast: false, guard: fastPreviewGuard }).current) return;
             const sid = highResSessionRef.current;
             if (!sid) return;
             try {
@@ -1487,16 +1623,17 @@ export function useWorkbench() {
                 ...requestFields,
                 include_original: Boolean(cropRect),
               });
+              if (!interactivePreview.evaluateFrame({ requestId: currentRequest, fast: false, guard: fastPreviewGuard }).current) return;
               setFiles((items) => items.map((item) =>
                 item.id === selectedFile.id ? { ...item, calibrationSignature: signature, result: cal } : item
               ));
             } catch {}
-          }, 600);
+          }, HIGH_RES_CALIBRATION_SETTLE_MS);
         }
         setCurveInteraction("idle");
         setActionState("calibration", "success", payload.session_id ?? selectedFile.name);
         const pendingCommit = pendingCommitRef.current;
-        if (pendingCommit) {
+        if (pendingCommit && isCurrent) {
           pendingCommitRef.current = null;
           void persistCommittedEdit(
             pendingCommit.description,
@@ -1510,23 +1647,34 @@ export function useWorkbench() {
           perfDump();
         });
       } catch (error) {
-        if (currentRequest === requestRef.current) {
+        if (interactivePreview.evaluateFrame({ requestId: currentRequest, fast: false, guard: fastPreviewGuard }).current) {
           console.error(error);
           setActionState("calibration", "error", String(error));
           notify("error", "Calibration failed", String(error));
         }
       } finally {
-        if (fileOrParamsChanged && !lookOnlyChanged) setLoading(false);
+        if (showStageLoading) setLoading(false);
       }
     };
-    const timer = window.setTimeout(run, debounceMs);
+    let runner: (() => void) | undefined;
+    const startRun = () => {
+      runner = interactivePreview.schedule({ fast: fastMode, run });
+    };
+    let timer: number | undefined;
+    if (debounceMs <= 0) {
+      startRun();
+    } else {
+      timer = window.setTimeout(startRun, debounceMs);
+    }
     return () => {
-      window.clearTimeout(timer);
+      if (runner) interactivePreview.clearQueued(runner);
+      if (timer !== undefined) window.clearTimeout(timer);
       calibrationDepthRef.current = Math.max(0, calibrationDepthRef.current - 1);
-      if (fileOrParamsChanged && !lookOnlyChanged) setLoading(false);
+      if (showStageLoading) setLoading(false);
     };
   }, [
     selectedFile?.id,
+    selectedFile?.sessionId,
     selectedFile?.crop?.crop_rect.left,
     selectedFile?.crop?.crop_rect.top,
     selectedFile?.crop?.crop_rect.width,
@@ -1539,6 +1687,7 @@ export function useWorkbench() {
     mode,
     negativeBaseEnabled,
     strength,
+    autoStyle,
     lookAdjustments,
     toneRecovery,
     accelerator,
@@ -1553,7 +1702,7 @@ export function useWorkbench() {
     const prevTimer = pushTimerRef.current;
     if (prevTimer) clearTimeout(prevTimer);
     pushTimerRef.current = setTimeout(() => {
-      const snap: UndoSnapshot = { mode, strength, negativeBaseEnabled, accelerator, lCurve, rCurve, gCurve, bCurve, lookAdjustments: cloneLookAdjustments(lookAdjustments), toneRecovery: cloneToneRecovery(toneRecovery) };
+      const snap: UndoSnapshot = { mode, strength, negativeBaseEnabled, accelerator, lCurve, rCurve, gCurve, bCurve, autoStyle: cloneAutoStyle(autoStyle), lookAdjustments: cloneLookAdjustments(lookAdjustments), toneRecovery: cloneToneRecovery(toneRecovery) };
       const stack = undoStackRef.current;
       const idx = undoIndexRef.current;
       const last = stack[idx];
@@ -1563,6 +1712,7 @@ export function useWorkbench() {
         && last.negativeBaseEnabled === snap.negativeBaseEnabled
         && last.strength === snap.strength
         && last.accelerator === snap.accelerator
+        && serializeAutoStyle(last.autoStyle) === serializeAutoStyle(snap.autoStyle)
         && serializeLookAdjustments(last.lookAdjustments) === serializeLookAdjustments(snap.lookAdjustments)
         && serializeToneRecovery(last.toneRecovery) === serializeToneRecovery(snap.toneRecovery)
       ) return;
@@ -1574,14 +1724,15 @@ export function useWorkbench() {
       undoIndexRef.current = undoStackRef.current.length - 1;
     }, 600);
     return () => { const t = pushTimerRef.current; if (t) clearTimeout(t); };
-  }, [mode, negativeBaseEnabled, strength, accelerator, lCurve, rCurve, gCurve, bCurve, lookAdjustments, toneRecovery]);
+  }, [mode, negativeBaseEnabled, strength, autoStyle, accelerator, lCurve, rCurve, gCurve, bCurve, lookAdjustments, toneRecovery]);
 
   useEffect(() => {
+    interactivePreviewControllerRef.current.reset();
     setCurveStateFileId(undefined);
     if (!selectedFile) return;
     clearLocalCurvePreview();
     setCurveInteraction("idle");
-    updateViewerState({ pan: { x: 0, y: 0 } });
+    updateViewerState({ zoomMode: "fit", zoomScale: 1, pan: { x: 0, y: 0 } });
     setExportOptions((current) => ({
       ...current,
       outputPath: suggestExportPath(selectedFile.name, current.format),
@@ -1597,6 +1748,7 @@ export function useWorkbench() {
       setMode(restoredState.mode);
       setNegativeBaseEnabled(Boolean(restoredState.negativeBaseEnabled));
       setStrength(restoredState.strength);
+      setAutoStyle(cloneAutoStyle(restoredState.autoStyle ?? { ...DEFAULT_AUTO_STYLE, neutralization: restoredState.strength }));
       setAccelerator(restoredState.accelerator);
       setLookAdjustments(cloneLookAdjustments(restoredState.lookAdjustments));
       setToneRecovery(cloneToneRecovery(restoredState.toneRecovery));
@@ -1685,19 +1837,27 @@ export function useWorkbench() {
 
   useEffect(() => () => {
     clearLocalCurvePreview();
+    if (calibrationSettleTimerRef.current) {
+      clearTimeout(calibrationSettleTimerRef.current);
+      calibrationSettleTimerRef.current = null;
+    }
   }, [clearLocalCurvePreview]);
 
   /* ── Adaptive resolution: reset tracking when file changes ── */
   useEffect(() => {
     const existingMaxSide = resolvePreviewMaxSide(selectedFile?.highResPreview)
       ?? resolvePreviewMaxSide(selectedFile?.preview)
-      ?? 320;
+      ?? THUMBNAIL_PREVIEW_SIDE;
     currentResMaxSideRef.current = existingMaxSide;
     highResSessionRef.current = selectedFile?.highResPreview?.session_id ?? selectedFile?.sessionId ?? null;
     highResRequestRef.current++;
     if (highResTimerRef.current) {
       clearTimeout(highResTimerRef.current);
       highResTimerRef.current = null;
+    }
+    if (calibrationSettleTimerRef.current) {
+      clearTimeout(calibrationSettleTimerRef.current);
+      calibrationSettleTimerRef.current = null;
     }
   }, [selectedFile?.id]);
 
@@ -1713,11 +1873,11 @@ export function useWorkbench() {
     const dpr = window.devicePixelRatio || 1;
 
     let requiredMaxSide = Math.max(containerWidth, containerHeight) * viewerZoomScale * dpr;
-    requiredMaxSide = Math.max(320, Math.min(1600, Math.round(requiredMaxSide)));
+    requiredMaxSide = Math.max(ADAPTIVE_PREVIEW_MIN_SIDE, Math.min(ADAPTIVE_PREVIEW_MAX_SIDE, Math.round(requiredMaxSide)));
 
     const currentMaxSide = currentResMaxSideRef.current;
     const diff = Math.abs(requiredMaxSide - currentMaxSide) / currentMaxSide;
-    if (diff <= 0.25) return;
+    if (diff <= ADAPTIVE_PREVIEW_DELTA_RATIO) return;
 
     if (highResTimerRef.current) {
       clearTimeout(highResTimerRef.current);
@@ -1736,12 +1896,26 @@ export function useWorkbench() {
           negativeBaseEnabled,
           accelerator,
           curves: committedCurves,
+          autoStyle,
           lookAdjustments,
           toneRecovery,
           cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
           imageTransform: normalizeImageTransform(selectedFile.imageTransform),
           perspectiveCorrection: isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined,
         });
+        const signature = buildCalibrationSignature(
+          mode,
+          strength,
+          negativeBaseEnabled,
+          accelerator,
+          committedCurves,
+          autoStyle,
+          lookAdjustments,
+          toneRecovery,
+          isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
+          normalizeImageTransform(selectedFile.imageTransform),
+          isCropApplied(selectedFile) ? perspectiveCorrectionForRequest(selectedFile.crop) : undefined,
+        );
         const preview = await postPreview({
           session_id: selectedFile.sessionId,
           analysis_max_side: requiredMaxSide,
@@ -1772,6 +1946,7 @@ export function useWorkbench() {
               ? {
                   ...item,
                   cropApplied: Boolean(calibration.processing?.crop_applied) || item.cropApplied,
+                  calibrationSignature: signature,
                   result: {
                     ...calibration,
                     charts: Object.keys(calibration.charts ?? {}).length === 0
@@ -1787,7 +1962,7 @@ export function useWorkbench() {
       } finally {
         if (requestId === highResRequestRef.current) setHighResLoading(false);
       }
-    }, 300);
+    }, ADAPTIVE_PREVIEW_REQUEST_DELAY_MS);
 
     return () => {
       if (highResTimerRef.current) {
@@ -1813,6 +1988,7 @@ export function useWorkbench() {
     mode,
     negativeBaseEnabled,
     strength,
+    autoStyle,
     lookAdjustments,
     toneRecovery,
     accelerator,
@@ -1871,7 +2047,7 @@ export function useWorkbench() {
 
     async function loadOne(item: WorkspaceFile) {
       const filePath = (item.file as any)?.path as string | undefined;
-      const body: Record<string, unknown> = { file_name: item.name, analysis_max_side: 320 };
+      const body: Record<string, unknown> = { file_name: item.name, analysis_max_side: THUMBNAIL_PREVIEW_SIDE };
       if (filePath) {
         body.path = filePath;
       } else {
@@ -1889,7 +2065,7 @@ export function useWorkbench() {
           path: (item.file as any)?.path,
           file_name: item.name,
         })),
-        analysis_max_side: 320,
+        analysis_max_side: THUMBNAIL_PREVIEW_SIDE,
         workers: Math.min(4, items.length),
       });
       const completed = new Set<string>();
@@ -1940,6 +2116,7 @@ export function useWorkbench() {
     setFiles(workspaceFiles);
     if (workspaceFiles.length > 0) {
       setSelectedId(workspaceFiles[0].id);
+      setActiveInspectorTab("adjust");
     }
   }
 
@@ -1997,6 +2174,7 @@ export function useWorkbench() {
               Boolean(restoredState.negativeBaseEnabled),
               restoredState.accelerator,
               restoredState.curves,
+              cloneAutoStyle(restoredState.autoStyle ?? { ...DEFAULT_AUTO_STYLE, neutralization: restoredState.strength }),
               cloneLookAdjustments(restoredState.lookAdjustments),
               cloneToneRecovery(restoredState.toneRecovery),
               restoredState.cropApplied ? cropRectForRequest(restoredState.crop) : undefined,
@@ -2039,6 +2217,7 @@ export function useWorkbench() {
       setMode(firstRestoredState.mode);
       setNegativeBaseEnabled(Boolean(firstRestoredState.negativeBaseEnabled));
       setStrength(firstRestoredState.strength);
+      setAutoStyle(cloneAutoStyle(firstRestoredState.autoStyle ?? { ...DEFAULT_AUTO_STYLE, neutralization: firstRestoredState.strength }));
       setAccelerator(firstRestoredState.accelerator);
       setLookAdjustments(cloneLookAdjustments(firstRestoredState.lookAdjustments));
       setToneRecovery(cloneToneRecovery(firstRestoredState.toneRecovery));
@@ -2049,10 +2228,12 @@ export function useWorkbench() {
       setCommittedCurves(restoredCurves);
     }
     setFiles(nextFiles);
+    setSelectedId(nextFiles[0]?.id);
+    if (nextFiles.length > 0) setActiveInspectorTab("adjust");
     const firstFile = nextFiles[0];
     if (firstFile && !firstFile.browserDisplayable && !firstFile.result) {
       const filePath = (firstFile.file as any)?.path as string | undefined;
-      const body: Record<string, unknown> = { file_name: firstFile.name, analysis_max_side: 320 };
+      const body: Record<string, unknown> = { file_name: firstFile.name, analysis_max_side: THUMBNAIL_PREVIEW_SIDE };
       if (filePath) body.path = filePath;
       else body.image_data = await fileToDataUrl(firstFile.file as File);
       const preview = await postPreview(body);
@@ -2062,7 +2243,6 @@ export function useWorkbench() {
         return { ...e, sessionId: preview.session_id, preview, thumbnailUrl: preview.original_preview, displayUrl: preview.original_preview };
       }));
     }
-    setSelectedId(nextFiles[0]?.id);
     void hydrateNonDisplayablePreviews(nextFiles);
   }
 
@@ -2070,6 +2250,15 @@ export function useWorkbench() {
     if (!selectedFile) return;
     try {
       setActionState("filmScan", "running", selectedFile.name);
+      highResRequestRef.current += 1;
+      if (highResTimerRef.current) {
+        clearTimeout(highResTimerRef.current);
+        highResTimerRef.current = null;
+      }
+      if (calibrationSettleTimerRef.current) {
+        clearTimeout(calibrationSettleTimerRef.current);
+        calibrationSettleTimerRef.current = null;
+      }
       appliedCropIdsRef.current.delete(selectedFile.id);
       setFiles((items) => items.map((item) => item.id === selectedFile.id ? {
         ...item,
@@ -2094,11 +2283,6 @@ export function useWorkbench() {
           body.image_data = await fileToDataUrl(selectedFile.file as File);
         }
         payload = await postFilmScan(body);
-      }
-      highResRequestRef.current += 1;
-      if (highResTimerRef.current) {
-        clearTimeout(highResTimerRef.current);
-        highResTimerRef.current = null;
       }
       highResSessionRef.current = payload.session_id ?? selectedFile.sessionId ?? null;
       setFiles((items) =>
@@ -2140,6 +2324,7 @@ export function useWorkbench() {
           negativeBaseEnabled,
           accelerator,
           curves: committedCurves,
+          autoStyle,
           lookAdjustments,
           toneRecovery,
           cropRect: isCropApplied(selectedFile) ? cropRectForRequest(selectedFile.crop) : undefined,
@@ -2286,6 +2471,7 @@ export function useWorkbench() {
           negativeBaseEnabled,
           accelerator,
           curves: committedCurves,
+          autoStyle,
           lookAdjustments,
           toneRecovery,
         }),
@@ -2719,6 +2905,10 @@ export function useWorkbench() {
     strength,
     setStrength,
     commitStrength,
+    autoStyle,
+    setAutoStyle,
+    previewAutoStyle,
+    commitAutoStyle,
     lookAdjustments,
     previewLookAdjustments,
     commitLookAdjustments,
@@ -2806,7 +2996,7 @@ export function useWorkbench() {
   }), [
     backendOk, plugins, evaluators, capabilities, files, filteredFiles, fileCounts,
     selectedId, selectedFile, displayedSelectedFile, selectionDisplayReady, compareMode, splitPosition, viewerZoomMode, viewerZoomScale,
-    viewerPan, mode, negativeBaseEnabled, strength, lookAdjustments, toneRecovery, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
+    viewerPan, mode, negativeBaseEnabled, strength, autoStyle, lookAdjustments, toneRecovery, accelerator, loading, highResLoading, localCurvePreviewBitmap, localCurvePreviewHistogram, activeInspectorTab, exportOptions,
     exportResult, batchExportResults, documentRender, sessionOptions, sessionSaveResult, savedSessions,
     selectedEvaluator, aiContext, aiSettings, aiResult, notifications, activityLog,
     actionStates, sourceFilter, searchQuery, stageContainerSize, preferences, layoutState,

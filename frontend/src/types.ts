@@ -93,6 +93,19 @@ export type LookAdjustments = {
   };
 };
 
+export type AutoStylePreset = "custom" | "neutral" | "film" | "portrait" | "slide" | "soft";
+
+export type AutoStyleSettings = {
+  preset: AutoStylePreset;
+  neutralization: number;
+  lookPreservation: number;
+  warmthBias: number;
+  tintBias: number;
+  toneStyle: number;
+  highlightProtection: number;
+  skinPriority: number;
+};
+
 export type ToneRecoverySettings = {
   enabled: boolean;
   auto: boolean;
@@ -196,11 +209,13 @@ export type CalibrationPayload = {
       candidates: Array<{
         mode: string;
         score: number;
+        base_score?: number;
         input_strength: number;
         output_strength: number;
         reduction_pct: number;
       }>;
     };
+    auto_style?: Record<string, unknown>;
     look_enabled?: boolean;
     look_adjustments?: Record<string, unknown>;
     tone_recovery_enabled?: boolean;
@@ -562,6 +577,7 @@ export type PersistedEditState = {
   cropEdited?: boolean;
   cropApplied?: boolean;
   imageTransform?: ImageTransform;
+  autoStyle?: AutoStyleSettings;
   lookAdjustments?: LookAdjustments;
   toneRecovery?: ToneRecoverySettings;
   runtimeSessionId?: string;

@@ -124,6 +124,225 @@ test.describe("react workbench workflow", () => {
     }
   });
 
+  test("keeps fast calibration preview flowing while dragging strength", async ({ page }) => {
+    const sampleDir = createTempImageDir("photo-calibrator-drag-preview-ui-");
+    const photo = `${sampleDir}/drag-preview.png`;
+    makeImage(photo, [170, 128, 98]);
+
+    const calibrationBodies = [];
+    const { backend, frontend, frontendUrl } = await startServers();
+    try {
+      await page.setViewportSize({ width: 1280, height: 840 });
+      await stubWorkbenchBaseRoutes(page);
+      await page.unroute("**/api/calibrate");
+      await page.route("**/api/preview", async (route) => {
+        const body = route.request().postDataJSON();
+        await fulfillJsonAfterDelay(route, {
+          session_id: "sess:drag-preview",
+          original_preview: TINY_PNG_DATA_URL,
+          processing: {
+            original_width: 1600,
+            original_height: 1060,
+            analysis_width: Number(body.analysis_max_side ?? 320),
+            analysis_height: 212,
+            preview_source: "stub-preview",
+          },
+        }, 20);
+      });
+      await page.route("**/api/calibrate", async (route) => {
+        const body = route.request().postDataJSON();
+        calibrationBodies.push(body);
+        await fulfillJsonAfterDelay(route, {
+          session_id: "sess:drag-preview",
+          original_preview: TINY_PNG_DATA_URL,
+          calibrated_image: TINY_PNG_DATA_URL,
+          reduction_pct: 11,
+          input: { direction: "warm", lab: { strength: 80, a_mean: 0.5, b_star_mean: -0.2 } },
+          output: { lab: { strength: 58, a_mean: 0.1, b_star_mean: -0.1 } },
+          charts: {
+            rgb_histogram: { bins: 256, channels: { r: { counts: [], normalized: [], peak_bin: 0 }, g: { counts: [], normalized: [], peak_bin: 0 }, b: { counts: [], normalized: [], peak_bin: 0 } } },
+            lab_vectors: [{ name: "Original", a: 0.5, b: -0.2 }],
+            strengths: [{ name: "Original", value: 80 }],
+          },
+          processing: {
+            analysis_width: 640,
+            analysis_height: 424,
+            original_width: 1600,
+            original_height: 1060,
+            preview_source: "initial-full",
+          },
+          _timing: {
+            calibration_ms: 120,
+            response_ms: 160,
+          },
+        }, 120);
+      });
+      await page.route("**/api/calibrate-session", async (route) => {
+        const body = route.request().postDataJSON();
+        calibrationBodies.push(body);
+        await fulfillJsonAfterDelay(route, {
+          session_id: body.session_id,
+          original_preview: TINY_PNG_DATA_URL,
+          calibrated_image: TINY_PNG_DATA_URL,
+          reduction_pct: 11,
+          input: { direction: "warm", lab: { strength: 80, a_mean: 0.5, b_star_mean: -0.2 } },
+          output: { lab: { strength: 58, a_mean: 0.1, b_star_mean: -0.1 } },
+          charts: {
+            rgb_histogram: { bins: 256, channels: { r: { counts: [], normalized: [], peak_bin: 0 }, g: { counts: [], normalized: [], peak_bin: 0 }, b: { counts: [], normalized: [], peak_bin: 0 } } },
+            lab_vectors: [{ name: "Original", a: 0.5, b: -0.2 }],
+            strengths: [{ name: "Original", value: 80 }],
+          },
+          processing: {
+            analysis_width: body.fast ? 320 : 640,
+            analysis_height: body.fast ? 212 : 424,
+            original_width: 1600,
+            original_height: 1060,
+            preview_source: body.fast ? "fast-drag" : "full",
+          },
+          _timing: {
+            calibration_ms: body.fast ? 72 : 120,
+            response_ms: body.fast ? 88 : 160,
+          },
+        }, body.fast ? 90 : 120);
+      });
+
+      await page.goto(frontendUrl);
+      await page.getByTestId("topbar-file-input").setInputFiles([photo]);
+      await expect(page.getByTestId("filmstrip-item")).toHaveCount(1);
+      await expect(page.getByTestId("viewer-stage-shell")).toBeVisible();
+      await expect.poll(async () => page.evaluate(() => {
+        const records = window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? [];
+        return records.some((item) => item.accepted);
+      }), { timeout: 10000 }).toBeTruthy();
+
+      calibrationBodies.length = 0;
+      await page.evaluate(() => {
+        window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ = [];
+      });
+
+      const slider = page.getByTestId("strength-input");
+      await slider.scrollIntoViewIfNeeded();
+      const box = await slider.boundingBox();
+      if (!box) throw new Error("strength input is not measurable");
+      const y = box.y + box.height / 2;
+      await page.mouse.move(box.x + box.width * 0.67, y);
+      await page.mouse.down();
+      for (const ratio of [0.74, 0.82, 0.9]) {
+        await page.mouse.move(box.x + box.width * ratio, y, { steps: 4 });
+        await page.waitForTimeout(35);
+      }
+
+      await expect.poll(async () => page.evaluate(() => {
+        const records = window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? [];
+        return records.some((item) => item.fast && item.accepted);
+      }), { timeout: 1500 }).toBeTruthy();
+      const dragRecords = await page.evaluate(() => window.__PHOTO_CALIBRATOR_CALIBRATION_TIMINGS__ ?? []);
+      await page.mouse.up();
+
+      const firstFast = dragRecords.find((item) => item.fast && item.accepted);
+      expect(firstFast, "drag should receive a fast preview before pointer release").toBeTruthy();
+      expect(firstFast.elapsedMs).toBeLessThan(700);
+      expect(firstFast.previewSource).toBe("fast-drag");
+      expect(calibrationBodies.some((body) => body.fast === true)).toBeTruthy();
+    } finally {
+      stopServer(frontend);
+      stopServer(backend);
+      removeTempDir(sampleDir);
+    }
+  });
+
+  test("maps style map drag to stronger auto style parameters", async ({ page }) => {
+    const sampleDir = createTempImageDir("photo-calibrator-style-map-ui-");
+    const photo = `${sampleDir}/style-map.png`;
+    makeImage(photo, [170, 128, 98]);
+
+    const calibrationBodies = [];
+    const { backend, frontend, frontendUrl } = await startServers();
+    try {
+      await page.setViewportSize({ width: 1280, height: 840 });
+      await stubWorkbenchBaseRoutes(page);
+      await page.unroute("**/api/calibrate");
+      await page.route("**/api/calibrate", async (route) => {
+        const body = route.request().postDataJSON();
+        calibrationBodies.push(body);
+        await fulfillJsonAfterDelay(route, {
+          session_id: "sess:style-map",
+          original_preview: TINY_PNG_DATA_URL,
+          calibrated_image: TINY_PNG_DATA_URL,
+          reduction_pct: 11,
+          input: { direction: "warm", lab: { strength: 80, a_mean: 0.5, b_star_mean: -0.2 } },
+          output: { lab: { strength: 58, a_mean: 0.1, b_star_mean: -0.1 } },
+          charts: {
+            rgb_histogram: { bins: 256, channels: { r: { counts: [], normalized: [], peak_bin: 0 }, g: { counts: [], normalized: [], peak_bin: 0 }, b: { counts: [], normalized: [], peak_bin: 0 } } },
+            lab_vectors: [{ name: "Original", a: 0.5, b: -0.2 }],
+            strengths: [{ name: "Original", value: 80 }],
+          },
+          processing: {
+            analysis_width: 320,
+            analysis_height: 212,
+            original_width: 1600,
+            original_height: 1060,
+            preview_source: "initial-full",
+          },
+        }, 40);
+      });
+      await page.route("**/api/calibrate-session", async (route) => {
+        const body = route.request().postDataJSON();
+        calibrationBodies.push(body);
+        await fulfillJsonAfterDelay(route, {
+          session_id: body.session_id,
+          original_preview: TINY_PNG_DATA_URL,
+          calibrated_image: TINY_PNG_DATA_URL,
+          reduction_pct: 11,
+          input: { direction: "warm", lab: { strength: 80, a_mean: 0.5, b_star_mean: -0.2 } },
+          output: { lab: { strength: 58, a_mean: 0.1, b_star_mean: -0.1 } },
+          charts: body.fast ? {} : {
+            rgb_histogram: { bins: 256, channels: { r: { counts: [], normalized: [], peak_bin: 0 }, g: { counts: [], normalized: [], peak_bin: 0 }, b: { counts: [], normalized: [], peak_bin: 0 } } },
+            lab_vectors: [{ name: "Original", a: 0.5, b: -0.2 }],
+            strengths: [{ name: "Original", value: 80 }],
+          },
+          processing: {
+            analysis_width: body.fast ? 320 : 640,
+            analysis_height: body.fast ? 212 : 424,
+            original_width: 1600,
+            original_height: 1060,
+            preview_source: body.fast ? "style-map-fast" : "style-map-full",
+          },
+        }, 40);
+      });
+
+      await page.goto(frontendUrl);
+      await page.getByTestId("topbar-file-input").setInputFiles([photo]);
+      await expect(page.getByTestId("filmstrip-item")).toHaveCount(1);
+      await expect(page.getByTestId("viewer-stage-shell")).toBeVisible();
+      await expect.poll(() => calibrationBodies.some((body) => body.session_id === undefined), { timeout: 10000 }).toBeTruthy();
+
+      calibrationBodies.length = 0;
+      await page.getByTestId("inspector-tab-adjust").click();
+      const styleMap = page.getByTestId("auto-style-map");
+      await styleMap.scrollIntoViewIfNeeded();
+      const box = await styleMap.boundingBox();
+      if (!box) throw new Error("style map is not measurable");
+      await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.94, box.y + box.height * 0.08, { steps: 5 });
+      await expect.poll(() => calibrationBodies.some((body) => body.auto_style?.look_preservation > 0.9), { timeout: 3000 }).toBeTruthy();
+      await page.mouse.up();
+
+      const styleBody = calibrationBodies.filter((body) => body.auto_style?.preset === "custom").at(-1);
+      expect(styleBody).toBeTruthy();
+      expect(styleBody.auto_style.look_preservation).toBeGreaterThan(0.9);
+      expect(styleBody.auto_style.tone_style).toBeGreaterThan(0.85);
+      expect(styleBody.auto_style.neutralization).toBeLessThan(0.72);
+      expect(styleBody.auto_style.highlight_protection).toBeGreaterThan(0.8);
+      expect(styleBody.strength).toBe(styleBody.auto_style.neutralization);
+    } finally {
+      stopServer(frontend);
+      stopServer(backend);
+      removeTempDir(sampleDir);
+    }
+  });
+
   test("keeps main calibration visible after import on compact viewport", async ({ page }) => {
     const sampleDir = createTempImageDir("photo-calibrator-frontend-ui-");
     const one = `${sampleDir}/a-warm-01.png`;
