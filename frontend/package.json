@@ -17,7 +17,7 @@
     "electron": "electron electron/main.mjs",
     "electron:dev": "PHOTO_CALIBRATOR_RENDERER_MODE=dev PHOTO_CALIBRATOR_RENDERER_URL=http://127.0.0.1:5173 PHOTO_CALIBRATOR_API_BASE_URL=http://127.0.0.1:8766 electron electron/main.mjs",
     "electron:prod": "electron electron/main.mjs",
-    "package:backend:mac": "PYINSTALLER_CONFIG_DIR=../build/pyinstaller-config ../.venv/bin/pyinstaller --clean --noconfirm --distpath ../build/backend --workpath ../build/pyinstaller ../packaging/photo-calibrator-backend.spec",
+    "package:backend:mac": "sh ../scripts/package_backend_mac.sh",
     "package:dmg:arm64": "npm run build && npm run package:backend:mac && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
