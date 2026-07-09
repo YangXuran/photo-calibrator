@@ -1,12 +1,12 @@
-# Photo Calibrator
+# ChromaFrame
 
-Photo Calibrator is a local-first desktop workbench for photo color analysis, calibration and film-scan cleanup.
+ChromaFrame is a local-first desktop workbench for photo color analysis, calibration, film-frame correction and scan cleanup.
 
 ## Why This Project Exists
 
 Digital photo correction tools are often split between two extremes: simple filters that hide the color problem, and professional suites that are powerful but heavy, opaque and hard to automate. This project started from a more practical goal: build a transparent tool that can tell a photographer what is wrong with a photo's color, show the evidence, make deterministic corrections, and still leave room for personal color taste.
 
-The goal is not to replace a full raw editor. The goal is to provide a focused calibration workspace for color cast analysis, negative-film conversion, scan crop cleanup, repeatable export and batch workflows.
+The goal is not to replace a full raw editor. The goal is to provide a focused calibration workspace for color cast analysis, negative-film conversion, film-frame crop cleanup, repeatable export and batch workflows.
 
 ## What It Does
 
@@ -51,6 +51,20 @@ Build a local macOS arm64 DMG:
 
 ```bash
 npm --prefix frontend run package:dmg:arm64
+```
+
+## GitHub Packaging
+
+The repository has two GitHub Actions workflows:
+
+- `Generated Smoke`: runs on push, pull request and manual dispatch. It generates synthetic test images, runs the backend smoke path, typechecks the frontend and builds the renderer.
+- `Package macOS`: runs manually for packaging checks, and on `v*` tags for release builds. Manual runs upload a short-lived Actions artifact. Tag runs also create or update a GitHub Release with the macOS arm64 DMG.
+
+Create a release build by pushing a version tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## Architecture
