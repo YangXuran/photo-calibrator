@@ -49,7 +49,7 @@ export function resolveRuntimeConfig(): RuntimeConfig {
     injected.mode ??
     (getEnv("VITE_RUNTIME_MODE") as RuntimeMode | undefined) ??
     (getEnv("VITE_RUNTIME_MODE") === "desktop-shell" ? "desktop-shell" : "browser");
-  const shellName = injected.shellName ?? getEnv("VITE_SHELL_NAME") ?? "Photo Calibrator";
+  const shellName = injected.shellName ?? getEnv("VITE_SHELL_NAME") ?? "ChromaFrame";
   const supportsNativeDialogs =
     injected.supportsNativeDialogs ??
     parseBoolean(getEnv("VITE_SUPPORTS_NATIVE_DIALOGS")) ??

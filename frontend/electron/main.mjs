@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron";
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import os from "node:os";
@@ -13,6 +13,7 @@ const projectRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(projectRoot, "..");
 const distIndex = path.join(projectRoot, "dist", "index.html");
 const preloadPath = path.join(__dirname, "preload.mjs");
+const appIconPath = path.join(projectRoot, "assets", "app-icon.png");
 
 const rendererUrl = process.env.PHOTO_CALIBRATOR_RENDERER_URL || "http://127.0.0.1:3000";
 const configuredApiBaseUrl = process.env.PHOTO_CALIBRATOR_API_BASE_URL;
@@ -26,9 +27,13 @@ const backendHost = process.env.PHOTO_CALIBRATOR_BACKEND_HOST || "127.0.0.1";
 // ---------------------------------------------------------------------------
 // Platform detection
 // ---------------------------------------------------------------------------
-const APP_NAME = "Photo Calibrator";
+const APP_NAME = "ChromaFrame";
+const APP_SHELL_NAME = `${APP_NAME} Desktop`;
+const APP_WINDOW_TITLE = `${APP_NAME} Workbench`;
 const venvPython = path.join(repoRoot, ".venv", "bin", "python");
 const PYTHON_CMD = process.env.PHOTO_CALIBRATOR_PYTHON || (existsSync(venvPython) ? venvPython : "python3");
+
+app.setName(APP_NAME);
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -155,11 +160,13 @@ async function listFilesRecursively(rootDir) {
 
 function createWindow() {
   const win = new BrowserWindow({
+    title: APP_WINDOW_TITLE,
     width: 1560,
     height: 980,
     minWidth: 1180,
     minHeight: 760,
     backgroundColor: "#0b1016",
+    ...(existsSync(appIconPath) ? { icon: appIconPath } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -191,6 +198,15 @@ function createWindow() {
     }
   });
 
+}
+
+function applyApplicationIdentity() {
+  app.setName(APP_NAME);
+  if (!isMac || !existsSync(appIconPath)) return;
+  const dockIcon = nativeImage.createFromPath(appIconPath);
+  if (!dockIcon.isEmpty()) {
+    app.dock.setIcon(dockIcon);
+  }
 }
 
 ipcMain.handle("photo-calibrator:pick-files", async () => {
@@ -240,7 +256,7 @@ ipcMain.handle("photo-calibrator:list-directory-files", async (_event, directory
 
 ipcMain.handle("photo-calibrator:get-runtime", async () => ({
   mode: "desktop-shell",
-  shellName: "Photo Calibrator Desktop",
+  shellName: APP_SHELL_NAME,
   apiBaseUrl: currentBackendUrl || apiBaseUrl,
   supportsNativeDialogs: true,
   supportsShellBridge: true,
@@ -336,6 +352,7 @@ if (isLinux && (process.env.CI || process.env.PHOTO_CALIBRATOR_DISABLE_SANDBOX))
 let currentBackendUrl = null;
 
 app.whenReady().then(async () => {
+  applyApplicationIdentity();
   try {
     currentBackendUrl = await startBackend();
     console.log(`Backend ready at ${currentBackendUrl}`);

@@ -1,0 +1,114 @@
+name: Package macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generated-image-smoke:
+    name: Generated image smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux image dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - name: Install Python package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests scripts
+
+      - name: Run generated-image backend smoke
+        run: python scripts/smoke_generated_images.py
+
+  macos-dmg:
+    name: Build macOS arm64 DMG
+    runs-on: macos-26
+    needs: generated-image-smoke
+    timeout-minutes: 75
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,io,raw]"
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests scripts
+
+      - name: Run generated-image backend smoke
+        run: python scripts/smoke_generated_images.py
+
+      - name: Typecheck frontend
+        run: npm --prefix frontend run typecheck
+
+      - name: Build macOS DMG
+        run: npm --prefix frontend run package:dmg:arm64
+
+      - name: Verify macOS app identity
+        run: |
+          set -euo pipefail
+          APP="release/mac-arm64/ChromaFrame.app"
+          PLIST="$APP/Contents/Info.plist"
+          test -d "$APP"
+          test -f "$APP/Contents/Resources/icon.icns"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$PLIST")" = "ChromaFrame"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "ChromaFrame"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST")" = "ChromaFrame"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$PLIST")" = "icon.icns"
+          ls -lh release/ChromaFrame-*-arm64.dmg
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromaframe-macos-arm64
+          path: |
+            release/ChromaFrame-*-arm64.dmg
+            release/ChromaFrame-*-arm64.dmg.blockmap
+            release/latest-mac.yml
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

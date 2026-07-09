@@ -1,5 +1,6 @@
 import type { RuntimeConfig } from "../runtime/config";
 import { getRuntimePresentation } from "../runtime/presentation";
+import appIconUrl from "../../assets/app-icon.svg";
 
 type WorkbenchBrandProps = {
   runtime: RuntimeConfig;
@@ -10,9 +11,9 @@ export function WorkbenchBrand({ runtime }: WorkbenchBrandProps) {
 
   return (
     <div className="pc-brand">
-      <span className="pc-brand-dot" />
+      <img alt="" aria-hidden="true" className="pc-brand-icon" src={appIconUrl} />
       <div>
-        <strong>Photo Calibrator</strong>
+        <strong>ChromaFrame</strong>
         <span>{presentation.brandSubtitle}</span>
       </div>
     </div>
