@@ -78,7 +78,7 @@ def test_read_float_tiff_returns_image_buffer(tmp_path) -> None:
 
     path = tmp_path / "float32.tif"
     data = np.random.rand(32, 32, 3).astype(np.float32) * 0.5
-    tifffile.imwrite(str(path), data)
+    tifffile.imwrite(str(path), data, photometric="rgb")
 
     from photo_calibrator.io.readers import read_image
 
@@ -95,7 +95,7 @@ def test_read_uint16_tiff_returns_image_buffer(tmp_path) -> None:
     path = tmp_path / "u16.tif"
     data = np.zeros((16, 16, 3), dtype=np.uint16)
     data[:, :] = 32768
-    tifffile.imwrite(str(path), data)
+    tifffile.imwrite(str(path), data, photometric="rgb")
 
     from photo_calibrator.io.readers import read_image
 

@@ -63,6 +63,39 @@ test.describe("electron desktop e2e", () => {
     }
   });
 
+  test("exposes the unified app runtime and reconnects an external backend", async () => {
+    const backendPort = await getFreePort();
+    const backend = startBackend(backendPort);
+    await waitForUrl(`http://127.0.0.1:${backendPort}/api/health`, (r) => r.ok);
+    const electronApp = await launchElectron(backendPort);
+
+    try {
+      const window = await electronApp.firstWindow();
+      await window.waitForLoadState("domcontentloaded");
+      await expect(window.getByTestId("app-shell")).toBeVisible({ timeout: 15000 });
+
+      const runtime = await window.evaluate(() => ({
+        runtime: window.__PHOTO_CALIBRATOR_RUNTIME__,
+        hasAppBridge: Boolean(window.__PHOTO_CALIBRATOR_APP__),
+      }));
+      expect(runtime.hasAppBridge).toBe(true);
+      expect(runtime.runtime.backend.ownership).toBe("external");
+      expect(runtime.runtime.backend.status).toBe("ready");
+      expect(runtime.runtime.apiBaseUrl).toBe(`http://127.0.0.1:${backendPort}`);
+
+      await window.getByTestId("inspector-tab-settings").click();
+      await window.getByTestId("backend-restart-button").click();
+      await expect.poll(
+        () => window.evaluate(() => window.__PHOTO_CALIBRATOR_RUNTIME__?.backend?.status),
+        { timeout: 10000 },
+      ).toBe("ready");
+      await expect(window.getByTestId("runtime-status-chips")).toContainText("Backend Online");
+    } finally {
+      await electronApp.close().catch(() => {});
+      stopServer(backend);
+    }
+  });
+
   test("imports real TIFF photos via shell bridge", async () => {
     const backendPort = await getFreePort();
     const backend = startBackend(backendPort);

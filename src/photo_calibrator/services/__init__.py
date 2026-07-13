@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
+import inspect
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -156,9 +157,7 @@ class PluginService:
         registered = self._plugin(calibrator_id, "calibrator")
         instance = registered.instance
         try:
-            value = instance.calibrate(image, params, **kwargs)
-        except TypeError:
-            value = instance.calibrate(image, params)
+            value = _call_with_supported_kwargs(instance.calibrate, image, params, **kwargs)
         except Exception as exc:
             raise ServiceError(f"Calibrator {calibrator_id} failed: {exc}") from exc
         metadata = value.get("metadata", {}) if isinstance(value, dict) else {}
@@ -210,6 +209,30 @@ class AIEvaluationService:
     def evaluate_with_provider(self, provider, input: EvalInput, images: list[np.ndarray], *, timeout_seconds: float | None = None) -> EvalOutput:
         output = _run_with_timeout(lambda: provider.evaluate(input, images), timeout_seconds)
         return _normalize_eval(output, {"source": "native", "provider": provider.name})
+
+
+def _call_with_supported_kwargs(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call a hook with the context fields declared by its signature.
+
+    Older calibrator plugins only accept ``(image, params)`` while newer ones
+    may opt into session and analysis context.  Signature filtering preserves
+    that compatibility without catching a TypeError raised inside the plugin.
+    """
+
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return callback(*args)
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return callback(*args, **kwargs)
+    supported = {
+        name: value
+        for name, value in kwargs.items()
+        if name in parameters
+        and parameters[name].kind
+        in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    }
+    return callback(*args, **supported)
 
 
 def _run_with_timeout(callback, timeout_seconds: float | None):

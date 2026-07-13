@@ -1,5 +1,13 @@
 export type RuntimeMode = "browser" | "desktop-shell";
 
+export type BackendRuntimeStatus = {
+  status: "idle" | "starting" | "ready" | "failed" | "stopped";
+  ownership: "none" | "external" | "managed";
+  url: string;
+  pid: number | null;
+  lastError: string | null;
+};
+
 export type RuntimeConfig = {
   apiBaseUrl: string;
   mode: RuntimeMode;
@@ -8,11 +16,21 @@ export type RuntimeConfig = {
   supportsShellBridge: boolean;
   enableMockShellBridge: boolean;
   tempDir?: string;
+  isPackaged?: boolean;
+  appVersion?: string;
+  backend?: BackendRuntimeStatus;
+};
+
+export type PhotoCalibratorAppBridge = {
+  getRuntime: () => Promise<Partial<RuntimeConfig>>;
+  restartBackend: () => Promise<Partial<RuntimeConfig>>;
+  onRuntimeChanged: (callback: (runtime: Partial<RuntimeConfig>) => void) => () => void;
 };
 
 declare global {
   interface Window {
     __PHOTO_CALIBRATOR_RUNTIME__?: Partial<RuntimeConfig>;
+    __PHOTO_CALIBRATOR_APP__?: PhotoCalibratorAppBridge;
   }
 }
 
@@ -31,16 +49,20 @@ function parseBoolean(value: unknown) {
 }
 
 function getEnv(key: string): string | undefined {
-  // Next.js: process.env.NEXT_PUBLIC_*
+  const viteValue = (import.meta.env as Record<string, string | undefined>)[key];
+  if (viteValue !== undefined) return viteValue;
+  // Keep compatibility with environments that expose public values through process.env.
   if (typeof process !== "undefined" && process.env) {
-    return (process.env as Record<string, string | undefined>)["NEXT_PUBLIC_" + key];
+    const values = process.env as Record<string, string | undefined>;
+    return values[key] ?? values["NEXT_PUBLIC_" + key];
   }
   return undefined;
 }
 
-export function resolveRuntimeConfig(): RuntimeConfig {
+export function resolveRuntimeConfig(runtimeOverride?: Partial<RuntimeConfig>): RuntimeConfig {
   const injected =
-    typeof window !== "undefined" ? (window.__PHOTO_CALIBRATOR_RUNTIME__ ?? {}) : {};
+    runtimeOverride
+    ?? (typeof window !== "undefined" ? (window.__PHOTO_CALIBRATOR_RUNTIME__ ?? {}) : {});
 
   const apiBaseUrl = normalizeBaseUrl(
     injected.apiBaseUrl ?? getEnv("VITE_API_BASE_URL") ?? "http://127.0.0.1:8766",
@@ -73,5 +95,8 @@ export function resolveRuntimeConfig(): RuntimeConfig {
     supportsShellBridge: Boolean(supportsShellBridge),
     enableMockShellBridge: Boolean(enableMockShellBridge),
     tempDir,
+    isPackaged: Boolean(injected.isPackaged),
+    appVersion: injected.appVersion,
+    backend: injected.backend,
   };
 }

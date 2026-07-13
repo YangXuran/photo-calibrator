@@ -43,6 +43,7 @@ import type {
 } from "../types";
 import { DEFAULT_IDENTITY_CURVE } from "../types";
 import { perfMark, perfReset, perfDump } from "../lib/perf";
+import { useRuntimeConfig } from "../runtime/RuntimeProvider";
 import { debugLog } from "../lib/debugLog";
 
 type ExportOptions = {
@@ -569,6 +570,7 @@ function resolvePreviewMaxSide(preview?: WorkspaceFile["highResPreview"] | Works
 }
 
 export function useWorkbench() {
+  const runtime = useRuntimeConfig();
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [evaluators, setEvaluators] = useState<EvaluatorInfo[]>([]);
@@ -1243,7 +1245,7 @@ export function useWorkbench() {
       })
       .catch(() => setEvaluators([]));
     void refreshSavedSessions();
-  }, []);
+  }, [runtime.apiBaseUrl, runtime.backend?.status]);
 
   useEffect(() => {
     fetchCapabilities(accelerator)

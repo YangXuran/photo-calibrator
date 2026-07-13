@@ -417,7 +417,7 @@ test.describe("react workbench workflow", () => {
       await page.getByTestId("viewer-stage-shell").hover();
       await expect(page.getByTestId("viewer-hud-overlay")).toHaveClass(/is-active/);
       await page.getByTestId("toggle-viewer-focus").click();
-      await expect(page.getByTestId("runtime-banner")).toBeVisible();
+      await expect(page.getByTestId("runtime-banner")).toHaveCount(0);
 
       await page.getByTestId("inspector-tab-export").click();
       await expect(page.getByTestId("export-settings-section")).toBeVisible();

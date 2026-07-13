@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { useRuntimeConfig } from "../runtime/RuntimeProvider";
-import { RuntimeBanner } from "./RuntimeBanner";
 
 type AppShellProps = {
   topbar: ReactNode;
@@ -14,8 +13,7 @@ export function AppShell({ topbar, notifications, workbench, focusMode = false }
 
   return (
     <div className={`pc-app pc-app-mode-${runtime.mode} ${focusMode ? "pc-app-focus" : ""}`} data-testid="app-shell">
-      <div className={`pc-shell-frame ${focusMode ? "is-focus" : ""}`} data-testid="app-shell-frame">
-        {!focusMode ? <RuntimeBanner runtime={runtime} /> : null}
+      <div className="pc-shell-frame" data-testid="app-shell-frame">
         {notifications}
         {topbar}
         {workbench}

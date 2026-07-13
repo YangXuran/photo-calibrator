@@ -50,6 +50,10 @@ def oiio_read(path: str | Path) -> np.ndarray | None:
     try:
         inp = _oiio.ImageInput.open(source)
         if inp is None:
+            # OIIO stores open failures in a global error slot.  Consume it
+            # before returning so the process does not emit a pending-error
+            # warning during shutdown.
+            _oiio.geterror()
             return None
         spec = inp.spec()
         data = inp.read_image()

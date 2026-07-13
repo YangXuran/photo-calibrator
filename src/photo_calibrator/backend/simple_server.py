@@ -52,11 +52,11 @@ from photo_calibrator.services import AIEvaluationService, PluginService
 from photo_calibrator.services.contracts import HookNotSupportedError, ServiceError
 from photo_calibrator.backend.workspace_db import get_workspace_db
 from photo_calibrator.backend.config import load_config, save_config as _save_config_to_file
+from photo_calibrator.backend.performance import PERFORMANCE_MONITOR
 
 ROOT = Path(__file__).resolve().parents[3]
 _FRONTEND_DIST = ROOT / "frontend" / "dist"
 WEB_ROOT = _FRONTEND_DIST if _FRONTEND_DIST.is_dir() else ROOT / "web"
-PREVIEW_CACHE_DIR = ROOT / ".cache" / "previews"
 SESSION_STORE_DIR = ROOT / ".cache" / "sessions"
 DEFAULT_ANALYSIS_MAX_SIDE = 3200
 FILM_SCAN_MAX_SIDE = 960
@@ -100,6 +100,7 @@ _PLUGIN_SERVICE: PluginService | None = None
 _AI_EVALUATION_SERVICE: AIEvaluationService | None = None
 _JOB_EXECUTOR = ThreadPoolExecutor(max_workers=max(2, min(4, os.cpu_count() or 2)))
 _BASE_URL: str = "http://127.0.0.1:8765"
+# Preview images are disposable and intentionally live in the host temp area.
 PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "photo-calibrator-previews"
 
 
@@ -1312,9 +1313,9 @@ def _write_cached_preview(path: Path, max_side: int, prepared: PreparedImage) ->
 
 def _decode_tiff_file_preview(path: Path, max_side: int) -> tuple[np.ndarray, str]:
     try:
-        from PIL import Image
+        from photo_calibrator.io.pillow import open_local_image
 
-        with Image.open(path) as image:
+        with open_local_image(path) as image:
             frames = getattr(image, "n_frames", 1)
             if frames > 1:
                 candidates: list[tuple[int, int, int]] = []
@@ -1354,9 +1355,9 @@ def _reduced_imread_flag_for_path(path: Path, max_side: int) -> int:
 
 def _image_size_hint(path: Path) -> tuple[int, int] | None:
     try:
-        from PIL import Image
+        from photo_calibrator.io.pillow import open_local_image
 
-        with Image.open(path) as image:
+        with open_local_image(path) as image:
             return int(image.width), int(image.height)
     except Exception:
         return None
@@ -3255,9 +3256,19 @@ def _preview_blob_from_url(value: object) -> tuple[bytes | None, str | None]:
     if not parsed.path.startswith("/api/preview-image/"):
         return None, None
     candidate = (PREVIEW_CACHE_DIR / Path(parsed.path).name).resolve()
-    if not str(candidate).startswith(str(PREVIEW_CACHE_DIR.resolve())) or not candidate.is_file():
+    if not _is_path_within(candidate, PREVIEW_CACHE_DIR) or not candidate.is_file():
         return None, None
     return candidate.read_bytes(), mimetypes.guess_type(candidate.name)[0] or "image/jpeg"
+
+
+def _is_path_within(candidate: Path, directory: Path) -> bool:
+    """Return whether a resolved path is contained by a resolved directory."""
+
+    try:
+        candidate.resolve().relative_to(directory.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _preview_data_url(blob: bytes | None, mime: str | None) -> str | None:
@@ -4518,11 +4529,16 @@ _POST_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/history/undo": lambda body: _history_move_payload(body, -1),
     "/api/history/redo": lambda body: _history_move_payload(body, 1),
     "/api/config": _config_put_payload,
+    "/api/performance/reset": lambda _body: _performance_reset_payload(),
 }
 
 _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
     "/api/ai-evaluators": _ai_evaluators_payload,
-    "/api/health": lambda _query: {"ok": True},
+    "/api/health": lambda _query: {
+        "ok": True,
+        "service": "photo-calibrator",
+        "api_version": 1,
+    },
     "/api/capabilities": _get_capabilities_route,
     "/api/plugins": _plugins_payload,
     "/api/accelerator-benchmark": _get_benchmark_route,
@@ -4537,27 +4553,35 @@ _GET_ROUTES: dict[str, "Callable[[dict], dict]"] = {
         "workspace_root": query.get("workspace_root", [None])[0],
     }),
     "/api/config": _config_get_payload,
+    "/api/performance": lambda _query: PERFORMANCE_MONITOR.snapshot(),
 }
+
+
+def _performance_reset_payload() -> dict:
+    PERFORMANCE_MONITOR.reset()
+    return {"ok": True}
 
 
 def dispatch_backend_request(method: str, path: str, payload: dict | None = None) -> dict:
     normalized_method = method.upper()
     body = payload or {}
-    if normalized_method == "POST":
-        handler = _POST_ROUTES.get(path)
-        if handler is None:
-            raise KeyError(f"Unknown POST route: {path}")
-        return handler(body)
-    if normalized_method == "GET":
-        handler = _GET_ROUTES.get(path)
-        if handler is None:
-            raise KeyError(f"Unknown GET route: {path}")
-        query = {
-            key: value if isinstance(value, list) else [value]
-            for key, value in body.items()
-        }
-        return handler(query)
-    raise ValueError(f"Unsupported method: {method}")
+    operation = f"{normalized_method} {path}"
+    with PERFORMANCE_MONITOR.span(operation):
+        if normalized_method == "POST":
+            handler = _POST_ROUTES.get(path)
+            if handler is None:
+                raise KeyError(f"Unknown POST route: {path}")
+            return handler(body)
+        if normalized_method == "GET":
+            handler = _GET_ROUTES.get(path)
+            if handler is None:
+                raise KeyError(f"Unknown GET route: {path}")
+            query = {
+                key: value if isinstance(value, list) else [value]
+                for key, value in body.items()
+            }
+            return handler(query)
+        raise ValueError(f"Unsupported method: {method}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -4611,7 +4635,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         try:
-            self._send_json(handler(body))
+            self._send_json(dispatch_backend_request("POST", self.path, body))
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
 
@@ -4620,7 +4644,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/preview-image/"):
             name = parsed.path.split("/api/preview-image/", 1)[1]
             candidate = (PREVIEW_CACHE_DIR / name).resolve()
-            if not str(candidate).startswith(str(PREVIEW_CACHE_DIR.resolve())):
+            if not _is_path_within(candidate, PREVIEW_CACHE_DIR):
                 self.send_error(403)
                 return
             if not candidate.exists() or not candidate.is_file():
@@ -4638,7 +4662,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
         rel = "index.html" if parsed.path in {"/", ""} else parsed.path.lstrip("/")
         candidate = (WEB_ROOT / rel).resolve()
-        if not str(candidate).startswith(str(WEB_ROOT.resolve())):
+        if not _is_path_within(candidate, WEB_ROOT):
             self.send_error(403)
             return
         if not candidate.exists() or not candidate.is_file():

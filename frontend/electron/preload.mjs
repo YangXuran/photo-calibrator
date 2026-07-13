@@ -9,6 +9,16 @@ const runtime = await ipcRenderer.invoke("photo-calibrator:get-runtime");
 
 contextBridge.exposeInMainWorld("__PHOTO_CALIBRATOR_RUNTIME__", runtime);
 
+contextBridge.exposeInMainWorld("__PHOTO_CALIBRATOR_APP__", {
+  getRuntime: () => ipcRenderer.invoke("photo-calibrator:get-runtime"),
+  restartBackend: () => ipcRenderer.invoke("photo-calibrator:restart-backend"),
+  onRuntimeChanged: (callback) => {
+    const handler = (_event, nextRuntime) => callback(nextRuntime);
+    ipcRenderer.on("runtime:status", handler);
+    return () => ipcRenderer.removeListener("runtime:status", handler);
+  },
+});
+
 contextBridge.exposeInMainWorld("__PHOTO_CALIBRATOR_SHELL__", {
   source: "electron-preload",
   pickFiles: async () => {

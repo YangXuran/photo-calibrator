@@ -67,8 +67,8 @@ class CalibratorHook(Protocol):
         """Human-readable name, e.g. 'film-look', 'cross-process'."""
         ...
 
-    def calibrate(self, image: Any, params: dict[str, Any]) -> Any:
-        """Apply calibration to an image and return the result."""
+    def calibrate(self, image: Any, params: dict[str, Any], **kwargs: Any) -> Any:
+        """Apply calibration and optionally consume backend context fields."""
         ...
 
 

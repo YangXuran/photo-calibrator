@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { shouldSuppressManagedStderr } from "./logFilters.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const frontendDir = new URL("../frontend/", import.meta.url);
@@ -30,7 +31,12 @@ function spawnManaged(label, command, args, options = {}) {
     options.onStdout?.(text);
     process.stdout.write(`[${label}] ${text}`);
   });
-  child.stderr?.on("data", (chunk) => process.stderr.write(`[${label}:err] ${chunk}`));
+  child.stderr?.on("data", (chunk) => {
+    const text = chunk.toString();
+    if (!shouldSuppressManagedStderr(label, text)) {
+      process.stderr.write(`[${label}:err] ${text}`);
+    }
+  });
   child.on("exit", (code, signal) => {
     children.delete(child);
     if (!shuttingDown && label === "electron") {
@@ -115,7 +121,9 @@ try {
     env: {
       PHOTO_CALIBRATOR_RENDERER_URL: viteUrl || requestedViteUrl,
       PHOTO_CALIBRATOR_RENDERER_MODE: "dev",
-      PHOTO_CALIBRATOR_API_BASE_URL: process.env.PHOTO_CALIBRATOR_API_BASE_URL || "http://127.0.0.1:8766",
+      ...(process.env.PHOTO_CALIBRATOR_API_BASE_URL
+        ? { PHOTO_CALIBRATOR_API_BASE_URL: process.env.PHOTO_CALIBRATOR_API_BASE_URL }
+        : {}),
     },
   });
 } catch (error) {

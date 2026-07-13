@@ -11,6 +11,18 @@ type RuntimeStatusChipsProps = {
 
 export function RuntimeStatusChips({ backendOk, runtime }: RuntimeStatusChipsProps) {
   const presentation = getRuntimePresentation(runtime);
+  const managedStatus = runtime.backend?.status;
+  const backendLabel = managedStatus === "starting"
+    ? "Backend Starting"
+    : managedStatus === "failed"
+      ? "Backend Failed"
+      : managedStatus === "stopped"
+        ? "Backend Stopped"
+        : backendOk
+          ? "Backend Online"
+          : backendOk === false
+            ? "Backend Offline"
+            : "Checking";
   const chips = [
     {
       label: presentation.shellLineLabel,
@@ -21,8 +33,16 @@ export function RuntimeStatusChips({ backendOk, runtime }: RuntimeStatusChipsPro
       tone: runtime.supportsShellBridge ? "ok" : "default",
     },
     {
-      label: backendOk ? "Backend Online" : backendOk === false ? "Backend Offline" : "Checking",
-      tone: backendOk ? "ok" : backendOk === false ? "bad" : "default",
+      label: backendLabel,
+      tone: managedStatus === "failed" || managedStatus === "stopped"
+        ? "bad"
+        : managedStatus === "starting"
+          ? "default"
+          : backendOk
+            ? "ok"
+            : backendOk === false
+              ? "bad"
+              : "default",
     },
   ] as const;
 

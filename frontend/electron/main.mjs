@@ -3,9 +3,8 @@ import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:net";
+import { BackendSupervisor } from "./backendSupervisor.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,97 +37,25 @@ app.setName(APP_NAME);
 // ---------------------------------------------------------------------------
 // Backend lifecycle
 // ---------------------------------------------------------------------------
-let backendProcess = null;
+const packagedBackend = path.join(process.resourcesPath, "backend", "photo-calibrator-backend");
+const backendEnv = { ...process.env, PYTHONUNBUFFERED: "1" };
+if (!app.isPackaged) backendEnv.PYTHONPATH = path.join(repoRoot, "src");
+const backendArgs = app.isPackaged
+  ? ["--accelerator", "auto"]
+  : ["-m", "photo_calibrator.backend.simple_server", "--accelerator", "auto"];
+const devWebRoot = path.join(projectRoot, "public");
+if (isDev && existsSync(devWebRoot)) backendArgs.push("--web-root", devWebRoot);
 
-function findAvailablePort(startPort) {
-  const tryPort = (port) => new Promise((resolve) => {
-    const server = createServer();
-    server.unref();
-    server.on("error", () => resolve(null));
-    server.listen(port, backendHost, () => {
-      server.close(() => resolve(port));
-    });
-  });
-
-  return (async () => {
-    for (let port = startPort; port < startPort + 20; port += 1) {
-      const available = await tryPort(port);
-      if (available !== null) return available;
-    }
-    throw new Error(`No available backend port in range ${startPort}-${startPort + 19}`);
-  })();
-}
-
-async function waitForBackend(url, timeoutMs = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const response = await fetch(`${url}/api/health`);
-      if (response.ok) return true;
-    } catch {
-      // backend not ready yet
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
-}
-
-async function startBackend() {
-  if (configuredApiBaseUrl && await waitForBackend(apiBaseUrl, 1200)) {
-    return apiBaseUrl;
-  }
-  const port = await findAvailablePort(backendPort);
-  const healthUrl = `http://${backendHost}:${port}`;
-
-  const packagedBackend = path.join(process.resourcesPath, "backend", "photo-calibrator-backend");
-  const pythonPath = app.isPackaged ? packagedBackend : (process.env.PHOTO_CALIBRATOR_PYTHON || PYTHON_CMD);
-  const args = app.isPackaged
-    ? ["--port", String(port), "--accelerator", "auto"]
-    : ["-m", "photo_calibrator.backend.simple_server", "--port", String(port), "--accelerator", "auto"];
-
-  const devWebRoot = path.join(projectRoot, "public");
-  if (isDev && existsSync(devWebRoot)) {
-    args.push("--web-root", devWebRoot);
-  }
-
-  const env = { ...process.env, PYTHONUNBUFFERED: "1" };
-  if (!app.isPackaged) env.PYTHONPATH = path.join(repoRoot, "src");
-
-  backendProcess = spawn(pythonPath, args, {
-    cwd: app.isPackaged ? path.dirname(packagedBackend) : repoRoot,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  backendProcess.stdout?.on("data", (chunk) => {
-    process.stdout.write(`[backend] ${chunk}`);
-  });
-  backendProcess.stderr?.on("data", (chunk) => {
-    process.stderr.write(`[backend:err] ${chunk}`);
-  });
-  backendProcess.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`Backend exited with code ${code}`);
-    }
-    backendProcess = null;
-  });
-
-  const ready = await waitForBackend(healthUrl, app.isPackaged ? 45000 : 15000);
-  if (!ready) {
-    console.error("Backend failed to start within timeout");
-    stopBackend();
-    throw new Error("Backend startup timeout");
-  }
-
-  return healthUrl;
-}
-
-function stopBackend() {
-  if (backendProcess) {
-    backendProcess.kill("SIGTERM");
-    backendProcess = null;
-  }
-}
+const backendSupervisor = new BackendSupervisor({
+  host: backendHost,
+  startPort: backendPort,
+  configuredUrl: configuredApiBaseUrl,
+  pythonPath: app.isPackaged ? packagedBackend : (process.env.PHOTO_CALIBRATOR_PYTHON || PYTHON_CMD),
+  args: backendArgs,
+  cwd: app.isPackaged ? path.dirname(packagedBackend) : repoRoot,
+  env: backendEnv,
+  startupTimeoutMs: app.isPackaged ? 45000 : 15000,
+});
 
 // ---------------------------------------------------------------------------
 // Window management
@@ -254,15 +181,34 @@ ipcMain.handle("photo-calibrator:list-directory-files", async (_event, directory
   return listFilesRecursively(resolved);
 });
 
-ipcMain.handle("photo-calibrator:get-runtime", async () => ({
-  mode: "desktop-shell",
-  shellName: APP_SHELL_NAME,
-  apiBaseUrl: currentBackendUrl || apiBaseUrl,
-  supportsNativeDialogs: true,
-  supportsShellBridge: true,
-  enableMockShellBridge: false,
-  tempDir: os.tmpdir(),
-}));
+function getRuntimePayload() {
+  const backend = backendSupervisor.snapshot();
+  return {
+    mode: "desktop-shell",
+    shellName: APP_SHELL_NAME,
+    apiBaseUrl: backend.url || apiBaseUrl,
+    supportsNativeDialogs: true,
+    supportsShellBridge: true,
+    enableMockShellBridge: false,
+    tempDir: os.tmpdir(),
+    isPackaged: app.isPackaged,
+    appVersion: app.getVersion(),
+    backend,
+  };
+}
+
+ipcMain.handle("photo-calibrator:get-runtime", async () => getRuntimePayload());
+ipcMain.handle("photo-calibrator:restart-backend", async () => {
+  await backendSupervisor.restart();
+  return getRuntimePayload();
+});
+
+backendSupervisor.subscribe(() => {
+  const runtime = getRuntimePayload();
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("runtime:status", runtime);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // macOS: native menu bar
@@ -349,16 +295,13 @@ if (isLinux && (process.env.CI || process.env.PHOTO_CALIBRATOR_DISABLE_SANDBOX))
 // ---------------------------------------------------------------------------
 // App lifecycle (cross-platform)
 // ---------------------------------------------------------------------------
-let currentBackendUrl = null;
-
 app.whenReady().then(async () => {
   applyApplicationIdentity();
   try {
-    currentBackendUrl = await startBackend();
-    console.log(`Backend ready at ${currentBackendUrl}`);
+    const backendUrl = await backendSupervisor.start();
+    console.log(`Backend ready at ${backendUrl}`);
   } catch (err) {
-    console.error("Backend startup failed, using external backend:", err.message);
-    currentBackendUrl = apiBaseUrl;
+    console.error("Backend startup failed; opening degraded app runtime:", err.message);
   }
   createWindow();
 });
@@ -371,10 +314,9 @@ app.on("activate", () => {
 // macOS: keep app running when all windows closed
 app.on("window-all-closed", () => {
   if (!isMac) {
-    stopBackend();
+    void backendSupervisor.stop();
     app.quit();
   }
 });
 
-app.on("before-quit", () => stopBackend());
-app.on("will-quit", () => stopBackend());
+app.on("before-quit", () => void backendSupervisor.stop());

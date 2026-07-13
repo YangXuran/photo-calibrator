@@ -26,6 +26,8 @@ The main product UI is `frontend/`: React + Vite + TypeScript inside Electron.
 
 The backend is Python under `src/photo_calibrator/`, currently exposed through a local HTTP server. The older `web/` directory is kept as a lightweight legacy interface and is not the main product shell.
 
+Electron is the application runtime owner: it supervises the local Python backend, selects a free loopback port, verifies the backend service identity, publishes lifecycle state to React, and exposes native file operations through a context-isolated preload bridge. The HTTP boundary remains internal to the desktop app for now so preview image URLs and existing backend tests stay reusable.
+
 ## Run Locally
 
 ```bash
@@ -45,7 +47,18 @@ Useful checks:
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
 npm run test:ui
+npm --prefix frontend run test:electron-runtime
 ```
+
+For latency investigations, the backend exposes a bounded in-memory monitor:
+
+```bash
+curl http://127.0.0.1:8766/api/performance
+curl -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8766/api/performance/reset
+```
+
+It aggregates route timings and slow-request samples without retaining request bodies, image paths or image data. The default slow-request threshold is 750 ms and can be changed with `PHOTO_CALIBRATOR_PERF_THRESHOLD_MS`.
 
 Build a local macOS arm64 DMG:
 

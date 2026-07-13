@@ -1,6 +1,6 @@
 # Photo Calibrator - Development Status
 
-> Last updated: 2026-07-08
+> Last updated: 2026-07-13
 > Branch: `main`
 > Product runtime: Electron + React/Vite/TypeScript + Python HTTP backend
 > Local API: `http://127.0.0.1:8766`
@@ -81,7 +81,24 @@ The main local workflow is integrated end to end:
 - Torch `2.12.1` is bundled in the arm64 backend; MPS initializes after HTTP startup so the UI is not blocked by Torch loading.
 - Interactive previews are capped at 1600px and `fast` session requests reuse cached input analysis instead of recalculating input/output reports.
 - Unsupported GPU operations fall back to CPU rather than failing the edit.
-- Benchmark coverage includes resize, RGB/Lab, Lab/RGB, curve LUT, matrix and 3D LUT operations.
+- Backend capabilities cover resize, RGB grayscale, Gaussian blur, Sobel profile, RGB/Lab, Lab/RGB, curve LUT, matrix, histogram and 3D LUT, with backend-specific fallback subsets.
+- The synthetic benchmark currently measures resize, RGB/Lab, Lab/RGB, curve LUT, matrix and 3D LUT operations. Capability reporting and benchmark execution are intentionally distinct contracts.
+
+### Performance Diagnostics
+
+- All JSON API routes now pass through one `dispatch_backend_request()` instrumentation point used by both direct dispatch and the HTTP handler.
+- `PerformanceMonitor` keeps thread-safe per-route counts, errors, average/max/latest latency and a bounded list of requests above the anomaly threshold. It stores no request body, image path or image data.
+- `GET /api/performance` returns the current diagnostic window; `POST /api/performance/reset` clears it.
+- Monitoring is enabled by default with a 750 ms anomaly threshold. `PHOTO_CALIBRATOR_PERF_MONITOR=0` disables it; `PHOTO_CALIBRATOR_PERF_THRESHOLD_MS` and `PHOTO_CALIBRATOR_PERF_BUFFER_LIMIT` configure the window.
+
+### Unified Desktop Runtime
+
+- Electron now owns backend lifecycle through `BackendSupervisor` instead of scattered start/stop functions.
+- The supervisor distinguishes externally configured and Electron-managed backends, allocates a free loopback port for managed processes, publishes lifecycle failures and supports explicit reconnect/restart.
+- `/api/health` carries a service identity and API version. Electron will not accept an unrelated HTTP service merely because it returns status 200.
+- The context-isolated `__PHOTO_CALIBRATOR_APP__` bridge streams runtime changes to React. The frontend API client resolves the current backend URL per request, so a restart can safely move to another port.
+- Settings displays ownership/state/URL/error details and exposes a reconnect action. Browser mode retains the existing direct-HTTP fallback.
+- The development-only runtime banner (`Desktop Shell / ChromaFrame Desktop / API URL`) has been removed from the main workspace; detailed runtime diagnostics remain available in Settings.
 
 ## Packaging
 
@@ -143,6 +160,17 @@ Workbench
 - Add plugin permission boundaries beyond trusted local Python plugins.
 - Retire or merge completed multi-agent workstreams once their functionality is stable, tested and no longer needs file-ownership isolation.
 
+## Code Walk Findings (2026-07-13)
+
+- Removed a duplicate `PREVIEW_CACHE_DIR` assignment whose first value was always overwritten; disposable previews remain in the host temporary directory, while saved sessions remain under the repository cache directory.
+- The HTTP POST handler previously bypassed the existing shared dispatcher. POST and GET JSON APIs now use the same dispatch contract, which is also the single performance instrumentation boundary.
+- Calibrator plugin compatibility previously caught any `TypeError` and retried the plugin, which could hide an internal plugin bug and execute it twice. Hook context is now filtered from the callable signature, preserving legacy `(image, params)` plugins without swallowing plugin exceptions.
+- Preview/static file containment previously used string-prefix checks, which are not a valid directory boundary for same-prefix sibling paths. The shared check now uses resolved `Path.relative_to()` semantics.
+- Optional OpenImageIO reads now consume OIIO's global error state before returning `None` on open failure, avoiding misleading pending-error output at process shutdown.
+- Pillow access for trusted local photos now scopes out the expected large-scan warning and malformed TIFF tag-count warning while retaining Pillow's hard decompression-bomb error limit. The dev launcher filters only the known macOS IMK mach-port diagnostic from Electron stderr.
+- `backend/schemas.py` currently contains dataclasses, not Pydantic models; project documentation now describes the implementation accurately. Pydantic remains a possible future API migration choice rather than a current dependency.
+- The package currently declares Python `>=3.10` in `pyproject.toml`. Python 3.12 remains the recommended development/package target, but code must not claim it is the enforced minimum until the package metadata changes.
+
 ## Verification
 
 Use the project virtual environment on macOS:
@@ -172,7 +200,16 @@ PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmar
 npm --prefix frontend run package:dmg:arm64
 ```
 
-Recent targeted verification through 2026-07-04 includes:
+Latest verification on 2026-07-13:
+
+- Full Python suite: `.venv/bin/python -m pytest -q` -> `353 passed`.
+- Electron runtime and log-filter unit suite -> `5 passed`.
+- Python compileall, frontend typecheck and production build passed.
+- Accelerator smoke selected `hybrid-cpu-mps`; CPU handled the regular kernels and MPS handled 3D LUT as intended.
+- Full Electron E2E suite -> `15 passed`, including the unified App bridge and external-backend reconnect path.
+- A real `npm run dev` managed-mode smoke started Vite, Electron and the Python backend without a pre-launched API, reached `hybrid-cpu-mps`, and left no listener on port 8766 after shutdown.
+
+Earlier UI/geometry verification through 2026-07-04 includes:
 
 - Crop suggestion -> explicit apply -> Original/Calibrated geometry alignment.
 - Film-scan perspective detection returns normalized `perspective_correction`; crop and perspective are replayed together in preview and export.
@@ -183,7 +220,6 @@ Recent targeted verification through 2026-07-04 includes:
 - Split comparison divider remains visible and aligned during manual zoom; the image transform layer intentionally has no `transform` transition.
 - Curve and look-wheel drag previews in split comparison render only inside the calibrated image layer and do not cover the original side.
 - Manual Computer Use inspection of a cropped negative in Electron.
-- Full Electron UI suite on 2026-07-04: `npm run test:ui` -> `14 passed`.
 - Full Python suite on 2026-07-04: `.venv/bin/python -m pytest -q` -> `341 passed, 1 warning`.
 - Targeted API and film-scan suites on 2026-07-04: `tests/test_simple_server_api.py` -> `104 passed`; `tests/test_film_scan.py` -> `20 passed`.
 

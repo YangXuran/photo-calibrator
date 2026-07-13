@@ -16,6 +16,8 @@
 - `src/photo_calibrator/io/`: 图像读写 (readers/writers)、RAW 解码、EXIF/ICC 元数据、sidecar JSON、LUT 导出。
 - `src/photo_calibrator/pipeline/`: 非破坏处理图 (Document/Operation/LabShiftOp/RgbCurvesOp/MatrixOp/Lut3DOp)。
 - `src/photo_calibrator/backend/simple_server.py`: 本地 HTTP 服务、预览缓存、内存分析缓存、批处理 API。
+- `src/photo_calibrator/backend/performance.py`: 线程安全的 API 性能监控桩点、聚合统计和有界异常样本。
+- `frontend/electron/backendSupervisor.mjs`: Electron 托管/外部 backend 生命周期、端口、健康握手、状态与重连抽象。
 - `src/photo_calibrator/plugins/`: **插件系统** — hook 协议、manifest 验证、发现/加载/生命周期管理、内置 stub 插件。
 - `src/photo_calibrator/ai/`: **AI 评估子系统** — provider-agnostic 接口、提示词模板、OpenAI 兼容 provider（覆盖 Ollama/vLLM/OpenAI/DeepSeek/Groq）+ MockProvider。
 - `frontend/`: 当前 Electron 产品 UI，React/Vite/TypeScript + Playwright。
@@ -26,6 +28,8 @@
 
 - CPU 多线程：OpenCV optimized + 线程数配置；本地路径批处理 API `/api/calibrate-paths`、上传批处理 API `/api/calibrate-batch` 和路径预览批处理 API `/api/preview-batch` 都使用 worker 并行，并保持输入顺序返回结果。
 - 缓存：本地预览 JPEG 缓存、内存 `PreparedImage`/输入分析/静态图表缓存；同一 `cache_key` 有 per-key lock，重复上传/重复路径并行处理只构建一次分析结果；前端通过 `session_id` 调参，滑杆 `input` 由 `InteractivePreviewController` 统一做 session gate、fast 请求合并、stale-frame guard 和 timing 监控后调用 `/api/calibrate-session`，不重解码；路径缩略图通过 `/api/preview-batch` 合并请求，普通上传仍走单图 fallback；编辑区 adaptive preview 在交互后回填 640-2400 px 高清预览。
+- 性能监控：所有 JSON API 统一经过 `dispatch_backend_request()` 的 `PerformanceMonitor` span；`GET /api/performance` 返回按路由聚合的次数、错误、平均/最大/最近耗时和有界异常样本，`POST /api/performance/reset` 清空窗口。默认异常阈值 750 ms，可用 `PHOTO_CALIBRATOR_PERF_MONITOR`、`PHOTO_CALIBRATOR_PERF_THRESHOLD_MS` 和 `PHOTO_CALIBRATOR_PERF_BUFFER_LIMIT` 调整。监控不得记录请求体、图像路径或图像数据。
+- App runtime：Electron 是桌面应用进程所有者。未显式配置 `PHOTO_CALIBRATOR_API_BASE_URL` 时由 `BackendSupervisor` 启动/停止 Python backend 并选择可用端口；显式配置时只连接外部 backend，不得静默拉起另一个实例。健康检查必须返回 `service=photo-calibrator`。renderer 通过 `__PHOTO_CALIBRATOR_APP__` 接收 backend 状态和动态 API 地址。
 - Accelerator 后端：`cpu-opencv`、`opencl-umat`、可选 `torch-cuda`/`torch-mps`/`metal-mps`。没有 GPU 或依赖时必须自动 fallback 到 CPU。
 - 高收益算子接口：resize、RGB/Lab、Lab/RGB、曲线 LUT、矩阵、直方图、3D LUT 已进入 accelerator 调用面。macOS 实测 OpenCL 和逐算子 Torch 往返慢于优化 CPU，因此 `auto` 使用 `hybrid-cpu-mps`：OpenCV CPU 处理常规算子，仅将明显更快的 3D LUT 交给 MPS。
 - Accelerator 验证：
@@ -230,9 +234,10 @@ photo_calibrator/
     backend/
       __init__.py
       simple_server.py      # HTTP API server (ThreadingHTTPServer)
-      schemas.py            # Pydantic 请求/响应模型
+      schemas.py            # dataclass 请求/响应与缓存模型
       accelerator.py        # Accelerator 抽象层
       accelerator_benchmark.py  # CLI bench 工具
+      performance.py        # API 性能监控桩点与异常聚合
     plugins/
       __init__.py
       hooks.py              # Hook 协议 (6 种 hook)
@@ -537,11 +542,13 @@ AI 模块应设计为 provider-agnostic：
 - 必跑 Python 验证：`.venv/bin/python -m pytest -q`
 - 必跑编译验证：`.venv/bin/python -m compileall -q src tests`
 - 必跑前端验证：`npm --prefix frontend run typecheck && npm --prefix frontend run build`
+- Electron runtime 改动必跑：`npm --prefix frontend run test:electron-runtime`
 - UI 相关改动必跑：`npm run test:ui`
 - Electron E2E 使用 `frontend/dist`，不是 Vite dev server 的源码；凡是改 `frontend/src` 后做 Electron E2E，必须先跑 `npm --prefix frontend run build`。
 - Accelerator 验证：`PYTHONPATH=src .venv/bin/python -m photo_calibrator.backend.accelerator_benchmark --backend auto --image-side 64 --lut-size 7 --iterations 1`
-- 当前 benchmark/capability 操作至少包含：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`histogram`、`3d-lut`、`rgb-gray`、`gaussian-blur`、`sobel-profile`。测试应检查必要子集或同步完整集合，不能保留旧的精确集合断言。
-- 2026-07-04 最新本机验证：`.venv/bin/python -m pytest -q` -> `341 passed, 1 warning`；`tests/test_simple_server_api.py` -> `104 passed`；`tests/test_film_scan.py` -> `20 passed`；`npm run test:ui` -> `14 passed`。
+- 当前 accelerator capability 操作集合覆盖：`resize`、`rgb-gray`、`gaussian-blur`、`sobel-profile`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`histogram`、`3d-lut`；不同 backend 的 accelerated/fallback 子集不同，测试应检查必要子集，不能对所有 backend 保留同一个精确集合断言。
+- 当前 benchmark 实际测量 6 项：`resize`、`rgb-lab`、`lab-rgb`、`curve-lut`、`matrix`、`3d-lut`。新增 benchmark 项时必须同步 CLI/API/UI 契约和测试。
+- 2026-07-13 最新本机验证：`.venv/bin/python -m pytest -q` -> `353 passed`；Electron runtime unit -> `5 passed`；前端 typecheck/build 通过；Electron E2E -> `15 passed`；accelerator smoke 通过；`npm run dev` 已验证 Electron 自行拉起 backend 并在退出后清理监听进程。
 - 当前状态文档以 `STATUS.md` 为准；如果代码和本文档冲突，以实际测试结果和代码路径为准，不以旧阶段宣称为准。
 
 ### 15.3 Agent A: Accelerator / Performance

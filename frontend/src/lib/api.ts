@@ -16,10 +16,8 @@ import type {
 } from "../types";
 import { resolveRuntimeConfig } from "../runtime/config";
 
-const runtimeConfig = resolveRuntimeConfig();
-
 function apiUrl(path: string) {
-  return `${runtimeConfig.apiBaseUrl}${path}`;
+  return `${resolveRuntimeConfig().apiBaseUrl}${path}`;
 }
 
 async function expectJson<T>(response: Response): Promise<T> {
@@ -29,7 +27,7 @@ async function expectJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function fetchHealth(): Promise<{ ok: boolean }> {
+export async function fetchHealth(): Promise<{ ok: boolean; service?: string; api_version?: number }> {
   return expectJson(await fetch(apiUrl("/api/health")));
 }
 
